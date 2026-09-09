@@ -48,7 +48,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern void IOSTouch_QueueKey( int key, int down );
 extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
+extern void IOSTouch_QueueMouseTo( int x, int y );
 extern int  IOSTouch_ControllerConnected( void );
+extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
 extern int  IOSTouch_CinematicActive( void );
 extern void IOSTouch_SkipCinematic( void );
@@ -131,8 +133,7 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic) CGPoint lookLast;
 @property (nonatomic, strong) UITouch *lookTouch;
 @property (nonatomic, strong) UITouch *stickTouch;
-@property (nonatomic) CGPoint menuTouchStart;
-@property (nonatomic) BOOL menuTouchMoved;
+@property (nonatomic, strong) UITouch *menuTouch;   // the finger acting as the mouse
 @end
 
 @implementation IORTCWTouchOverlay
@@ -195,21 +196,20 @@ extern void IOSTouch_SkipCinematic( void );
 }
 
 /*
- * The overlay sits on the window, above SDL's view, so by default it would
- * swallow every touch before SDL ever saw one -- including the ones the menus
- * depend on.
+ * The overlay sits on the window above SDL's view and takes every touch.
  *
- * Returning nil here means "not mine, keep looking", which passes the touch
- * down to SDL's view. Menus and the console are handed over wholesale; gameplay
- * is kept, because that is where the sticks and buttons live.
+ * Handing menu touches down to SDL instead looks tidier and does not work: SDL
+ * turns touches into mouse events, but with relative mouse mode on -- which the
+ * engine enables for aiming -- those arrive pinned to the centre of the window
+ * with a zero delta. The menu cursor never moves and the tap activates whatever
+ * it was already sitting on. Owning the touch and driving the cursor to it is
+ * both exact and one code path instead of two fighting over the same cursor.
  */
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
 {
-	if ( ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) != 0 ) {
-		return nil;
-	}
+	UIView *hit = [super hitTest:point withEvent:event];
 
-	return [super hitTest:point withEvent:event];
+	return hit ? hit : self;
 }
 
 - (IORTCWTouchButton *)buttonAtPoint:(CGPoint)p
@@ -235,7 +235,9 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (BOOL)menuActive
 {
-	return ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) != 0;
+	// Includes the loading screen and the pregame briefing, neither of which is
+	// gameplay even though only one of them sets the key catcher.
+	return CL_UIActive() ? YES : NO;
 }
 
 - (CGPoint)virtualPointFor:(CGPoint)p
@@ -252,15 +254,13 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)moveMenuCursorTo:(CGPoint)target
 {
-	int dx = (int)lround( target.x - menuCursor.x );
-	int dy = (int)lround( target.y - menuCursor.y );
+	menuCursor = target;
+	IOSTouch_QueueMouseTo( (int)lround( target.x ), (int)lround( target.y ) );
 
-	if ( dx || dy ) {
-		IOSTouch_QueueMouse( dx, dy );
-		// Track what we asked for, not what we wanted, so rounding does not
-		// accumulate into drift over many taps.
-		menuCursor.x += dx;
-		menuCursor.y += dy;
+	if ( IOSTouch_DebugEnabled() ) {
+		Com_Printf( "touch: menu cursor -> %.0f,%.0f (view %.0fx%.0f)\n",
+			target.x, target.y,
+			self.bounds.size.width, self.bounds.size.height );
 	}
 }
 
@@ -296,10 +296,15 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
-	// Menus are left to SDL's touch-to-mouse synthesis, which drives the game's
-	// own cursor correctly. Handling them here as well produced two cursors
-	// fighting: the pointer jumped and taps selected whatever it passed over.
+	// Menus, the console and the pregame briefing: the finger is the cursor.
 	if ( [self menuActive] ) {
+		UITouch *touch = touches.anyObject;
+
+		if ( touch && !self.menuTouch ) {
+			self.menuTouch = touch;
+			[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+			IOSTouch_QueueKey( K_MOUSE1, 1 );
+		}
 		return;
 	}
 
@@ -337,6 +342,13 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	if ( [self menuActive] ) {
+		// Dragging keeps the cursor under the finger, which is what sliders and
+		// the save-game list need.
+		for ( UITouch *touch in touches ) {
+			if ( touch == self.menuTouch ) {
+				[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+			}
+		}
 		return;
 	}
 
@@ -404,11 +416,13 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-	if ( [self menuActive] ) {
-		return;
-	}
-
 	for ( UITouch *touch in touches ) {
+		if ( touch == self.menuTouch ) {
+			self.menuTouch = nil;
+			IOSTouch_QueueKey( K_MOUSE1, 0 );
+			continue;
+		}
+
 		[self releaseTouch:touch];
 	}
 }
@@ -416,6 +430,12 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	for ( UITouch *touch in touches ) {
+		if ( touch == self.menuTouch ) {
+			self.menuTouch = nil;
+			IOSTouch_QueueKey( K_MOUSE1, 0 );
+			continue;
+		}
+
 		[self releaseTouch:touch];
 	}
 }
@@ -468,12 +488,19 @@ void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 Sys_IOS_TouchOverlayUpdate
 
 in_touchControls: 0 = automatic (hide when a controller is connected),
-1 = always shown, 2 = never shown. Called on controller connect and disconnect,
-and whenever the cvar changes.
+1 = always shown, 2 = never shown.
+
+Called every frame from IN_Frame, so it also tracks the one thing that changes
+constantly: whether the game or the UI owns the screen. The controls have no
+meaning over a menu, a loading screen or the pregame briefing, and leaving FIRE
+and JUMP drawn on top of the mission briefing is how the briefing came to look
+like something that could not be dismissed.
 ==============
 */
 void Sys_IOS_TouchOverlayUpdate( void )
 {
+	static BOOL wasVisible = NO;
+	static BOOL everSet = NO;
 	BOOL visible;
 
 	if ( !touchOverlay ) {
@@ -485,6 +512,17 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		case 2:  visible = NO;  break;
 		default: visible = !IOSTouch_ControllerConnected(); break;
 	}
+
+	if ( CL_UIActive() ) {
+		visible = NO;
+	}
+
+	if ( everSet && visible == wasVisible ) {
+		return;
+	}
+
+	wasVisible = visible;
+	everSet = YES;
 
 	// Only the controls are hidden, never the overlay itself: it still has to
 	// receive touches so menus, cutscene skipping and the multi-finger gestures

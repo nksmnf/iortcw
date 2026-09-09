@@ -359,11 +359,13 @@ void Sys_IOS_InitSDLHints( void )
 	// rather than reserving a strip of the screen for it.
 	SDL_SetHint( SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2" );
 
-	// Touches also drive the mouse. This is what makes RTCW's own cursor-driven
-	// menus usable, and it is deliberately left on: the "every tap fires the
-	// weapon" problem is fixed in IN_ProcessEvents by dropping the synthesised
-	// click during gameplay, not by removing touch input altogether.
-	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "1" );
+	// Off, because it does not work here and the overlay does the job properly.
+	// SDL turns a touch into a mouse event at the touch position, but the engine
+	// runs the mouse in relative mode for aiming, and in that mode the
+	// synthesised event arrives pinned to the centre of the window with a zero
+	// delta -- so the menu cursor never moves and a tap activates whatever it
+	// was already over. ios_touch.m places the cursor on the touch instead.
+	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "0" );
 	SDL_SetHint( SDL_HINT_MOUSE_TOUCH_EVENTS, "0" );
 
 	// PS5 controllers report their full feature set only when SDL is allowed to

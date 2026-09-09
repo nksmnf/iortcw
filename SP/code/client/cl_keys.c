@@ -2128,6 +2128,78 @@ static void Key_CompleteBind( char *args, int argNum )
 
 /*
 ===================
+CL_UIActive
+
+Whether something other than the running game owns the screen: a menu, the
+console, or a loading screen.
+
+The loading screen matters as much as the menus here. In single player it is the
+mission briefing, drawn by the UI without setting KEYCATCH_UI, so anything that
+tests the catcher alone mistakes it for gameplay -- which is how the on-screen
+controls ended up drawn on top of the briefing.
+
+Asking the UI which menu is active does not work: menutype is only ever reset by
+UIMENU_NONE, which nothing sends when a level finishes loading, so it would read
+as "briefing" for the rest of the session.
+===================
+*/
+qboolean CL_UIActive( void ) {
+	if ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) {
+		return qtrue;
+	}
+
+	if ( clc.state != CA_ACTIVE && clc.state != CA_CINEMATIC ) {
+		return qtrue;
+	}
+
+	return qfalse;
+}
+
+/*
+===================
+CL_SendKey_f
+
+sendkey <name> [down|up]
+
+Synthesises a key event as though the key had been pressed. With no second
+argument it sends a press followed immediately by a release, which is what a
+menu or a briefing screen expects.
+
+This exists because there is no way to tap the screen from a script on the
+simulator, so an automated run cannot otherwise get past anything that waits
+for input.
+===================
+*/
+void CL_SendKey_f( void ) {
+	int keynum;
+	const char *state;
+
+	if ( Cmd_Argc() < 2 ) {
+		Com_Printf( "usage: sendkey <key> [down|up]\n" );
+		return;
+	}
+
+	keynum = Key_StringToKeynum( Cmd_Argv( 1 ) );
+
+	if ( keynum == -1 ) {
+		Com_Printf( "sendkey: \"%s\" is not a valid key\n", Cmd_Argv( 1 ) );
+		return;
+	}
+
+	state = Cmd_Argc() > 2 ? Cmd_Argv( 2 ) : "";
+
+	if ( !Q_stricmp( state, "down" ) ) {
+		Com_QueueEvent( 0, SE_KEY, keynum, qtrue, 0, NULL );
+	} else if ( !Q_stricmp( state, "up" ) ) {
+		Com_QueueEvent( 0, SE_KEY, keynum, qfalse, 0, NULL );
+	} else {
+		Com_QueueEvent( 0, SE_KEY, keynum, qtrue, 0, NULL );
+		Com_QueueEvent( 0, SE_KEY, keynum, qfalse, 0, NULL );
+	}
+}
+
+/*
+===================
 CL_InitKeyCommands
 ===================
 */
@@ -2139,6 +2211,7 @@ void CL_InitKeyCommands( void ) {
 	Cmd_SetCommandCompletionFunc( "unbind", Key_CompleteUnbind );
 	Cmd_AddCommand( "unbindall",Key_Unbindall_f );
 	Cmd_AddCommand( "bindlist",Key_Bindlist_f );
+	Cmd_AddCommand( "sendkey", CL_SendKey_f );
 }
 
 /*

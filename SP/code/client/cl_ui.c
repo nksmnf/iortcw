@@ -1169,6 +1169,11 @@ void CL_InitUI( void ) {
 		cls.uiStarted = qfalse;
 	}
 
+	// The touch layer places the menu cursor absolutely, which it can only do by
+	// shadowing a position the UI keeps to itself. UI_INIT puts that position
+	// back at the origin, so the shadow has to go with it.
+	IN_ResetMenuCursor();
+
 	// init for this gamestate
 	VM_Call( uivm, UI_INIT, ( clc.state >= CA_AUTHORIZING && clc.state < CA_ACTIVE ) );
 }

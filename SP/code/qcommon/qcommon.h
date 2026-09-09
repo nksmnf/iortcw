@@ -1114,6 +1114,8 @@ void IN_Restart( void );
 // from the main thread.
 void IN_Rumble( float lowFreq, float highFreq, int durationMs );
 void IN_SetControllerLED( int red, int green, int blue );
+qboolean CL_UIActive( void );   // UI owns the screen (menus, console, briefing)
+void IN_ResetMenuCursor( void ); // the UI just restarted; its cursor is at the origin
 int  IN_GetHapticCaps( void );
 void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
 #if TARGET_OS_IPHONE

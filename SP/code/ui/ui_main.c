@@ -6763,6 +6763,11 @@ void _UI_Init( qboolean inGameLoad ) {
 
 	//uiInfo.inGameLoad = inGameLoad;
 
+	// Start the cursor at a known place. Nothing outside this module can read
+	// it, and the engine has to know where it is to put it under a finger.
+	uiInfo.uiDC.cursorx = 0;
+	uiInfo.uiDC.cursory = 0;
+
 	UI_RegisterCvars();
 	UI_InitMemory();
 

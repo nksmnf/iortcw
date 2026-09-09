@@ -53,6 +53,7 @@ static SDL_Joystick *stick = NULL;
 static qboolean mouseAvailable = qfalse;
 static qboolean mouseActive = qfalse;
 
+
 static cvar_t *in_mouse             = NULL;
 static cvar_t *in_nograb;
 
@@ -72,6 +73,7 @@ static cvar_t *in_triggerHard       = NULL;  // deeper threshold, bound separate
 static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
 static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
+static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
 static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
 static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
 static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
@@ -84,6 +86,26 @@ static cvar_t *in_lookPitchSpeed    = NULL;
 static int vidRestartTime = 0;
 
 static int in_eventTime = 0;
+
+// Where the UI's cursor is, in its own 640x480 space. Kept in step with
+// _UI_MouseEvent, which is the only thing that moves it and clamps it exactly
+// like this. Touch needs it because a finger is an absolute position and the UI
+// only accepts relative ones.
+static int menuCursorX = 0;
+static int menuCursorY = 0;
+
+static void IN_QueueMouseDelta( int dx, int dy )
+{
+	if ( !dx && !dy ) {
+		return;
+	}
+
+	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
+	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
+
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+}
+
 
 static SDL_Window *SDL_window = NULL;
 
@@ -987,7 +1009,7 @@ static void IN_GamepadSticks( void )
 
 	// While a menu or the console is up, the right stick drives the cursor
 	// instead. Without this there is no way to start a mission from the pad.
-	if ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) {
+	if ( CL_UIActive() ) {
 		float speed = in_menuCursorSpeed->value;
 		int dx, dy;
 
@@ -1000,9 +1022,7 @@ static void IN_GamepadSticks( void )
 		dx = (int)( rx * speed );
 		dy = (int)( ry * speed );
 
-		if ( dx || dy ) {
-			Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
-		}
+		IN_QueueMouseDelta( dx, dy );
 
 		// Nothing should reach the movement axes while a menu is up.
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
@@ -1149,8 +1169,7 @@ static void IN_GamepadMove( void )
 	// are translated instead of being sent as PAD0_* keys that no menu binds --
 	// otherwise there is no way to pick a difficulty and start a mission
 	// without putting the iPad down and using the touchscreen.
-	menuMode = ( in_gamepadDirect->integer &&
-		( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) ) ? qtrue : qfalse;
+	menuMode = ( in_gamepadDirect->integer && CL_UIActive() ) ? qtrue : qfalse;
 
 	// check buttons
 	for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
@@ -1787,12 +1806,29 @@ static void IN_ProcessEvents( void )
 				}
 				break;
 
+#if TARGET_OS_IPHONE
+			case SDL_FINGERDOWN:
+			case SDL_FINGERUP:
+				if ( in_debugTouch && in_debugTouch->integer ) {
+					Com_Printf( "touch: finger %s at %.3f,%.3f\n",
+						e.type == SDL_FINGERDOWN ? "down" : "up",
+						e.tfinger.x, e.tfinger.y );
+				}
+				break;
+#endif
+
 			case SDL_MOUSEMOTION:
+#if TARGET_OS_IPHONE
+				if ( in_debugTouch && in_debugTouch->integer &&
+					 e.motion.which == SDL_TOUCH_MOUSEID ) {
+					Com_Printf( "touch: move to %d,%d (rel %d,%d) of %dx%d\n",
+						e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel,
+						cls.glconfig.vidWidth, cls.glconfig.vidHeight );
+				}
+#endif
 				if( mouseActive )
 				{
-					if( !e.motion.xrel && !e.motion.yrel )
-						break;
-					Com_QueueEvent( in_eventTime, SE_MOUSE, e.motion.xrel, e.motion.yrel, 0, NULL );
+					IN_QueueMouseDelta( e.motion.xrel, e.motion.yrel );
 				}
 				break;
 
@@ -1802,12 +1838,21 @@ static void IN_ProcessEvents( void )
 					int b;
 
 #if TARGET_OS_IPHONE
+					// There is no console on a tablet, so the only way to see
+					// what the touch layer is doing is to write it down.
+					if ( in_debugTouch && in_debugTouch->integer ) {
+						Com_Printf( "touch: button %d %s which=%s catcher=%d state=%d ui=%d\n",
+							e.button.button,
+							e.type == SDL_MOUSEBUTTONDOWN ? "down" : "up",
+							e.button.which == SDL_TOUCH_MOUSEID ? "touch" : "mouse",
+							Key_GetCatcher(), clc.state, CL_UIActive() );
+					}
+
 					// A click SDL made up from a touch is exactly what the menus
 					// need and exactly what gameplay does not: there it lands on
 					// +attack, so simply touching the screen fires the weapon.
 					// Shooting by touch is the overlay's fire button instead.
-					if ( e.button.which == SDL_TOUCH_MOUSEID &&
-						 !( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) ) {
+					if ( e.button.which == SDL_TOUCH_MOUSEID && !CL_UIActive() ) {
 						break;
 					}
 #endif
@@ -1935,12 +1980,50 @@ void IOSTouch_QueueMouse( int dx, int dy )
 	// Deliberately mouse rather than joystick: CL_MouseMove is not
 	// frametime-scaled whereas CL_JoystickMove is, and the unscaled path is what
 	// makes touch look feel 1:1.
-	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+	IN_QueueMouseDelta( dx, dy );
+}
+
+/*
+===============
+IOSTouch_QueueMouseTo
+
+Put the menu cursor on a point in the game's 640x480 menu space.
+
+Touch is absolute and the UI's cursor is not -- it only accepts deltas, and it
+lives inside the UI VM where nothing outside can read it -- so the difference is
+worked out against the shadow copy IN_QueueMouseDelta keeps.
+===============
+*/
+void IOSTouch_QueueMouseTo( int x, int y )
+{
+	IN_QueueMouseDelta( x - menuCursorX, y - menuCursorY );
+}
+
+/*
+===============
+IN_ResetMenuCursor
+
+Called when the UI is (re)started, which puts its cursor back at the origin.
+
+Resynchronising any other way is not possible: Com_QueueEvent folds consecutive
+mouse events into one, so the obvious trick of slamming the cursor into a corner
+and then moving it out lands in the corner and stays there.
+===============
+*/
+void IN_ResetMenuCursor( void )
+{
+	menuCursorX = 0;
+	menuCursorY = 0;
 }
 
 int IOSTouch_ControllerConnected( void )
 {
 	return gamepad != NULL;
+}
+
+int IOSTouch_DebugEnabled( void )
+{
+	return in_debugTouch && in_debugTouch->integer;
 }
 
 /*
@@ -2090,6 +2173,12 @@ void IN_Frame( void )
 
 	IN_ProcessEvents( );
 
+#if TARGET_OS_IPHONE
+	// Cheap when nothing changed, and it has to run every frame: the overlay
+	// hides itself whenever a menu, the console or a loading screen takes over.
+	Sys_IOS_TouchOverlayUpdate( );
+#endif
+
 	// Set event time for next frame to earliest possible time an event could happen
 	in_eventTime = Sys_Milliseconds( );
 
@@ -2149,6 +2238,7 @@ void IN_Init( void *windowData )
 	in_ledFeedback  = Cvar_Get( "in_ledFeedback",  "1",    CVAR_ARCHIVE );
 
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
+	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
 	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.6",  CVAR_ARCHIVE );
 	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
 	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );

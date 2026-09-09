@@ -573,7 +573,13 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 	// renders at point resolution (1376x1032 here) before being stretched over a
 	// 2064x2752 panel, which looks soft. With it we get the real pixel size and
 	// glConfig is taken from SDL_GL_GetDrawableSize below.
-	flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+	//
+	// r_hidpi 0 has to drop the flag rather than merely ignore the drawable
+	// size: leaving the layer at retina scale while telling the engine it is
+	// half that renders the game into one quarter of the screen.
+	if ( r_hidpi->integer ) {
+		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+	}
 #endif
 
 	if( fullscreen )
