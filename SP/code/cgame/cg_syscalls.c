@@ -558,3 +558,8 @@ void trap_HapticLED( int r, int g, int b ) {
 int trap_HapticInfo( void ) {
 	return syscall( CG_HAPTIC_INFO );
 }
+
+void trap_HapticTrigger( int side, int mode, float start, float end, float force ) {
+	syscall( CG_HAPTIC_TRIGGER, side, mode,
+		PASSFLOAT( start ), PASSFLOAT( end ), PASSFLOAT( force ) );
+}

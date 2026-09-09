@@ -174,6 +174,7 @@ if(IORTCW_IOS)
     list(APPEND ENGINE_SRC
         "${SP_DIR}/code/sys/con_passive.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
     )
 endif()
 

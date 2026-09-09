@@ -3797,6 +3797,10 @@ void CG_FinishWeaponChange( int lastweap, int newweap ) {
 		return;
 	}
 
+	// Retune the adaptive triggers for the new weapon. This is trigger state,
+	// not an event, so it belongs on the change rather than on each shot.
+	CG_HapticWeaponChanged( newweap );
+
 	CG_PlaySwitchSound( lastweap, newweap );  //----(SA)	added
 
 	CG_SetSniperZoom( lastweap, newweap );

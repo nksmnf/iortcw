@@ -136,3 +136,4 @@ equ trap_Alloc					-901
 equ trap_HapticRumble			-902
 equ trap_HapticLED				-903
 equ trap_HapticInfo				-904
+equ trap_HapticTrigger			-905

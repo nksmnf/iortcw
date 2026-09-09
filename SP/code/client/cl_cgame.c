@@ -859,6 +859,10 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_HAPTIC_INFO:
 		return IN_GetHapticCaps();
 
+	case CG_HAPTIC_TRIGGER:
+		IN_SetAdaptiveTrigger( args[1], args[2], VMF( 3 ), VMF( 4 ), VMF( 5 ) );
+		return 0;
+
 	default:
 		Com_Error( ERR_DROP, "Bad cgame system trap: %ld", (long int) args[0] );
 	}

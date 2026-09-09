@@ -2471,6 +2471,7 @@ void		*trap_Alloc( int size );
 void        trap_HapticRumble( float lowFreq, float highFreq, int durationMs );
 void        trap_HapticLED( int r, int g, int b );
 int         trap_HapticInfo( void );
+void        trap_HapticTrigger( int side, int mode, float start, float end, float force );
 
 // cg_haptics.c
 void        CG_HapticsInit( void );
@@ -2478,3 +2479,4 @@ void        CG_HapticFire( int weapon );
 void        CG_HapticDamage( int damage );
 void        CG_HapticExplosion( float distance );
 void        CG_HapticsFrame( void );
+void        CG_HapticWeaponChanged( int weapon );

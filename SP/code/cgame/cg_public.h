@@ -227,7 +227,8 @@ typedef enum {
 	// change the behaviour of an older module.
 	CG_HAPTIC_RUMBLE = 901,     // ( lowFreq, highFreq, durationMs ) -- floats via PASSFLOAT
 	CG_HAPTIC_LED    = 902,     // ( r, g, b )
-	CG_HAPTIC_INFO   = 903      // -> bitfield of HAPTIC_CAP_*
+	CG_HAPTIC_INFO   = 903,     // -> bitfield of HAPTIC_CAP_*
+	CG_HAPTIC_TRIGGER = 904     // ( side, mode, startPos, endPos, force )
 
 } cgameImport_t;
 

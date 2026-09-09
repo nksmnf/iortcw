@@ -643,6 +643,27 @@ void IN_Rumble( float lowFreq, float highFreq, int durationMs )
 
 /*
 ===============
+IN_SetAdaptiveTrigger
+
+DualSense adaptive triggers. SDL has no API for these, so on iOS this hands off
+to ios_dualsense.m, which drives GameController.framework directly. Elsewhere it
+is a no-op -- on macOS SDL's HIDAPI backend claims the device exclusively, so
+GameController never sees it.
+===============
+*/
+void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force )
+{
+#if TARGET_OS_IPHONE
+	if ( !gamepad ) {
+		return;
+	}
+
+	Sys_IOS_SetAdaptiveTrigger( side, mode, start, end, force );
+#endif
+}
+
+/*
+===============
 IN_GetHapticCaps
 
 What the currently open controller can actually do, so cgame can skip building
@@ -664,6 +685,10 @@ int IN_GetHapticCaps( void )
 		caps |= HAPTIC_CAP_GYRO;
 	if ( gamepadCaps.numTouchpads > 0 )
 		caps |= HAPTIC_CAP_TOUCHPAD;
+#if TARGET_OS_IPHONE
+	if ( Sys_IOS_HasAdaptiveTriggers() )
+		caps |= HAPTIC_CAP_ADAPTIVE;
+#endif
 
 	return caps;
 }

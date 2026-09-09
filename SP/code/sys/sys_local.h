@@ -62,6 +62,9 @@ void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
 qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
 void        Sys_IOS_InitAudioSession( void );
 void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its window
+// ios_dualsense.m -- adaptive triggers, which SDL does not expose
+void        Sys_IOS_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
+qboolean    Sys_IOS_HasAdaptiveTriggers( void );
 #endif
 
 void Sys_GLimpSafeInit( void );

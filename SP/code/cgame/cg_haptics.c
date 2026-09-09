@@ -236,3 +236,100 @@ void CG_HapticsFrame( void ) {
 		hapticLastLED = packed;
 	}
 }
+
+/*
+==============
+CG_HapticWeaponChanged
+
+Adaptive trigger profile for the weapon now in hand. This is the DualSense
+feature that has no equivalent anywhere else: the trigger itself can resist,
+break, or rattle, so each weapon can feel different before a shot is even
+fired.
+
+Set once on weapon change rather than per shot -- the effect is a property of
+the trigger, not an event.
+==============
+*/
+void CG_HapticWeaponChanged( int weapon ) {
+	int mode;
+	float start, end, force;
+
+	if ( !( hapticCaps & HAPTIC_CAP_ADAPTIVE ) ) {
+		return;
+	}
+
+	switch ( weapon ) {
+	case WP_KNIFE:
+		// nothing to pull against
+		mode = ADAPTIVE_TRIGGER_OFF;
+		start = end = force = 0.0f;
+		break;
+
+	case WP_LUGER:
+	case WP_SILENCER:
+	case WP_COLT:
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.35f; end = 0.55f; force = 0.35f;
+		break;
+
+	case WP_AKIMBO:
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.30f; end = 0.50f; force = 0.40f;
+		break;
+
+	case WP_MP40:
+	case WP_THOMPSON:
+	case WP_STEN:
+		// automatics buzz through the trigger while held
+		mode = ADAPTIVE_TRIGGER_VIBRATION;
+		start = 0.25f; end = 0.0f; force = 0.45f;
+		break;
+
+	case WP_MAUSER:
+	case WP_GARAND:
+	case WP_SNIPERRIFLE:
+	case WP_SNOOPERSCOPE:
+		// a heavy, deliberate break
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.45f; end = 0.70f; force = 0.75f;
+		break;
+
+	case WP_FG42:
+	case WP_FG42SCOPE:
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.35f; end = 0.60f; force = 0.50f;
+		break;
+
+	case WP_PANZERFAUST:
+		// heaviest thing you can carry
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.50f; end = 0.85f; force = 1.00f;
+		break;
+
+	case WP_VENOM:
+		mode = ADAPTIVE_TRIGGER_VIBRATION;
+		start = 0.20f; end = 0.0f; force = 0.70f;
+		break;
+
+	case WP_FLAMETHROWER:
+		// constant back-pressure while the fuel flows
+		mode = ADAPTIVE_TRIGGER_FEEDBACK;
+		start = 0.20f; end = 0.0f; force = 0.40f;
+		break;
+
+	case WP_TESLA:
+		mode = ADAPTIVE_TRIGGER_VIBRATION;
+		start = 0.30f; end = 0.0f; force = 0.55f;
+		break;
+
+	default:
+		mode = ADAPTIVE_TRIGGER_WEAPON;
+		start = 0.35f; end = 0.60f; force = 0.45f;
+		break;
+	}
+
+	// Right trigger is fire. Left is left free for aiming, which should not
+	// fight the player.
+	trap_HapticTrigger( 1, mode, start, end, force );
+	trap_HapticTrigger( 0, ADAPTIVE_TRIGGER_OFF, 0.0f, 0.0f, 0.0f );
+}

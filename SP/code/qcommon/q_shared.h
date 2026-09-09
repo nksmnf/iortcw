@@ -155,6 +155,13 @@ If you have questions concerning this license or the applicable additional terms
 #define HAPTIC_CAP_LED      2
 #define HAPTIC_CAP_GYRO     4
 #define HAPTIC_CAP_TOUCHPAD 8
+#define HAPTIC_CAP_ADAPTIVE 16
+
+// DualSense adaptive trigger modes, passed to the CG_HAPTIC_TRIGGER trap.
+#define ADAPTIVE_TRIGGER_OFF       0
+#define ADAPTIVE_TRIGGER_FEEDBACK  1   // constant resistance
+#define ADAPTIVE_TRIGGER_WEAPON    2   // resists, then breaks -- a trigger pull
+#define ADAPTIVE_TRIGGER_VIBRATION 3   // rattles, for automatics
 
 #if defined( ppc ) || defined( __ppc ) || defined( __ppc__ ) || defined( __POWERPC__ )
 #define idppc 1
