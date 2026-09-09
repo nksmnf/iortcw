@@ -1116,6 +1116,9 @@ void IN_Rumble( float lowFreq, float highFreq, int durationMs );
 void IN_SetControllerLED( int red, int green, int blue );
 int  IN_GetHapticCaps( void );
 void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
+#if TARGET_OS_IPHONE
+qboolean IN_IsSuspended( void );   // true while the app is backgrounded
+#endif
 
 /*
 ==============================================================

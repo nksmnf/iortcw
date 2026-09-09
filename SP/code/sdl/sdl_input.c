@@ -1530,6 +1530,72 @@ static void IN_ProcessEvents( void )
 IN_Frame
 ===============
 */
+#if TARGET_OS_IPHONE
+static qboolean iosSuspended = qfalse;
+
+// The renderer owns SDL_glContext, so stash the current one on the way out
+// rather than reaching into sdl_glimp.c for it.
+static SDL_GLContext iosSavedContext = NULL;
+
+/*
+===============
+IN_IOSAppEventWatch
+
+iOS kills an app that issues any GL command while backgrounded, and the
+drawable's storage is discarded when it goes away. Both have to be handled
+*synchronously*: once applicationDidEnterBackground: returns the process is
+frozen, so noticing the state change on the next poll of the event queue is
+already too late. Hence an event watch, which SDL calls from inside
+SDL_PumpEvents on the main thread, rather than a case in IN_ProcessEvents.
+===============
+*/
+static int SDLCALL IN_IOSAppEventWatch( void *userdata, SDL_Event *event )
+{
+	switch ( event->type )
+	{
+		case SDL_APP_WILLENTERBACKGROUND:
+			iosSuspended = qtrue;
+			iosSavedContext = SDL_GL_GetCurrentContext();
+			S_StopAllSounds();
+			break;
+
+		case SDL_APP_DIDENTERBACKGROUND:
+			// Finish what is already submitted and give up the context before
+			// we are frozen.
+			SDL_GL_MakeCurrent( SDL_window, NULL );
+			break;
+
+		case SDL_APP_WILLENTERFOREGROUND:
+			if ( iosSavedContext ) {
+				SDL_GL_MakeCurrent( SDL_window, iosSavedContext );
+			}
+			break;
+
+		case SDL_APP_DIDENTERFOREGROUND:
+			iosSuspended = qfalse;
+			break;
+
+		case SDL_APP_LOWMEMORY:
+			Com_Printf( "iOS: low memory warning\n" );
+			break;
+	}
+
+	return 0;
+}
+
+/*
+===============
+IN_IsSuspended
+
+Asked by the frame loop so it can idle instead of rendering while backgrounded.
+===============
+*/
+qboolean IN_IsSuspended( void )
+{
+	return iosSuspended;
+}
+#endif
+
 void IN_Frame( void )
 {
 	qboolean loading;
@@ -1640,6 +1706,11 @@ void IN_Init( void *windowData )
 	Cvar_SetValue( "com_minimized", appState & SDL_WINDOW_MINIMIZED );
 
 	IN_InitJoystick( );
+
+#if TARGET_OS_IPHONE
+	SDL_AddEventWatch( IN_IOSAppEventWatch, NULL );
+#endif
+
 	Com_DPrintf( "------------------------------------\n" );
 }
 
@@ -1650,6 +1721,10 @@ IN_Shutdown
 */
 void IN_Shutdown( void )
 {
+#if TARGET_OS_IPHONE
+	SDL_DelEventWatch( IN_IOSAppEventWatch, NULL );
+#endif
+
 	SDL_StopTextInput( );
 
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );

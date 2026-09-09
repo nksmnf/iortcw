@@ -2714,6 +2714,18 @@ void Com_Frame( void ) {
 		return;         // an ERR_DROP was thrown
 	}
 
+#if TARGET_OS_IPHONE
+	// Backgrounded: iOS terminates an app that touches GL while suspended, so do
+	// not run a frame at all. SDL still needs pumping, which is what keeps the
+	// foreground notification arriving, and the sleep stops this from becoming a
+	// busy loop the watchdog would notice.
+	if ( IN_IsSuspended() ) {
+		SDL_PumpEvents();
+		Sys_Sleep( 100 );
+		return;
+	}
+#endif
+
 	timeBeforeFirstEvents = 0;
 	timeBeforeServer = 0;
 	timeBeforeEvents = 0;
