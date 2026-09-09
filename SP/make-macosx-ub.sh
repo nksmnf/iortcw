@@ -1,5 +1,4 @@
 #!/bin/bash
-CC=gcc-4.0
 
 cd `dirname $0`
 if [ ! -f Makefile ]; then
@@ -7,101 +6,104 @@ if [ ! -f Makefile ]; then
 	exit 1
 fi
 
-# we want to use the oldest available SDK for max compatibility. However 10.4 and older
-# can not build 64bit binaries, making 10.5 the minimum version.   This has been tested 
-# with xcode 3.1 (xcode31_2199_developerdvd.dmg).  It contains the 10.5 SDK and a decent
-# enough gcc to actually compile iortcw
-# For PPC macs, G4's or better are required to run iortcw.
+# A universal binary means x86_64 + arm64 nowadays.  The ppc and 32 bit x86
+# slices this script used to build need the 10.5/10.6 SDKs from the Xcode 3
+# install disk (xcode31_2199_developerdvd.dmg) and a toolchain that can still
+# emit code for them, neither of which exists on a machine new enough to run
+# Apple Silicon binaries.  The bundled libraries in code/libs/macosx are fat
+# and do still carry ppc/i386 slices, so run make-macosx.sh on such an old
+# machine if that is what you need.
 
-unset X86_64_SDK
-unset X86_64_CFLAGS
-unset X86_64_MACOSX_VERSION_MIN
-unset X86_SDK
-unset X86_CFLAGS
-unset X86_MACOSX_VERSION_MIN
-unset PPC_SDK
-unset PPC_CFLAGS
-unset PPC_MACOSX_VERSION_MIN
+UB_ARCHS="x86_64 arm64"
+LIBSDIR=code/libs/macosx
+UB_LIBS="$LIBSDIR/libSDL2-2.0.0.dylib $LIBSDIR/libSDL2main.a $LIBSDIR/libopenal.dylib"
 
-if [ -d /Developer/SDKs/MacOSX10.5.sdk ]; then
-	X86_64_SDK=/Developer/SDKs/MacOSX10.5.sdk
-	X86_64_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.5.sdk"
-	X86_64_MACOSX_VERSION_MIN="10.5"
+# 11.0 is the first macOS release that runs on Apple Silicon and the toolchain
+# clamps anything older to it anyway.  x86_64 uses the same minimum version as
+# make-macosx.sh does.
+X86_64_MACOSX_VERSION_MIN="10.9"
+ARM64_MACOSX_VERSION_MIN="11.0"
 
-	X86_SDK=/Developer/SDKs/MacOSX10.5.sdk
-	X86_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.5.sdk"
-	X86_MACOSX_VERSION_MIN="10.5"
+CC=${CC:-cc}
 
-	PPC_SDK=/Developer/SDKs/MacOSX10.5.sdk
-	PPC_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.5.sdk"
-	PPC_MACOSX_VERSION_MIN="10.5"
-fi
+# make-macosx.sh wants the same architecture names the Makefile uses, but
+# uname -m says "i386" on 32 bit Intel and "Power Macintosh" on PPC
+HOST_ARCH=`uname -m`
+case "${HOST_ARCH}" in
+	i?86)			HOST_ARCH="x86" ;;
+	ppc*|*Power*)		HOST_ARCH="ppc" ;;
+esac
 
-# SDL 2.0.5+ (x86, x86_64) only supports MacOSX 10.6 and later
-if [ -d /Developer/SDKs/MacOSX10.6.sdk ]; then
-	X86_64_SDK=/Developer/SDKs/MacOSX10.6.sdk
-	X86_64_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.6.sdk"
-	X86_64_MACOSX_VERSION_MIN="10.6"
-
-	X86_SDK=/Developer/SDKs/MacOSX10.6.sdk
-	X86_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.6.sdk"
-	X86_MACOSX_VERSION_MIN="10.6"
-else
-	# Don't try to compile with 10.5 version min
-	X86_64_SDK=
-	X86_SDK=
-fi
-# end SDL 2.0.5
-
-if [ -z $X86_64_SDK ] || [ -z $X86_SDK ] || [ -z $PPC_SDK ]; then
+if ! command -v lipo > /dev/null; then
 	echo "\
-ERROR: This script is for building a Universal Binary.  You cannot build
-       for a different architecture unless you have the proper Mac OS X SDKs
-       installed.  If you just want to to compile for your own system run
-       'make-macosx.sh' instead of this script.
+ERROR: lipo is required to build a universal binary but it was not found.
+       Install the Xcode Command Line Tools with 'xcode-select --install',
+       or run 'make-macosx.sh ${HOST_ARCH}' to build for this machine only."
+	exit 1
+fi
 
-       In order to build a binary with maximum compatibility you must
-       build on Mac OS X 10.6 and have the MacOSX10.5 and MacOSX10.6
-       SDKs installed from the Xcode install disk Packages folder."
+# Only promise an architecture we can actually deliver: the compiler has to be
+# able to target it and the bundled libraries have to contain a matching slice.
+unset MISSING_ARCHS
+TESTDIR=`mktemp -d /tmp/iortcw-ub.XXXXXX` || exit 1
+
+for ARCH in $UB_ARCHS; do
+	if ! echo 'int main(void){return 0;}' | $CC -arch $ARCH -x c - -o "$TESTDIR/conftest" > /dev/null 2>&1; then
+		MISSING_ARCHS="${MISSING_ARCHS}
+       ${ARCH}: ${CC} can not build for this architecture"
+		continue
+	fi
+
+	for LIB in $UB_LIBS; do
+		if ! lipo -archs "$LIB" 2> /dev/null | grep -qw $ARCH; then
+			MISSING_ARCHS="${MISSING_ARCHS}
+       ${ARCH}: ${LIB} has no ${ARCH} slice"
+			break
+		fi
+	done
+done
+
+rm -rf "$TESTDIR"
+
+if [ -n "$MISSING_ARCHS" ]; then
+	echo "\
+ERROR: This script is for building a Universal Binary and it needs every one
+       of these architectures: $UB_ARCHS
+       The following are not available on this system:$MISSING_ARCHS
+
+       If you just want to compile for your own system run
+       'make-macosx.sh ${HOST_ARCH}' instead of this script."
 
 	exit 1
 fi
 
-echo "Building X86_64 Client/Dedicated Server against \"$X86_64_SDK\""
-echo "Building X86 Client/Dedicated Server against \"$X86_SDK\""
-echo "Building PPC Client/Dedicated Server against \"$PPC_SDK\""
+echo "Building a Universal Binary for: $UB_ARCHS"
 echo
 
 # For parallel make on multicore boxes...
 NCPU=`sysctl -n hw.ncpu`
 
-# x86_64 client and server
-#if [ -d build/release-release-x86_64 ]; then
-#	rm -r build/release-darwin-x86_64
-#fi
-(ARCH=x86_64 CC=gcc-4.0 CFLAGS=$X86_64_CFLAGS MACOSX_VERSION_MIN=$X86_64_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
+for ARCH in $UB_ARCHS; do
+	if [ $ARCH = "arm64" ]; then
+		ARCH_MACOSX_VERSION_MIN="$ARM64_MACOSX_VERSION_MIN"
+	else
+		ARCH_MACOSX_VERSION_MIN="$X86_64_MACOSX_VERSION_MIN"
+	fi
 
-echo;echo
+	echo "Building ${ARCH} Client/Dedicated Server for macOS ${ARCH_MACOSX_VERSION_MIN} and later against the default SDK"
 
-# x86 client and server
-#if [ -d build/release-darwin-x86 ]; then
-#	rm -r build/release-darwin-x86
-#fi
-(ARCH=x86 CC=gcc-4.0 CFLAGS=$X86_CFLAGS MACOSX_VERSION_MIN=$X86_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
+	#if [ -d build/release-darwin-${ARCH} ]; then
+	#	rm -r build/release-darwin-${ARCH}
+	#fi
+	(ARCH=${ARCH} MACOSX_VERSION_MIN=$ARCH_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
 
-echo;echo
-
-# PPC client and server
-#if [ -d build/release-darwin-ppc ]; then
-#	rm -r build/release-darwin-ppc
-#fi
-(ARCH=ppc CC=gcc-4.0 CFLAGS=$PPC_CFLAGS MACOSX_VERSION_MIN=$PPC_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
-
-echo
+	echo;echo
+done
 
 # use the following shell script to build a universal application bundle
-export MACOSX_DEPLOYMENT_TARGET="10.5"
-export MACOSX_DEPLOYMENT_TARGET_PPC="$PPC_MACOSX_VERSION_MIN"
-export MACOSX_DEPLOYMENT_TARGET_X86="$X86_MACOSX_VERSION_MIN"
+export MACOSX_DEPLOYMENT_TARGET="$X86_64_MACOSX_VERSION_MIN"
+export MACOSX_DEPLOYMENT_TARGET_PPC=
+export MACOSX_DEPLOYMENT_TARGET_X86=
 export MACOSX_DEPLOYMENT_TARGET_X86_64="$X86_64_MACOSX_VERSION_MIN"
+export MACOSX_DEPLOYMENT_TARGET_ARM64="$ARM64_MACOSX_VERSION_MIN"
 "./make-macosx-app.sh" release

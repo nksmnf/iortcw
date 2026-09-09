@@ -50,11 +50,13 @@ The original id software readme that accompanied the RTCW source release is name
 ##### For Windows,
   1. Please refer to the HOWTO-Build.txt file contained within this repository.
 
-##### For Mac OS X, building a Universal Binary
-  1. Install MacOSX SDK packages from XCode.  For maximum compatibility, use XCode 3.2.6 on 10.6 Snow Leopard with MacOSX10.5sdk.
-  2. Change to the directory containing the game source you wish to build.
-  3. Run './make-macosx-ub.sh'
-  4. Copy the resulting iowolfmp.app or iowolfsp.app in /build/release-darwin-ub to your /Applications/iortcw folder.
+##### For macOS
+  1. Install the Xcode Command Line Tools with `xcode-select --install`.  Nothing else is required: the vendored libraries are built from the source tree and the bundled SDL2 already includes an arm64 slice.
+  2. Change to the directory containing the game source you wish to build (MP or SP).
+  3. Run `./make-macosx.sh arm64` on Apple Silicon, or `./make-macosx.sh x86_64` on Intel.  (`make-macosx-ub.sh` builds an x86_64 + arm64 universal bundle instead; it needs only the Command Line Tools too.)
+  4. Copy the resulting iowolfmp.app or iowolfsp.app from `build/release-darwin-<arch>` (`build/release-darwin-universal` for a universal build) to your /Applications/iortcw folder, and put the 'main' data folder next to it.
+
+See HOWTO-Build.txt for the full macOS build instructions.
 
 ##### Installation, for *nix
   1. Set the COPYDIR variable in the shell to be where you installed RTCW

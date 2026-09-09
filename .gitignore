@@ -37,3 +37,17 @@ profile
 # Microsoft Visual Studio
 ####################
 *.sdf
+
+# clangd / CLion (JetBrains .idea/ is listed above)
+####################
+.cache/
+compile_commands.json
+cmake-build-*/
+
+# Visual Studio Code
+####################
+.vscode/
+
+# Claude Code
+####################
+.claude/settings.local.json

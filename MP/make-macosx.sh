@@ -26,7 +26,6 @@ else
 	exit 1
 fi
 
-CC=gcc-4.0
 DESTDIR=build/release-darwin-${BUILDARCH}
 
 cd `dirname $0`
@@ -40,6 +39,8 @@ fi
 # with xcode 3.1 (xcode31_2199_developerdvd.dmg).  It contains the 10.5 SDK and a decent
 # enough gcc to actually compile iortcw
 # For PPC macs, G4's or better are required to run iortcw.
+# Modern systems have no /Developer/SDKs at all, in which case the default SDK of
+# whatever compiler CC points at (clang from Xcode or the Command Line Tools) is used.
 
 unset ARCH_SDK
 unset ARCH_CFLAGS
@@ -48,10 +49,18 @@ unset ARCH_MACOSX_VERSION_MIN
 MACOS_VERSION=$(sw_vers -productVersion)
 MACOS_MAJOR_VER=$(echo $MACOS_VERSION | awk -F. '{print $1}')
 MACOS_MINOR_VER=$(echo $MACOS_VERSION | awk -F. '{print $2}')
+# macOS 11 and later are versioned "26.1" or even just "26", so the minor
+# version may be missing entirely
+MACOS_MINOR_VER=${MACOS_MINOR_VER:-0}
 
 # SDL 2.0.1 (ppc) supports MacOSX 10.5
 # SDL 2.0.5+ (x86, x86_64) supports MacOSX 10.6 and later
-if [ $BUILDARCH = "ppc" ]; then
+# SDL 2.0.14+ (arm64) supports MacOSX 11.0 and later
+if [ $BUILDARCH = "arm64" ]; then
+	# Apple Silicon did not exist before macOS 11.0 and the toolchain clamps
+	# anything older to it anyway
+	ARCH_MACOSX_VERSION_MIN="11.0"
+elif [ $BUILDARCH = "ppc" ]; then
 	if [ -d /Developer/SDKs/MacOSX10.5.sdk ]; then
 		ARCH_SDK=/Developer/SDKs/MacOSX10.5.sdk
 		ARCH_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.5.sdk"
@@ -61,14 +70,14 @@ elif [ -d /Developer/SDKs/MacOSX10.6.sdk ]; then
 	ARCH_SDK=/Developer/SDKs/MacOSX10.6.sdk
 	ARCH_CFLAGS="-isysroot /Developer/SDKs/MacOSX10.6.sdk"
 	ARCH_MACOSX_VERSION_MIN="10.6"
-elif [ $MACOS_MAJOR_VER == 10 ] && [ $MACOS_MINOR_VER >= 9 ] || [ $MACOS_MAJOR_VER > 10 ]; then
+elif [ $MACOS_MAJOR_VER -gt 10 ] || { [ $MACOS_MAJOR_VER -eq 10 ] && [ $MACOS_MINOR_VER -ge 9 ]; }; then
 	ARCH_MACOSX_VERSION_MIN="10.9"
 else
 	ARCH_MACOSX_VERSION_MIN="10.7"
 fi
 
 
-echo "Building ${BUILDARCH} Client/Dedicated Server against \"$ARCH_SDK\""
+echo "Building ${BUILDARCH} Client/Dedicated Server for macOS ${ARCH_MACOSX_VERSION_MIN} and later against ${ARCH_SDK:-the default SDK}"
 sleep 3
 
 if [ ! -d $DESTDIR ]; then
@@ -83,7 +92,7 @@ NCPU=`sysctl -n hw.ncpu`
 #if [ -d build/release-darwin-${BUILDARCH} ]; then
 #	rm -r build/release-darwin-${BUILDARCH}
 #fi
-(ARCH=${BUILDARCH} CFLAGS=$ARCH_CFLAGS MACOSX_VERSION_MIN=$ARCH_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
+(ARCH=${BUILDARCH} CFLAGS="$ARCH_CFLAGS" MACOSX_VERSION_MIN=$ARCH_MACOSX_VERSION_MIN make -j$NCPU) || exit 1;
 
 # use the following shell script to build an application bundle
 export MACOSX_DEPLOYMENT_TARGET="${ARCH_MACOSX_VERSION_MIN}"
