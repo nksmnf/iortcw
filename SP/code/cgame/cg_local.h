@@ -975,6 +975,11 @@ typedef struct {
 
 	// Duffy
 	qboolean cameraMode;        // if rendering from a camera
+
+	// Was a function-local static. The portal fog is only set up once, and "once"
+	// has to mean once per map: a game module linked into the engine keeps its
+	// statics across a level change, where cg is cleared.
+	qboolean portalFogInited;
 	// Duffy end
 
 	unsigned int cld;

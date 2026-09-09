@@ -1227,7 +1227,6 @@ void CG_DrawSkyBoxPortal( void ) {
 	char *token;
 	float zoomFov;
 	float f;
-	static qboolean foginited = qfalse; // only set the portal fog values once
 
 	if ( !( cstr = (char *)CG_ConfigString( CS_SKYBOXORG ) ) || !strlen( cstr ) ) {
 		// no skybox in this map
@@ -1310,12 +1309,12 @@ void CG_DrawSkyBoxPortal( void ) {
 					}
 
 					trap_R_SetFog( FOG_PORTALVIEW, fogStart, fogEnd, fogColor[0], fogColor[1], fogColor[2], 1.1 );
-					foginited = qtrue;
+					cg.portalFogInited = qtrue;
 				}
 			} else {
-				if ( !foginited ) {
+				if ( !cg.portalFogInited ) {
 					trap_R_SetFog( FOG_PORTALVIEW, 0,0,0,0,0,0 ); // init to null
-					foginited = qtrue;
+					cg.portalFogInited = qtrue;
 				}
 			}
 		}
