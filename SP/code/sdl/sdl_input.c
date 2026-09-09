@@ -1248,10 +1248,22 @@ void IN_Init( void *windowData )
 	in_mouse = Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
 	in_nograb = Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
 
+#if TARGET_OS_IPHONE
+	// A gamepad is the primary input device here, so it is on by default, and
+	// not latched: controllers get paired and unpaired while the game is
+	// running and requiring in_restart for that would be absurd.
+	in_joystick = Cvar_Get( "in_joystick", "1", CVAR_ARCHIVE );
+#else
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
+#endif
 	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
 
+#if !TARGET_OS_IPHONE
+	// On iOS this raises the on-screen keyboard and leaves it up over the game.
+	// Text entry there is driven from the launcher and the console instead, which
+	// call SDL_StartTextInput() when they actually need it.
 	SDL_StartTextInput( );
+#endif
 
 	mouseAvailable = ( in_mouse->value != 0 );
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );

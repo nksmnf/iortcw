@@ -40,7 +40,13 @@ function(iortcw_add_vm_module MOD)
 
     set(_out ${CMAKE_CURRENT_BINARY_DIR}/${MOD}.mod.o)
 
-    if(IORTCW_IOS)
+    if(IORTCW_IOS AND IORTCW_IOS_SIMULATOR)
+        # The simulator is a distinct platform to ld: passing plain "ios" here
+        # produces objects the simulator link then rejects as mismatched.
+        set(_platform_args -platform_version ios-simulator
+            ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
+        set(_sdk iphonesimulator)
+    elseif(IORTCW_IOS)
         set(_platform_args -platform_version ios
             ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
         set(_sdk iphoneos)
@@ -62,7 +68,11 @@ function(iortcw_add_vm_module MOD)
                 -all_load $<TARGET_FILE:${MOD}_static>
         DEPENDS ${MOD}_static
         COMMENT "Partial-linking ${MOD} into a single relocatable object"
-        VERBATIM
+        # No VERBATIM here on purpose. Under the Xcode generator TARGET_FILE
+        # expands to a path containing a literal ${EFFECTIVE_PLATFORM_NAME},
+        # which only Xcode's own build environment can resolve; VERBATIM would
+        # quote it and ld would look for a directory with the braces in its name.
+        COMMAND_EXPAND_LISTS
     )
 
     add_custom_target(${MOD}_mod DEPENDS ${_out})

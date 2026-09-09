@@ -32,6 +32,12 @@ else()
     set(IORTCW_IOS OFF)
 endif()
 
+if(IORTCW_IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(IORTCW_IOS_SIMULATOR ON)
+else()
+    set(IORTCW_IOS_SIMULATOR OFF)
+endif()
+
 if(NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES arm64)
 endif()
@@ -148,7 +154,11 @@ iortcw_abs(REND_SRC ${IORTCW_RENDERER_SOURCES})
 add_library(iortcw_renderer STATIC ${REND_SRC})
 target_link_libraries(iortcw_renderer PRIVATE iortcw_common)
 target_compile_definitions(iortcw_renderer PRIVATE USE_BLOOM)
-if(NOT IORTCW_IOS)
+if(IORTCW_IOS)
+    # GLimp lives in the renderer, so it needs SDL's headers. Linking the target
+    # is the tidy way to inherit them from FetchContent.
+    target_link_libraries(iortcw_renderer PRIVATE ${IORTCW_SDL_TARGET})
+else()
     target_include_directories(iortcw_renderer PRIVATE "${SP_DIR}/code/SDL2/include")
 endif()
 
@@ -191,6 +201,9 @@ target_include_directories(iortcw_engine PRIVATE
     "${SP_DIR}/code/libvorbis-1.3.6/lib"
     "${SP_DIR}/code/libogg-1.3.3/include"
 )
+if(IORTCW_IOS)
+    target_link_libraries(iortcw_engine PRIVATE ${IORTCW_SDL_TARGET})
+endif()
 
 # ---------------------------------------------------------------------------
 # Game modules, linked in rather than dlopen'd
@@ -221,6 +234,23 @@ if(IORTCW_IOS)
     set(APP_NAME iORTCW)
     add_executable(${APP_NAME} MACOSX_BUNDLE
         ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ})
+
+    set(IORTCW_BUNDLE_ID "com.iortcw.sp" CACHE STRING
+        "Bundle identifier. Keep it stable: AltStore preserves the app's
+         container -- and therefore the game data and saves -- only while the
+         bundle ID and signing team stay the same.")
+
+    set_target_properties(${APP_NAME} PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Info.plist.in"
+        MACOSX_BUNDLE_EXECUTABLE_NAME "${APP_NAME}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${IORTCW_BUNDLE_ID}"
+        MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.51"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${IORTCW_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "2"   # iPad
+        XCODE_ATTRIBUTE_ENABLE_BITCODE NO
+    )
 else()
     set(APP_NAME iowolfsp_cmake)
     add_executable(${APP_NAME}

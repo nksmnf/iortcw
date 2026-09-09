@@ -61,6 +61,7 @@ const char *Sys_IOS_AppPath( void );       // bundle resources, read-only
 void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
 qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
 void        Sys_IOS_InitAudioSession( void );
+void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its window
 #endif
 
 void Sys_GLimpSafeInit( void );

@@ -1063,6 +1063,12 @@ UGLY HACK:
 ==================
 */
 void Sys_DoStartProcess( char *cmdline ) {
+#if TARGET_OS_IPHONE
+	// A sandboxed app cannot spawn anything, and system() is not even declared
+	// on iOS. The only caller is the auto-update path, which does not apply to
+	// a sideloaded build -- AltStore handles updates.
+	Com_Printf( "Sys_DoStartProcess: ignoring '%s' (not possible on iOS)\n", cmdline );
+#else
 	switch ( fork() )
 	{
 	case - 1:
@@ -1085,6 +1091,7 @@ void Sys_DoStartProcess( char *cmdline ) {
 		_exit( 0 );
 		break;
 	}
+#endif
 }
 
 /*

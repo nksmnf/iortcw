@@ -45,8 +45,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AVFoundation/AVFoundation.h>
+// AVAudioSession lives in AVFAudio; importing only AVFoundation leaves the
+// category setters undeclared and they silently default to returning id.
+#import <AVFAudio/AVFAudio.h>
 #include <os/log.h>
+#include <SDL_hints.h>
 
 static char iosDataPath[MAX_OSPATH] = { 0 };
 static char iosAppPath[MAX_OSPATH] = { 0 };
@@ -167,7 +170,10 @@ void Sys_IOS_InitAudioSession( void )
 		NSError *err = nil;
 		AVAudioSession *session = [AVAudioSession sharedInstance];
 
+		// Note the mode: argument. There is no -setCategory:options:error:
+		// overload; calling it throws NSInvalidArgumentException at launch.
 		if ( ![session setCategory:AVAudioSessionCategoryPlayback
+							  mode:AVAudioSessionModeDefault
 						   options:AVAudioSessionCategoryOptionMixWithOthers
 							 error:&err] ) {
 			os_log_error( OS_LOG_DEFAULT, "iORTCW: audio session category failed: %{public}s",
@@ -179,6 +185,35 @@ void Sys_IOS_InitAudioSession( void )
 				[[err localizedDescription] UTF8String] );
 		}
 	}
+}
+
+/*
+==============
+Sys_IOS_InitSDLHints
+
+Hints that have to be set before SDL creates its window. The Info.plist
+orientation keys are not enough on their own: SDL's view controller decides
+what it will rotate to from this hint, and without it the game can come up in
+portrait on a landscape-only app.
+==============
+*/
+void Sys_IOS_InitSDLHints( void )
+{
+	SDL_SetHint( SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight" );
+
+	// Let the game draw under the home indicator and dim it after a moment,
+	// rather than reserving a strip of the screen for it.
+	SDL_SetHint( SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2" );
+
+	// Touch drives the mouse cursor for now, which is what makes the game's own
+	// menus usable before the touch overlay exists. Once the overlay queues its
+	// own events this should become 0 so the two do not both fire.
+	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "1" );
+
+	// PS5 controllers report their full feature set only when SDL is allowed to
+	// talk to them in enhanced mode.
+	SDL_SetHint( SDL_HINT_JOYSTICK_HIDAPI_PS5, "1" );
+	SDL_SetHint( SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1" );
 }
 
 /*

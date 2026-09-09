@@ -737,7 +737,16 @@ int main( int argc, char **argv )
 	// Set the initial time base
 	Sys_Milliseconds( );
 
-#ifdef __APPLE__
+#if TARGET_OS_IPHONE
+	// Create Documents/main and Documents/main/save before anything reads
+	// them, so the folder is already visible in Files.app the first time the
+	// user goes looking for somewhere to put their pk3s. Also set the audio
+	// session category, which has to happen before SDL_Init(SDL_INIT_AUDIO)
+	// or the game goes silent whenever the screen locks.
+	Sys_IOS_InitPaths( );
+	Sys_IOS_InitAudioSession( );
+	Sys_IOS_InitSDLHints( );
+#elif defined(__APPLE__)
 	// This is passed if we are launched by double-clicking
 	if ( argc >= 2 && Q_strncmp ( argv[1], "-psn", 4 ) == 0 )
 		argc = 1;
