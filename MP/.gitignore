@@ -4,6 +4,10 @@ Makefile.local
 *tags
 *~
 
+# Build output not under build/ ("make dist" -> $(CLIENTBIN)-$(VERSION).zip)
+####################
+/*.zip
+
 # OS X
 ####################
 .Spotlight-V100/
@@ -39,3 +43,17 @@ profile
 *.sdf
 *.opensdf
 *.suo
+
+# clangd / CLion (JetBrains .idea/ is listed above)
+####################
+.cache/
+compile_commands.json
+cmake-build-*/
+
+# Visual Studio Code
+####################
+.vscode/
+
+# Claude Code
+####################
+.claude/settings.local.json

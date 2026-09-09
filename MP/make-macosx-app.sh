@@ -32,6 +32,15 @@ else
 	exit 1
 fi
 
+# everything below this point looks for the Makefile, the build directory and
+# the bundle resources relative to the iortcw build directory
+cd `dirname $0`
+
+if [ ! -f Makefile ]; then
+	echo "$0 must be run from the iortcw build directory"
+	exit 1
+fi
+
 CURRENT_ARCH=""
 
 # validate the architecture if it was specified
@@ -142,6 +151,7 @@ if [ "${CURRENT_ARCH}" != "" ]; then
 fi
 
 AVAILABLE_ARCHS=""
+VALID_ARCHS=""
 
 IORTCW_VERSION=`grep '^VERSION=' Makefile | sed -e 's/.*=\(.*\)/\1/'`
 IORTCW_CLIENT_ARCHS=""
@@ -242,13 +252,6 @@ for ARCH in $SEARCH_ARCHS; do
 done
 
 # final preparations and checks before attempting to make the application bundle
-cd `dirname $0`
-
-if [ ! -f Makefile ]; then
-	echo "$0 must be run from the iortcw build directory"
-	exit 1
-fi
-
 if [ "${IORTCW_CLIENT_ARCHS}" == "" ]; then
 	echo "$0: no iortcw binary architectures were found for target '${TARGET_NAME}'"
 	exit 1
@@ -287,6 +290,18 @@ fi
 cp code/libs/macosx/*.dylib "${BUILT_PRODUCTS_DIR}/${EXECUTABLE_FOLDER_PATH}"
 cp ${ICNSDIR}/${ICNS} "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/$ICNS" || exit 1;
 echo -n ${PKGINFO} > "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/PkgInfo" || exit 1;
+
+# if the deployment target was not set by the script that called us, fall back
+# to the same defaults the Makefile uses for the architectures we are bundling.
+# arm64 only exists on macOS 11.0 and later, everything else can go back to 10.5
+if [ -z "${MACOSX_DEPLOYMENT_TARGET}" ]; then
+	MACOSX_DEPLOYMENT_TARGET="11.0"
+	for ARCH in ${VALID_ARCHS}; do
+		if [ "${ARCH}" != "arm64" ]; then
+			MACOSX_DEPLOYMENT_TARGET="10.5"
+		fi
+	done
+fi
 
 # create Info.Plist
 PLIST="<?xml version=\"1.0\" encoding=\"UTF-8\"?>

@@ -8,7 +8,7 @@ make
 Default is to build for your architecture, if you want to specify which architecture you want to build for use:
 ARCH=x86 make
 or
-ARCH-x86_64 make
+ARCH=x86_64 make
 
 To cross-compile for Windows, use the provided scripts:
 ./cross-make-mingw.sh
@@ -89,18 +89,205 @@ Output files will be in the 'build' folder.
 (So for a default Cygwin install the path would be: C:\Cygwin\home\Your_Username\iortcw\<game>\build\release-mingw32-<arch>)
 
 
-***Compiling under Mac***: (Universal binary)...Requires XCode3 to build PPC support, ideally under OSX 10.6.
-Use the provided script:
-./make-macosx-ub.sh
+***Compiling under macOS***:
+
+Prerequisites
+-------------
+
+The Xcode Command Line Tools are the only thing you need to install:
+
+xcode-select --install
+
+Full Xcode is not required, and neither is Homebrew, MacPorts or a system-wide
+SDL2 install. The Makefile defaults to USE_INTERNAL_LIBS=1, which builds zlib,
+libjpeg, freetype, libogg, libvorbis and opus from the copies vendored inside
+the source tree under <game>/code/, and links the client against the prebuilt
+SDL2 that also ships in the tree:
+
+<game>/code/libs/macosx/libSDL2-2.0.0.dylib
+
+That dylib -- along with libSDL2main.a and libopenal.dylib next to it -- is a fat
+binary carrying PowerPC, i386, x86_64 and arm64 slices, so it is usable as-is on
+both Apple Silicon and Intel Macs. You can confirm this yourself with:
+
+lipo -archs code/libs/macosx/libSDL2-2.0.0.dylib
+
+which prints 'ppc i386 x86_64 arm64'. libSDL2main.a reports the same four; on
+libopenal.dylib the PowerPC slice is the more specific 'ppc7400'.
+
+(Building with USE_INTERNAL_LIBS=0 instead makes the build look for an installed
+/Library/Frameworks/SDL2.framework and system copies of the other libraries.
+That is not the default and is not needed.)
 
 
-**Compiling under Mac***: (Terminal based apps)
-Use the appropriate build script based on the XCode version installed.
+Building
+--------
 
-./make-macosx_xcode3.sh <arch> (x86, x86_64, ppc)
-./make-macosx_xcode4.sh <arch> (x86, x86_64)
-./make-macosx_xcode5.sh <arch> (x86, x86_64)
+MP (Multi-Player) and SP (Single-Player) are two separate, self-contained source
+trees, each with its own Makefile. They are built independently, one at a time,
+from inside their own directory.
+
+For Multi-Player:
+
+cd MP
+
+or for Single-Player:
+
+cd SP
+
+Then, for Apple Silicon:
+
+make ARCH=arm64
+
+or for Intel:
+
+make ARCH=x86_64
+
+Plain 'make' with no ARCH builds for the architecture of the machine you are
+running on, so on an Apple Silicon Mac 'make' and 'make ARCH=arm64' do the same
+thing. Each invocation builds exactly one architecture; there is no universal
+binary by default.
+
+The Makefile chooses a default deployment target per architecture: 11.0 for
+arm64 (the oldest macOS release that runs on Apple Silicon) and 10.5 for
+everything else. Override it on the command line if you need something else,
+for example:
+
+make ARCH=x86_64 MACOSX_VERSION_MIN=10.13
 
 
-In all cases, output binaries will be located in the 'build' folder.
+Output
+------
 
+Everything is written to build/release-darwin-<arch>/ inside the tree you built,
+for example MP/build/release-darwin-arm64/, which contains:
+
+  iowolfmp.arm64                    the client
+  iowolfded.arm64                   the dedicated server
+  renderer_mp_opengl1_arm64.dylib   OpenGL 1.x renderer
+  renderer_mp_rend2_arm64.dylib     rend2 renderer
+  libSDL2-2.0.0.dylib               copied in from code/libs/macosx
+  main/cgame.mp.arm64.dylib         game code shared libraries
+  main/qagame.mp.arm64.dylib
+  main/ui.mp.arm64.dylib
+  main/vm/*.qvm                     game code QVMs
+
+SP produces the same layout with 'sp' in place of 'mp' (iowolfsp.arm64,
+renderer_sp_opengl1_arm64.dylib, main/cgame.sp.arm64.dylib and so on), except
+that it builds no dedicated server and no QVMs by default -- BUILD_SERVER and
+BUILD_GAME_QVM are 0 in the SP Makefile.
+
+
+Building an application bundle
+------------------------------
+
+./make-macosx.sh <arch>
+
+where <arch> is one of x86, x86_64, ppc or arm64, for example:
+
+./make-macosx.sh arm64
+
+This runs the same 'make' as above (in parallel over your CPUs, and choosing its
+own deployment target) and then additionally runs make-macosx-app.sh, which
+assembles the freshly built binaries, renderers, game libraries and SDL2 into a
+double-clickable application bundle. The bundle is written alongside the
+binaries as:
+
+build/release-darwin-<arch>/iowolfmp.app     (SP: iowolfsp.app)
+
+There is also ./make-macosx-ub.sh, which builds x86_64 and arm64 in turn and
+merges them into a single universal bundle in build/release-darwin-universal/.
+It needs nothing that make-macosx.sh does not, the Command Line Tools are
+enough, and it never looks for an SDK under /Developer. Before building it
+checks that lipo is installed, that the compiler can really produce code for
+each of the two architectures (it compiles a throwaway test program with -arch),
+and that every bundled library in code/libs/macosx has a matching slice; if any
+of that fails it stops and names what was missing. It does not build the old ppc
+and 32 bit x86 slices, which need the Xcode 3 SDKs; use make-macosx.sh on a
+machine old enough to have those.
+
+The bundle contains program code only. The game still needs the retail Return to
+Castle Wolfenstein .pk3 data files, and when the engine is started from a bundle
+it strips the .app off its own path to find them -- so the 'main' data folder
+goes next to iowolfmp.app / iowolfsp.app, not inside it. See "Game data" below.
+
+
+Game data
+---------
+
+Nothing in this repository is game content: the build produces program code
+only. Run a freshly built client or dedicated server and it exits at once with
+
+  "pak0.pk3" is missing. Please copy it
+  from your legitimate RTCW CDROM.
+
+The data comes from a retail Return to Castle Wolfenstein installation (the
+original CDROM, or the Steam or GOG release) together with the free 1.41 point
+release. README.md's Quick Start Guide walks through the copying; the files the
+engine itself refuses to start without are
+
+  MP:  main/pak0.pk3 and main/mp_pak0.pk3 ... main/mp_pak5.pk3
+  SP:  main/pak0.pk3 and main/sp_pak1.pk3 ... main/sp_pak4.pk3
+
+pak0.pk3 is the retail media and is the same file for both trees; the mp_pak*
+and sp_pak* files come with the 1.41 point release (sp_pak4.pk3 is from the Game
+of the Year edition). MP also loads the mp_pakmaps*.pk3 map packs. The folder is
+always called 'main' -- that is BASEGAME in code/qcommon/q_shared.h.
+
+The engine looks in two places for it and merges what it finds in both:
+
+- fs_basepath, a 'main' directory next to the program. That is the directory
+  the executable sits in, except that a trailing .app/Contents/MacOS is
+  stripped off first (Sys_StripAppBundle in code/sys/sys_osx.m), so for a
+  bundle the data goes beside iowolfmp.app / iowolfsp.app and not inside it.
+  For a build left where it was made that directory is
+
+    build/release-darwin-arm64/main/
+
+- fs_homepath, a per-user copy under your home directory, which on macOS is
+
+    ~/Library/Application Support/RTCW/main/
+
+  'RTCW' is HOMEPATH_NAME_MACOSX in code/qcommon/q_shared.h and is the same
+  directory for MP and SP; only the files written into it differ
+  (wolfconfig_mp.cfg for the MP client, wolfconfig.cfg for SP,
+  wolfconfig_server.cfg for a dedicated server). Everything the engine writes
+  for itself goes here -- configuration, screenshots, demos, downloaded pk3s --
+  and it is searched before fs_basepath, so a pk3 here takes precedence over one
+  of the same name next to the program.
+
+There is no need to guess: the engine prints the directories it will search when
+it starts up, for example
+
+  cd MP/build/release-darwin-arm64
+  ./iowolfded.arm64 +set dedicated 1
+
+  ----- FS_Startup -----
+  Current search path:
+  /Users/<you>/Library/Application Support/RTCW/main
+  ./main
+
+Started from inside a bundle the engine adds that bundle's own
+Contents/MacOS/main to the list as well (fs_apppath). That is where
+make-macosx-app.sh puts the game code libraries; it is not where the .pk3 files
+belong.
+
+
+A note on Gatekeeper
+--------------------
+
+Nothing in the build is code-signed with a Developer ID; the scripts do no
+codesigning at all. For a copy you built yourself this is normally invisible:
+macOS attaches the com.apple.quarantine attribute to files that arrive from
+somewhere else (a download, AirDrop, a mail attachment), not to files produced
+locally, so a bundle that was just built on your own machine opens normally. On
+Apple Silicon the linker gives every binary it produces an ad-hoc signature
+automatically, which is all that is needed to run it locally.
+
+If you move the bundle to another Mac, or zip it up, upload it and download it
+again, it will pick up the quarantine flag and Gatekeeper will refuse to open it
+because it is from an "unidentified developer". In that case either right-click
+the bundle and choose Open (and confirm), or allow it afterwards under
+System Settings -> Privacy & Security, or clear the flag from a terminal:
+
+xattr -dr com.apple.quarantine /path/to/iowolfmp.app
