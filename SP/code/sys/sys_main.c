@@ -100,7 +100,14 @@ Sys_DefaultAppPath
 */
 char *Sys_DefaultAppPath(void)
 {
+#if TARGET_OS_IPHONE
+	// Read-only bundle resources, searched below the writable Documents tree.
+	// Anything we ship with the app (as opposed to what the user copies in)
+	// lives here.
+	return (char *)Sys_IOS_AppPath();
+#else
 	return Sys_BinaryPath();
+#endif
 }
 
 /*
@@ -643,7 +650,13 @@ void Sys_ParseArgs( int argc, char **argv )
 }
 
 #ifndef DEFAULT_BASEDIR
-#	ifdef __APPLE__
+#	if TARGET_OS_IPHONE
+		// The bundle is read-only, so the base directory has to be the writable
+		// Documents container -- the same place as fs_homepath. FS_Startup skips
+		// adding the homepath when it equals the basepath, so the pk3s are
+		// indexed once rather than twice.
+#		define DEFAULT_BASEDIR Sys_IOS_DataPath()
+#	elif defined(__APPLE__)
 #		define DEFAULT_BASEDIR Sys_StripAppBundle(Sys_BinaryPath())
 #	else
 #		define DEFAULT_BASEDIR Sys_BinaryPath()
@@ -724,7 +737,23 @@ int main( int argc, char **argv )
 	// Set the initial time base
 	Sys_Milliseconds( );
 
-#ifdef __APPLE__
+#if TARGET_OS_IPHONE
+	// Create Documents/main and Documents/main/save before anything reads
+	// them, so the folder is already visible in Files.app the first time the
+	// user goes looking for somewhere to put their pk3s. Also set the audio
+	// session category, which has to happen before SDL_Init(SDL_INIT_AUDIO)
+	// or the game goes silent whenever the screen locks.
+	Sys_IOS_InitPaths( );
+	Sys_IOS_InitAudioSession( );
+	Sys_IOS_InitSDLHints( );
+
+	// The launcher runs before Com_Init. SDL's delegate has finished launching
+	// by now, so UIKit and the runloop are live, but SDL has not created its
+	// window yet (that happens inside Com_Init), so there is nothing to fight
+	// over. It also catches the missing-game-data case here, where we can
+	// explain it, rather than in FS_Startup, where it is a fatal error.
+	IOSLauncher_RunModal();
+#elif defined(__APPLE__)
 	// This is passed if we are launched by double-clicking
 	if ( argc >= 2 && Q_strncmp ( argv[1], "-psn", 4 ) == 0 )
 		argc = 1;
@@ -748,6 +777,14 @@ int main( int argc, char **argv )
 
 		Q_strcat( commandLine, sizeof( commandLine ), " " );
 	}
+
+#if TARGET_OS_IPHONE
+	// Settings that are read before any config is exec'd have to arrive as
+	// arguments: Com_InitHunkMemory consumes com_hunkMegs before default.cfg
+	// runs, and net_enabled must be off from the start or iOS puts up the Local
+	// Network permission prompt for a single-player game.
+	Q_strcat( commandLine, sizeof( commandLine ), IOSBridge_BuildCommandLine() );
+#endif
 
 	CON_Init( );
 	Com_Init( commandLine );

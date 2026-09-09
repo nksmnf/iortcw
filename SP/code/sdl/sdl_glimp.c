@@ -36,10 +36,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "sdl_icon.h"
 
 #ifdef USE_OPENGLES
+#if !defined(__APPLE__)
+// Apple has no EGL; the context comes from EAGL via SDL's UIKit backend.
 #ifdef USE_LOCAL_HEADERS
 #	include "EGL/egl.h"
 #else
 #	include <EGL/egl.h>
+#endif
 #endif
 void myglMultiTexCoord2f( GLenum texture, GLfloat s, GLfloat t )
 {
@@ -505,6 +508,18 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 
 	ri.Printf (PRINT_ALL, "...setting mode %d:", mode );
 
+#if TARGET_OS_IPHONE
+	// There is one screen and no window mode, so the requested r_mode is never
+	// what we want. It also cannot simply be defaulted: r_mode is CVAR_LATCH and
+	// default.cfg inside pak0.pk3 sets it to 3 before the renderer registers the
+	// cvar, so the config always wins. Force the native resolution instead.
+	if ( mode != -2 ) {
+		ri.Printf( PRINT_ALL, " (ignored on iOS, using native resolution)" );
+		mode = -2;
+	}
+	fullscreen = qtrue;
+#endif
+
 	if (mode == -2)
 	{
 		// use desktop video resolution
@@ -552,6 +567,14 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 		SDL_DestroyWindow( SDL_window );
 		SDL_window = NULL;
 	}
+
+#if TARGET_OS_IPHONE
+	// Without this the CAEAGLLayer is created at contentsScale 1 and the game
+	// renders at point resolution (1376x1032 here) before being stretched over a
+	// 2064x2752 panel, which looks soft. With it we get the real pixel size and
+	// glConfig is taken from SDL_GL_GetDrawableSize below.
+	flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
 
 	if( fullscreen )
 	{
@@ -817,6 +840,26 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 
 		ri.Printf( PRINT_ALL, "Using %d color bits, %d depth, %d stencil display.\n",
 				glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits );
+
+#if TARGET_OS_IPHONE
+		{
+			// With SDL_WINDOW_ALLOW_HIGHDPI the drawable is larger than the
+			// window in points, and everything downstream (viewport, 2D layout,
+			// the mouse/touch scaling) works in glConfig units, so take the real
+			// pixel size here. r_hidpi 0 keeps the point-sized drawable, which
+			// is a cheap way to trade sharpness for frame rate.
+			int dw = 0, dh = 0;
+
+			SDL_GL_GetDrawableSize( SDL_window, &dw, &dh );
+
+			if ( dw > 0 && dh > 0 && r_hidpi->integer ) {
+				glConfig.vidWidth = dw;
+				glConfig.vidHeight = dh;
+				glConfig.windowAspect = (float)dw / (float)dh;
+				ri.Printf( PRINT_ALL, "Retina drawable: %d x %d\n", dw, dh );
+			}
+		}
+#endif
 		break;
 	}
 

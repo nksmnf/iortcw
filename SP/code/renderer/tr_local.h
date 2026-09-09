@@ -46,7 +46,9 @@ QGL_3_0_PROCS;
 #undef GLE
 
 #ifdef USE_OPENGLES
-#ifdef USE_LOCAL_HEADERS
+#if defined(__APPLE__)
+// Already pulled in by qgl.h from <OpenGLES/ES1/...>; Apple has no GLES/ prefix.
+#elif defined(USE_LOCAL_HEADERS)
 #	include "GLES/glext.h"
 #else
 #	include <GLES/glext.h>
@@ -1210,6 +1212,7 @@ extern cvar_t  *r_showcluster;
 extern cvar_t   *r_mode;                // video mode
 extern cvar_t   *r_fullscreen;
 extern cvar_t	*r_noborder;
+extern cvar_t	*r_hidpi;             // iOS: render at native pixel size rather than points
 extern cvar_t   *r_gamma;
 extern cvar_t   *r_ignorehwgamma;       // overrides hardware gamma capabilities
 extern cvar_t	*r_displayRefresh;		// optional display refresh option

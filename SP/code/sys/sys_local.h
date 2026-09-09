@@ -54,6 +54,29 @@ unsigned int CON_LogRead( char *out, unsigned int outSize );
 char *Sys_StripAppBundle( char *pwd );
 #endif
 
+#if TARGET_OS_IPHONE
+// implemented in ios/Sources/sys_ios.m
+const char *Sys_IOS_DataPath( void );      // <container>/Documents, read/write
+const char *Sys_IOS_AppPath( void );       // bundle resources, read-only
+void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
+qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
+void        Sys_IOS_InitAudioSession( void );
+void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its window
+// ios_dualsense.m -- adaptive triggers, which SDL does not expose
+void        Sys_IOS_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
+qboolean    Sys_IOS_HasAdaptiveTriggers( void );
+
+// ios_touch.m -- on-screen controls, shown only when no controller is attached
+void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
+void        Sys_IOS_TouchOverlayUpdate( void );
+void        Sys_IOS_TouchOverlayShutdown( void );
+
+// Launcher (Swift, via @_cdecl) and its C-side bridge
+void        IOSLauncher_RunModal( void );
+void        IOSLauncher_Show( void );
+const char *IOSBridge_BuildCommandLine( void );
+#endif
+
 void Sys_GLimpSafeInit( void );
 void Sys_GLimpInit( void );
 void Sys_PlatformInit( void );

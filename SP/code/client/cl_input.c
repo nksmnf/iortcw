@@ -471,6 +471,17 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	}
 
 	cmd->upmove = ClampChar( cmd->upmove + (int)up );
+
+	// Gyro aiming, added on top of the sticks rather than replacing them: the
+	// stick makes the large turns and the gyro does the fine correction, which
+	// is how gyro aim is normally played.
+	//
+	// The same anglespeed scaling applies, and here it is not a compromise --
+	// the gyro reports an angular rate, so angle = rate * dt is exactly right.
+	if ( cl.joystickAxis[AXIS_GYRO_PITCH] || cl.joystickAxis[AXIS_GYRO_YAW] ) {
+		cl.viewangles[YAW]   += anglespeed * j_yaw->value   * cl.joystickAxis[AXIS_GYRO_YAW];
+		cl.viewangles[PITCH] += anglespeed * j_pitch->value * cl.joystickAxis[AXIS_GYRO_PITCH];
+	}
 }
 
 /*

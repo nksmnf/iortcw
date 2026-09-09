@@ -303,6 +303,16 @@ typedef enum {
 	K_PAD0_PADDLE4,  /* Xbox Elite paddle P4 */
 	K_PAD0_TOUCHPAD, /* PS4/PS5 touchpad button */
 
+	// Extended DualSense input. These sit after the SDL-ordered block above so
+	// the K_PAD0_A + i arithmetic in IN_GamepadMove() is unaffected.
+	K_PAD0_TOUCH_TAP,          /* tap on the touchpad surface, as opposed to clicking it */
+	K_PAD0_TOUCH_SWIPE_LEFT,
+	K_PAD0_TOUCH_SWIPE_RIGHT,
+	K_PAD0_TOUCH_SWIPE_UP,
+	K_PAD0_TOUCH_SWIPE_DOWN,
+	K_PAD0_LEFTTRIGGER_HARD,   /* second stage of the analogue trigger: K_PAD0_LEFTTRIGGER */
+	K_PAD0_RIGHTTRIGGER_HARD,  /* fires at the soft threshold, _HARD at the deeper one */
+
 	// Pseudo-key that brings the console down
 	K_CONSOLE,
 

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+	<key>CFBundleIdentifier</key>
+	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundleDisplayName</key>
+	<string>iORTCW</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+	<key>CFBundleVersion</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+
+	<!-- Files.app integration. This is how the user gets ~637MB of retail pk3s
+	     onto the device: the app's Documents folder shows up as "iORTCW" under
+	     On My iPad, and they drop pak0.pk3 and sp_pak1..4.pk3 into main/.
+	     Without both of these keys the folder is invisible. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<!-- Landscape only, and never in Split View: sharing the screen would resize
+	     the GL surface out from under the renderer. -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<!-- Both keys. SDL's view controller falls back to the unsuffixed one when
+	     no orientation hint is set, and the system needs the ~ipad variant to
+	     win on iPad. Listing only ~ipad leaves the app rotatable to portrait. -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+
+	<!-- Required to exceed 60fps on a ProMotion display. Without it the iPad Pro
+	     caps the app at 60 regardless of com_maxfps. -->
+	<key>CADisableMinimumFrameDuration</key>
+	<true/>
+
+	<!-- Game controllers. GCSupportsControllerUserInteraction is deliberately
+	     false: we want raw input, not the system's menu-navigation layer
+	     intercepting the D-pad and face buttons. -->
+	<key>GCSupportsControllerUserInteraction</key>
+	<false/>
+	<key>GCSupportsMultipleMicroGamepads</key>
+	<false/>
+	<key>GCSupportedGameControllers</key>
+	<array>
+		<dict>
+			<key>ProfileName</key>
+			<string>ExtendedGamepad</string>
+		</dict>
+	</array>
+
+	<!-- Lets a Magic Keyboard trackpad deliver relative mouse motion, which the
+	     engine's existing SDL_SetRelativeMouseMode path then picks up for free. -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- An empty UILaunchScreen dictionary still counts as a launch screen. Omit
+	     it entirely and iOS runs the app in compatibility mode at a legacy
+	     resolution, which shows up as an unexplained letterboxed 1024x768
+	     surface rather than as any kind of error. -->
+	<key>UILaunchScreen</key>
+	<dict/>
+
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+		<!-- There is no "opengles-1" capability key; ES 1.1 is served by the
+		     same driver stack as ES 2. -->
+		<string>opengles-2</string>
+	</array>
+
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

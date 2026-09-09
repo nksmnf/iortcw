@@ -70,7 +70,13 @@ char *Sys_DefaultHomePath(void)
 
 	if( !*homePath && com_homepath != NULL )
 	{
-#ifdef __APPLE__
+#if TARGET_OS_IPHONE
+		// The app sandbox has exactly one writable place worth using, and
+		// Documents/ is the one Files.app exposes, so the user can drop their
+		// retail pk3s in without any transfer tooling. sys_ios.m owns the path
+		// and creates main/ and main/save/ before the engine starts.
+		Q_strncpyz( homePath, Sys_IOS_DataPath(), sizeof( homePath ) );
+#elif defined(__APPLE__)
 		if( ( p1 = getenv( "HOME" ) ) != NULL )
 		{
 			Com_sprintf(homePath, sizeof(homePath), "%s%c", p1, PATH_SEP);
@@ -906,7 +912,11 @@ void Sys_PlatformInit( void )
 
 	signal( SIGHUP, Sys_SigHandler );
 	signal( SIGQUIT, Sys_SigHandler );
+#if !TARGET_OS_IPHONE
+	// SIGTRAP is how the debugger stops the process on iOS; catching it turns
+	// every breakpoint into an engine shutdown.
 	signal( SIGTRAP, Sys_SigHandler );
+#endif
 	signal( SIGABRT, Sys_SigHandler );
 	signal( SIGBUS, Sys_SigHandler );
 
@@ -1053,6 +1063,12 @@ UGLY HACK:
 ==================
 */
 void Sys_DoStartProcess( char *cmdline ) {
+#if TARGET_OS_IPHONE
+	// A sandboxed app cannot spawn anything, and system() is not even declared
+	// on iOS. The only caller is the auto-update path, which does not apply to
+	// a sideloaded build -- AltStore handles updates.
+	Com_Printf( "Sys_DoStartProcess: ignoring '%s' (not possible on iOS)\n", cmdline );
+#else
 	switch ( fork() )
 	{
 	case - 1:
@@ -1075,6 +1091,7 @@ void Sys_DoStartProcess( char *cmdline ) {
 		_exit( 0 );
 		break;
 	}
+#endif
 }
 
 /*

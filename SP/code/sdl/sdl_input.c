@@ -26,6 +26,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #	include <SDL.h>
 #endif
 
+#if TARGET_OS_IPHONE
+#ifdef USE_LOCAL_HEADERS
+#	include "SDL_syswm.h"
+#else
+#	include <SDL_syswm.h>
+#endif
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +60,17 @@ static cvar_t *in_joystick          = NULL;
 static cvar_t *in_joystickThreshold = NULL;
 static cvar_t *in_joystickNo        = NULL;
 static cvar_t *in_joystickUseAnalog = NULL;
+
+// DualSense (and any other controller that exposes the same features).
+static cvar_t *in_gyro              = NULL;  // 0 off, 1 always on, 2 only while aiming
+static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt
+static cvar_t *in_gyroDeadzone      = NULL;  // rad/s below which tilt is ignored
+static cvar_t *in_touchpad          = NULL;  // 0 off, 1 gestures, 2 gestures + drag-to-look
+static cvar_t *in_touchpadSens      = NULL;
+static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts as pressed
+static cvar_t *in_triggerHard       = NULL;  // deeper threshold, bound separately
+static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
+static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
 
 static int vidRestartTime = 0;
 
@@ -443,7 +462,32 @@ struct
 	unsigned int oldaxes;
 	int oldaaxes[MAX_JOYSTICK_AXIS];
 	unsigned int oldhats;
+
+	// Second stage of the analogue triggers, tracked separately from the
+	// K_PAD0_*TRIGGER keys the axis loop already emits at the soft threshold.
+	qboolean triggerHard[2];
+
+	// Touchpad. SDL reports normalised 0..1 coordinates per finger; we keep the
+	// press origin so a release can be classified as a tap or a swipe.
+	qboolean touchDown;
+	float    touchStartX, touchStartY;
+	float    touchLastX, touchLastY;
+	int      touchStartTime;
+	qboolean touchSwiped;      // a swipe already fired for this contact
 } stick_state;
+
+// The controller's own feature set, queried once when it is opened.
+static struct
+{
+	qboolean hasGyro;
+	qboolean hasRumble;
+	qboolean hasLED;
+	int      numTouchpads;
+} gamepadCaps;
+
+static void IN_GamepadTriggers( void );
+static void IN_GamepadTouchpad( void );
+static void IN_GamepadGyro( void );
 
 
 /*
@@ -540,8 +584,139 @@ static void IN_InitJoystick( void )
 	Com_DPrintf( "Use Analog: %s\n", in_joystickUseAnalog->integer ? "Yes" : "No" );
 	Com_DPrintf( "Is gamepad: %s\n", gamepad ? "Yes" : "No" );
 
+	Com_Memset( &gamepadCaps, 0, sizeof( gamepadCaps ) );
+
+	if ( gamepad )
+	{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+		gamepadCaps.numTouchpads = SDL_GameControllerGetNumTouchpads( gamepad );
+		gamepadCaps.hasRumble    = SDL_GameControllerRumble( gamepad, 0, 0, 0 ) == 0;
+		gamepadCaps.hasLED       = SDL_GameControllerHasLED( gamepad );
+		gamepadCaps.hasGyro      = SDL_GameControllerHasSensor( gamepad, SDL_SENSOR_GYRO );
+
+		if ( gamepadCaps.hasGyro ) {
+			// The sensor stays enabled for the life of the controller; in_gyro
+			// decides whether its samples are actually used, so toggling the
+			// cvar takes effect immediately rather than needing a reconnect.
+			SDL_GameControllerSetSensorEnabled( gamepad, SDL_SENSOR_GYRO, SDL_TRUE );
+		}
+
+		Com_Printf( "Gamepad: %s%s%s%s\n",
+			gamepadCaps.numTouchpads ? "touchpad " : "",
+			gamepadCaps.hasGyro      ? "gyro "     : "",
+			gamepadCaps.hasRumble    ? "rumble "   : "",
+			gamepadCaps.hasLED       ? "led"       : "" );
+#endif
+	}
+
 	SDL_JoystickEventState(SDL_QUERY);
 	SDL_GameControllerEventState(SDL_QUERY);
+}
+
+/*
+===============
+IN_Rumble
+
+Drives the controller's motors. lowFreq/highFreq are 0..1; duration is in
+milliseconds. Called from the client on behalf of cgame (trap CG_HAPTIC_RUMBLE)
+and always on the main thread, which matters because SDL's rumble path is not
+safe to call from a notification callback.
+===============
+*/
+void IN_Rumble( float lowFreq, float highFreq, int durationMs )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 9 )
+	float scale;
+
+	if ( !gamepad || !gamepadCaps.hasRumble || !in_rumble )
+		return;
+
+	scale = in_rumble->value * 0.01f;
+
+	if ( scale <= 0.0f )
+		return;
+
+	if ( scale > 1.0f )
+		scale = 1.0f;
+
+	lowFreq  = Com_Clamp( 0.0f, 1.0f, lowFreq  * scale );
+	highFreq = Com_Clamp( 0.0f, 1.0f, highFreq * scale );
+
+	SDL_GameControllerRumble( gamepad,
+		(Uint16)( lowFreq  * 65535.0f ),
+		(Uint16)( highFreq * 65535.0f ),
+		durationMs );
+#endif
+}
+
+/*
+===============
+IN_SetAdaptiveTrigger
+
+DualSense adaptive triggers. SDL has no API for these, so on iOS this hands off
+to ios_dualsense.m, which drives GameController.framework directly. Elsewhere it
+is a no-op -- on macOS SDL's HIDAPI backend claims the device exclusively, so
+GameController never sees it.
+===============
+*/
+void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force )
+{
+#if TARGET_OS_IPHONE
+	if ( !gamepad ) {
+		return;
+	}
+
+	Sys_IOS_SetAdaptiveTrigger( side, mode, start, end, force );
+#endif
+}
+
+/*
+===============
+IN_GetHapticCaps
+
+What the currently open controller can actually do, so cgame can skip building
+effects for hardware that will ignore them.
+===============
+*/
+int IN_GetHapticCaps( void )
+{
+	int caps = 0;
+
+	if ( !gamepad )
+		return 0;
+
+	if ( gamepadCaps.hasRumble )
+		caps |= HAPTIC_CAP_RUMBLE;
+	if ( gamepadCaps.hasLED )
+		caps |= HAPTIC_CAP_LED;
+	if ( gamepadCaps.hasGyro )
+		caps |= HAPTIC_CAP_GYRO;
+	if ( gamepadCaps.numTouchpads > 0 )
+		caps |= HAPTIC_CAP_TOUCHPAD;
+#if TARGET_OS_IPHONE
+	if ( Sys_IOS_HasAdaptiveTriggers() )
+		caps |= HAPTIC_CAP_ADAPTIVE;
+#endif
+
+	return caps;
+}
+
+/*
+===============
+IN_SetControllerLED
+
+Tints the DualSense light bar. The client drives this from player health, which
+gives a peripheral damage cue that costs nothing on screen.
+===============
+*/
+void IN_SetControllerLED( int red, int green, int blue )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	if ( !gamepad || !gamepadCaps.hasLED || !in_ledFeedback || !in_ledFeedback->integer )
+		return;
+
+	SDL_GameControllerSetLED( gamepad, (Uint8)red, (Uint8)green, (Uint8)blue );
+#endif
 }
 
 /*
@@ -775,6 +950,189 @@ static void IN_GamepadMove( void )
 				Com_QueueEvent(in_eventTime, SE_JOYSTICK_AXIS, i, translatedAxes[i], 0, NULL);
 		}
 	}
+
+	IN_GamepadTriggers();
+	IN_GamepadTouchpad();
+	IN_GamepadGyro();
+}
+
+/*
+===============
+IN_GamepadTriggers
+
+Second stage for the analogue triggers. The axis loop above already emits
+K_PAD0_LEFTTRIGGER / K_PAD0_RIGHTTRIGGER once the trigger passes the shared
+deadzone; this adds a deeper threshold on its own keys, so a weapon can be
+aimed at a half pull and fired at a full one.
+===============
+*/
+static void IN_GamepadTriggers( void )
+{
+	const int axes[2] = { SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT };
+	const int keys[2] = { K_PAD0_LEFTTRIGGER_HARD, K_PAD0_RIGHTTRIGGER_HARD };
+	float hard;
+	int i;
+
+	if ( !in_triggerHard )
+		return;
+
+	hard = Com_Clamp( 0.05f, 1.0f, in_triggerHard->value );
+
+	for ( i = 0; i < 2; i++ )
+	{
+		float value = (float)SDL_GameControllerGetAxis( gamepad, axes[i] ) / 32767.0f;
+		qboolean down = ( value >= hard ) ? qtrue : qfalse;
+
+		if ( down != stick_state.triggerHard[i] )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, keys[i], down, 0, NULL );
+			stick_state.triggerHard[i] = down;
+		}
+	}
+}
+
+/*
+===============
+IN_GamepadTouchpad
+
+The DualSense touchpad, read by polling rather than through events so it fits
+the rest of this file (SDL_GameControllerEventState is SDL_QUERY here).
+
+A short contact that barely moves is a tap; a longer drag past a threshold is a
+swipe, reported once per contact so holding a finger still after swiping does
+not repeat. With in_touchpad 2 the raw motion additionally drives the view,
+which is handy for the objectives and notebook screens.
+===============
+*/
+static void IN_GamepadTouchpad( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	const float swipeThreshold = 0.18f;   // fraction of the pad's width
+	const int   tapMaxTime = 250;         // ms
+	const float tapMaxMove = 0.05f;
+
+	Uint8 state = 0;
+	float x = 0.0f, y = 0.0f, pressure = 0.0f;
+
+	if ( !in_touchpad || !in_touchpad->integer || gamepadCaps.numTouchpads <= 0 )
+		return;
+
+	if ( SDL_GameControllerGetTouchpadFinger( gamepad, 0, 0, &state, &x, &y, &pressure ) != 0 )
+		return;
+
+	if ( state && !stick_state.touchDown )
+	{
+		// finger down
+		stick_state.touchDown = qtrue;
+		stick_state.touchSwiped = qfalse;
+		stick_state.touchStartX = stick_state.touchLastX = x;
+		stick_state.touchStartY = stick_state.touchLastY = y;
+		stick_state.touchStartTime = in_eventTime;
+	}
+	else if ( state && stick_state.touchDown )
+	{
+		float dx = x - stick_state.touchStartX;
+		float dy = y - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 ( fabs( dx ) > swipeThreshold || fabs( dy ) > swipeThreshold ) )
+		{
+			int key;
+
+			if ( fabs( dx ) > fabs( dy ) )
+				key = ( dx > 0 ) ? K_PAD0_TOUCH_SWIPE_RIGHT : K_PAD0_TOUCH_SWIPE_LEFT;
+			else
+				key = ( dy > 0 ) ? K_PAD0_TOUCH_SWIPE_DOWN : K_PAD0_TOUCH_SWIPE_UP;
+
+			// A swipe is a discrete action, so send it as a press and release
+			// in the same frame rather than leaving a key stuck down.
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qfalse, 0, NULL );
+			stick_state.touchSwiped = qtrue;
+		}
+
+		if ( in_touchpad->integer >= 2 )
+		{
+			float mx = ( x - stick_state.touchLastX ) * in_touchpadSens->value;
+			float my = ( y - stick_state.touchLastY ) * in_touchpadSens->value;
+
+			if ( (int)mx || (int)my )
+				Com_QueueEvent( in_eventTime, SE_MOUSE, (int)mx, (int)my, 0, NULL );
+		}
+
+		stick_state.touchLastX = x;
+		stick_state.touchLastY = y;
+	}
+	else if ( !state && stick_state.touchDown )
+	{
+		// finger up -- a quick, still contact counts as a tap
+		float dx = stick_state.touchLastX - stick_state.touchStartX;
+		float dy = stick_state.touchLastY - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 in_eventTime - stick_state.touchStartTime < tapMaxTime &&
+			 fabs( dx ) < tapMaxMove && fabs( dy ) < tapMaxMove )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qfalse, 0, NULL );
+		}
+
+		stick_state.touchDown = qfalse;
+	}
+#endif
+}
+
+/*
+===============
+IN_GamepadGyro
+
+Gyro aiming. SDL reports angular velocity in rad/s as
+{ pitch, yaw, roll } in the controller's own frame.
+
+This is fed in as joystick axes rather than as mouse motion on purpose:
+CL_JoystickMove scales its contribution by frametime, which is wrong for a
+stick (a stick is a position) but exactly right for a gyro (a gyro is a rate,
+and angle = rate * dt).
+===============
+*/
+static void IN_GamepadGyro( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	float data[3];
+	float pitch, yaw, scale, deadzone;
+
+	if ( !in_gyro || !in_gyro->integer || !gamepadCaps.hasGyro )
+		return;
+
+	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
+	{
+		// "only while aiming". RTCW has no explicit ADS flag, but cgame scales
+		// cgameSensitivity down whenever the view is zoomed (scope, binoculars,
+		// snooper), which is exactly the state we want gyro for.
+		return;
+	}
+
+	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
+		return;
+
+	deadzone = in_gyroDeadzone->value;
+
+	// data[0] is pitch (tilting the pad up/down), data[1] is yaw (turning it).
+	pitch = ( fabs( data[0] ) > deadzone ) ? -data[0] : 0.0f;
+	yaw   = ( fabs( data[1] ) > deadzone ) ? -data[1] : 0.0f;
+
+	if ( pitch == 0.0f && yaw == 0.0f )
+		return;
+
+	// rad/s -> the +-32767 range the joystick axis path expects, with
+	// in_gyroSens as the user-facing multiplier.
+	scale = in_gyroSens->value * 32767.0f / 4.0f;
+
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH,
+		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * scale ), 0, NULL );
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW,
+		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * scale ), 0, NULL );
+#endif
 }
 
 
@@ -1122,6 +1480,11 @@ static void IN_ProcessEvents( void )
 			case SDL_CONTROLLERDEVICEREMOVED:
 				if (in_joystick->integer)
 					IN_InitJoystick();
+#if TARGET_OS_IPHONE
+				// Show or hide the on-screen controls to match: a controller
+				// arriving is exactly when the overlay should get out of the way.
+				Sys_IOS_TouchOverlayUpdate();
+#endif
 				break;
 
 			case SDL_QUIT:
@@ -1180,6 +1543,115 @@ static void IN_ProcessEvents( void )
 IN_Frame
 ===============
 */
+#if TARGET_OS_IPHONE
+/*
+===============
+Touch overlay bridge
+
+The on-screen controls are a UIKit view (ios_touch.m) over SDL's GL view, so
+they need a way into the engine's event queue.
+
+No locking is needed here, which is worth stating: UIKit is pumped *by*
+Com_Frame -- SDL's UIKit_PumpEvents drains the CFRunLoop on every SDL_PollEvent
+-- so these run on the same thread as the frame loop, never concurrently.
+===============
+*/
+void IOSTouch_QueueKey( int key, int down )
+{
+	Com_QueueEvent( in_eventTime, SE_KEY, key, down ? qtrue : qfalse, 0, NULL );
+}
+
+void IOSTouch_QueueAxis( int axis, int value )
+{
+	// Reuses the joystick path, so the on-screen stick honours j_forward and
+	// j_side exactly like a real one.
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, axis, value, 0, NULL );
+}
+
+void IOSTouch_QueueMouse( int dx, int dy )
+{
+	// Deliberately mouse rather than joystick: CL_MouseMove is not
+	// frametime-scaled whereas CL_JoystickMove is, and the unscaled path is what
+	// makes touch look feel 1:1.
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+}
+
+int IOSTouch_ControllerConnected( void )
+{
+	return gamepad != NULL;
+}
+
+int IOSTouch_MovementAxis( int forward )
+{
+	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
+	               : Cvar_VariableIntegerValue( "j_side_axis" );
+}
+
+static qboolean iosSuspended = qfalse;
+
+// The renderer owns SDL_glContext, so stash the current one on the way out
+// rather than reaching into sdl_glimp.c for it.
+static SDL_GLContext iosSavedContext = NULL;
+
+/*
+===============
+IN_IOSAppEventWatch
+
+iOS kills an app that issues any GL command while backgrounded, and the
+drawable's storage is discarded when it goes away. Both have to be handled
+*synchronously*: once applicationDidEnterBackground: returns the process is
+frozen, so noticing the state change on the next poll of the event queue is
+already too late. Hence an event watch, which SDL calls from inside
+SDL_PumpEvents on the main thread, rather than a case in IN_ProcessEvents.
+===============
+*/
+static int SDLCALL IN_IOSAppEventWatch( void *userdata, SDL_Event *event )
+{
+	switch ( event->type )
+	{
+		case SDL_APP_WILLENTERBACKGROUND:
+			iosSuspended = qtrue;
+			iosSavedContext = SDL_GL_GetCurrentContext();
+			S_StopAllSounds();
+			break;
+
+		case SDL_APP_DIDENTERBACKGROUND:
+			// Finish what is already submitted and give up the context before
+			// we are frozen.
+			SDL_GL_MakeCurrent( SDL_window, NULL );
+			break;
+
+		case SDL_APP_WILLENTERFOREGROUND:
+			if ( iosSavedContext ) {
+				SDL_GL_MakeCurrent( SDL_window, iosSavedContext );
+			}
+			break;
+
+		case SDL_APP_DIDENTERFOREGROUND:
+			iosSuspended = qfalse;
+			break;
+
+		case SDL_APP_LOWMEMORY:
+			Com_Printf( "iOS: low memory warning\n" );
+			break;
+	}
+
+	return 0;
+}
+
+/*
+===============
+IN_IsSuspended
+
+Asked by the frame loop so it can idle instead of rendering while backgrounded.
+===============
+*/
+qboolean IN_IsSuspended( void )
+{
+	return iosSuspended;
+}
+#endif
+
 void IN_Frame( void )
 {
 	qboolean loading;
@@ -1248,10 +1720,39 @@ void IN_Init( void *windowData )
 	in_mouse = Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
 	in_nograb = Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
 
+#if TARGET_OS_IPHONE
+	// A gamepad is the primary input device here, so it is on by default, and
+	// not latched: controllers get paired and unpaired while the game is
+	// running and requiring in_restart for that would be absurd.
+	in_joystick = Cvar_Get( "in_joystick", "1", CVAR_ARCHIVE );
+#else
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
+#endif
 	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
 
+	// DualSense extras. All default to off or neutral so a plain gamepad
+	// behaves exactly as before.
+	in_gyro         = Cvar_Get( "in_gyro",         "0",    CVAR_ARCHIVE );
+	in_gyroSens     = Cvar_Get( "in_gyroSens",     "1.0",  CVAR_ARCHIVE );
+	in_gyroDeadzone = Cvar_Get( "in_gyroDeadzone", "0.02", CVAR_ARCHIVE );
+	in_touchpad     = Cvar_Get( "in_touchpad",     "1",    CVAR_ARCHIVE );
+	in_touchpadSens = Cvar_Get( "in_touchpadSens", "600",  CVAR_ARCHIVE );
+	in_triggerSoft  = Cvar_Get( "in_triggerSoft",  "0.12", CVAR_ARCHIVE );
+	in_triggerHard  = Cvar_Get( "in_triggerHard",  "0.75", CVAR_ARCHIVE );
+	in_rumble       = Cvar_Get( "in_rumble",       "100",  CVAR_ARCHIVE );
+	in_ledFeedback  = Cvar_Get( "in_ledFeedback",  "1",    CVAR_ARCHIVE );
+
+	Cvar_CheckRange( in_gyroSens,     0.05f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroDeadzone, 0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_triggerHard,  0.05f, 1.0f,  qfalse );
+	Cvar_CheckRange( in_rumble,       0,     100,   qtrue  );
+
+#if !TARGET_OS_IPHONE
+	// On iOS this raises the on-screen keyboard and leaves it up over the game.
+	// Text entry there is driven from the launcher and the console instead, which
+	// call SDL_StartTextInput() when they actually need it.
 	SDL_StartTextInput( );
+#endif
 
 	mouseAvailable = ( in_mouse->value != 0 );
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );
@@ -1261,6 +1762,25 @@ void IN_Init( void *windowData )
 	Cvar_SetValue( "com_minimized", appState & SDL_WINDOW_MINIMIZED );
 
 	IN_InitJoystick( );
+
+#if TARGET_OS_IPHONE
+	SDL_AddEventWatch( IN_IOSAppEventWatch, NULL );
+
+	{
+		// The overlay attaches to SDL's own UIWindow, so it needs the handle
+		// SDL only exposes through the WM info struct.
+		SDL_SysWMinfo wmInfo;
+
+		SDL_VERSION( &wmInfo.version );
+
+		if ( SDL_GetWindowWMInfo( SDL_window, &wmInfo ) ) {
+			Sys_IOS_TouchOverlayInit( (void *)wmInfo.info.uikit.window );
+		} else {
+			Com_Printf( "Touch overlay: SDL_GetWindowWMInfo failed: %s\n", SDL_GetError() );
+		}
+	}
+#endif
+
 	Com_DPrintf( "------------------------------------\n" );
 }
 
@@ -1271,6 +1791,10 @@ IN_Shutdown
 */
 void IN_Shutdown( void )
 {
+#if TARGET_OS_IPHONE
+	SDL_DelEventWatch( IN_IOSAppEventWatch, NULL );
+#endif
+
 	SDL_StopTextInput( );
 
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );

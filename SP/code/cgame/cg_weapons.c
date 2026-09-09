@@ -3797,6 +3797,10 @@ void CG_FinishWeaponChange( int lastweap, int newweap ) {
 		return;
 	}
 
+	// Retune the adaptive triggers for the new weapon. This is trigger state,
+	// not an event, so it belongs on the change rather than on each shot.
+	CG_HapticWeaponChanged( newweap );
+
 	CG_PlaySwitchSound( lastweap, newweap );  //----(SA)	added
 
 	CG_SetSniperZoom( lastweap, newweap );
@@ -4691,6 +4695,12 @@ void CG_FireWeapon( centity_t *cent ) {
 	sfxHandle_t     *fireEchosound;
 
 	ent = &cent->currentState;
+
+	// Recoil in the hands, but only for our own weapon -- rumbling for every
+	// gunshot in earshot would be constant noise.
+	if ( cent->currentState.clientNum == cg.snap->ps.clientNum ) {
+		CG_HapticFire( cent->currentState.weapon );
+	}
 
 	// Rafael - mg42
 	if ( ( cent->currentState.clientNum == cg.snap->ps.clientNum && cg.snap->ps.persistant[PERS_HWEAPON_USE] ) ||
