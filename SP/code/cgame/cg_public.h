@@ -219,7 +219,15 @@ typedef enum {
 	CG_GETMODELINFO,
 
 	// New in IORTCW
-	CG_ALLOC = 900
+	CG_ALLOC = 900,
+
+	// Controller haptics. Numbered above the original trap range for the same
+	// reason CG_ALLOC is: existing QVMs never emit these, and cl_cgame.c's
+	// default case errors on anything unknown, so adding them cannot silently
+	// change the behaviour of an older module.
+	CG_HAPTIC_RUMBLE = 901,     // ( lowFreq, highFreq, durationMs ) -- floats via PASSFLOAT
+	CG_HAPTIC_LED    = 902,     // ( r, g, b )
+	CG_HAPTIC_INFO   = 903      // -> bitfield of HAPTIC_CAP_*
 
 } cgameImport_t;
 

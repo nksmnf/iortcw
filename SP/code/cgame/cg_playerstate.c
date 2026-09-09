@@ -126,6 +126,8 @@ void CG_DamageFeedback( int yawByte, int pitchByte, int damage ) {
 	int slot;
 	viewDamage_t *vd;
 
+	CG_HapticDamage( damage );
+
 	// show the attacking player's head and name in corner
 	cg.attackerTime = cg.time;
 

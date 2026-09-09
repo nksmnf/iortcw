@@ -53,6 +53,17 @@ static cvar_t *in_joystickThreshold = NULL;
 static cvar_t *in_joystickNo        = NULL;
 static cvar_t *in_joystickUseAnalog = NULL;
 
+// DualSense (and any other controller that exposes the same features).
+static cvar_t *in_gyro              = NULL;  // 0 off, 1 always on, 2 only while aiming
+static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt
+static cvar_t *in_gyroDeadzone      = NULL;  // rad/s below which tilt is ignored
+static cvar_t *in_touchpad          = NULL;  // 0 off, 1 gestures, 2 gestures + drag-to-look
+static cvar_t *in_touchpadSens      = NULL;
+static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts as pressed
+static cvar_t *in_triggerHard       = NULL;  // deeper threshold, bound separately
+static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
+static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
+
 static int vidRestartTime = 0;
 
 static int in_eventTime = 0;
@@ -443,7 +454,32 @@ struct
 	unsigned int oldaxes;
 	int oldaaxes[MAX_JOYSTICK_AXIS];
 	unsigned int oldhats;
+
+	// Second stage of the analogue triggers, tracked separately from the
+	// K_PAD0_*TRIGGER keys the axis loop already emits at the soft threshold.
+	qboolean triggerHard[2];
+
+	// Touchpad. SDL reports normalised 0..1 coordinates per finger; we keep the
+	// press origin so a release can be classified as a tap or a swipe.
+	qboolean touchDown;
+	float    touchStartX, touchStartY;
+	float    touchLastX, touchLastY;
+	int      touchStartTime;
+	qboolean touchSwiped;      // a swipe already fired for this contact
 } stick_state;
+
+// The controller's own feature set, queried once when it is opened.
+static struct
+{
+	qboolean hasGyro;
+	qboolean hasRumble;
+	qboolean hasLED;
+	int      numTouchpads;
+} gamepadCaps;
+
+static void IN_GamepadTriggers( void );
+static void IN_GamepadTouchpad( void );
+static void IN_GamepadGyro( void );
 
 
 /*
@@ -540,8 +576,114 @@ static void IN_InitJoystick( void )
 	Com_DPrintf( "Use Analog: %s\n", in_joystickUseAnalog->integer ? "Yes" : "No" );
 	Com_DPrintf( "Is gamepad: %s\n", gamepad ? "Yes" : "No" );
 
+	Com_Memset( &gamepadCaps, 0, sizeof( gamepadCaps ) );
+
+	if ( gamepad )
+	{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+		gamepadCaps.numTouchpads = SDL_GameControllerGetNumTouchpads( gamepad );
+		gamepadCaps.hasRumble    = SDL_GameControllerRumble( gamepad, 0, 0, 0 ) == 0;
+		gamepadCaps.hasLED       = SDL_GameControllerHasLED( gamepad );
+		gamepadCaps.hasGyro      = SDL_GameControllerHasSensor( gamepad, SDL_SENSOR_GYRO );
+
+		if ( gamepadCaps.hasGyro ) {
+			// The sensor stays enabled for the life of the controller; in_gyro
+			// decides whether its samples are actually used, so toggling the
+			// cvar takes effect immediately rather than needing a reconnect.
+			SDL_GameControllerSetSensorEnabled( gamepad, SDL_SENSOR_GYRO, SDL_TRUE );
+		}
+
+		Com_Printf( "Gamepad: %s%s%s%s\n",
+			gamepadCaps.numTouchpads ? "touchpad " : "",
+			gamepadCaps.hasGyro      ? "gyro "     : "",
+			gamepadCaps.hasRumble    ? "rumble "   : "",
+			gamepadCaps.hasLED       ? "led"       : "" );
+#endif
+	}
+
 	SDL_JoystickEventState(SDL_QUERY);
 	SDL_GameControllerEventState(SDL_QUERY);
+}
+
+/*
+===============
+IN_Rumble
+
+Drives the controller's motors. lowFreq/highFreq are 0..1; duration is in
+milliseconds. Called from the client on behalf of cgame (trap CG_HAPTIC_RUMBLE)
+and always on the main thread, which matters because SDL's rumble path is not
+safe to call from a notification callback.
+===============
+*/
+void IN_Rumble( float lowFreq, float highFreq, int durationMs )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 9 )
+	float scale;
+
+	if ( !gamepad || !gamepadCaps.hasRumble || !in_rumble )
+		return;
+
+	scale = in_rumble->value * 0.01f;
+
+	if ( scale <= 0.0f )
+		return;
+
+	if ( scale > 1.0f )
+		scale = 1.0f;
+
+	lowFreq  = Com_Clamp( 0.0f, 1.0f, lowFreq  * scale );
+	highFreq = Com_Clamp( 0.0f, 1.0f, highFreq * scale );
+
+	SDL_GameControllerRumble( gamepad,
+		(Uint16)( lowFreq  * 65535.0f ),
+		(Uint16)( highFreq * 65535.0f ),
+		durationMs );
+#endif
+}
+
+/*
+===============
+IN_GetHapticCaps
+
+What the currently open controller can actually do, so cgame can skip building
+effects for hardware that will ignore them.
+===============
+*/
+int IN_GetHapticCaps( void )
+{
+	int caps = 0;
+
+	if ( !gamepad )
+		return 0;
+
+	if ( gamepadCaps.hasRumble )
+		caps |= HAPTIC_CAP_RUMBLE;
+	if ( gamepadCaps.hasLED )
+		caps |= HAPTIC_CAP_LED;
+	if ( gamepadCaps.hasGyro )
+		caps |= HAPTIC_CAP_GYRO;
+	if ( gamepadCaps.numTouchpads > 0 )
+		caps |= HAPTIC_CAP_TOUCHPAD;
+
+	return caps;
+}
+
+/*
+===============
+IN_SetControllerLED
+
+Tints the DualSense light bar. The client drives this from player health, which
+gives a peripheral damage cue that costs nothing on screen.
+===============
+*/
+void IN_SetControllerLED( int red, int green, int blue )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	if ( !gamepad || !gamepadCaps.hasLED || !in_ledFeedback || !in_ledFeedback->integer )
+		return;
+
+	SDL_GameControllerSetLED( gamepad, (Uint8)red, (Uint8)green, (Uint8)blue );
+#endif
 }
 
 /*
@@ -775,6 +917,189 @@ static void IN_GamepadMove( void )
 				Com_QueueEvent(in_eventTime, SE_JOYSTICK_AXIS, i, translatedAxes[i], 0, NULL);
 		}
 	}
+
+	IN_GamepadTriggers();
+	IN_GamepadTouchpad();
+	IN_GamepadGyro();
+}
+
+/*
+===============
+IN_GamepadTriggers
+
+Second stage for the analogue triggers. The axis loop above already emits
+K_PAD0_LEFTTRIGGER / K_PAD0_RIGHTTRIGGER once the trigger passes the shared
+deadzone; this adds a deeper threshold on its own keys, so a weapon can be
+aimed at a half pull and fired at a full one.
+===============
+*/
+static void IN_GamepadTriggers( void )
+{
+	const int axes[2] = { SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT };
+	const int keys[2] = { K_PAD0_LEFTTRIGGER_HARD, K_PAD0_RIGHTTRIGGER_HARD };
+	float hard;
+	int i;
+
+	if ( !in_triggerHard )
+		return;
+
+	hard = Com_Clamp( 0.05f, 1.0f, in_triggerHard->value );
+
+	for ( i = 0; i < 2; i++ )
+	{
+		float value = (float)SDL_GameControllerGetAxis( gamepad, axes[i] ) / 32767.0f;
+		qboolean down = ( value >= hard ) ? qtrue : qfalse;
+
+		if ( down != stick_state.triggerHard[i] )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, keys[i], down, 0, NULL );
+			stick_state.triggerHard[i] = down;
+		}
+	}
+}
+
+/*
+===============
+IN_GamepadTouchpad
+
+The DualSense touchpad, read by polling rather than through events so it fits
+the rest of this file (SDL_GameControllerEventState is SDL_QUERY here).
+
+A short contact that barely moves is a tap; a longer drag past a threshold is a
+swipe, reported once per contact so holding a finger still after swiping does
+not repeat. With in_touchpad 2 the raw motion additionally drives the view,
+which is handy for the objectives and notebook screens.
+===============
+*/
+static void IN_GamepadTouchpad( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	const float swipeThreshold = 0.18f;   // fraction of the pad's width
+	const int   tapMaxTime = 250;         // ms
+	const float tapMaxMove = 0.05f;
+
+	Uint8 state = 0;
+	float x = 0.0f, y = 0.0f, pressure = 0.0f;
+
+	if ( !in_touchpad || !in_touchpad->integer || gamepadCaps.numTouchpads <= 0 )
+		return;
+
+	if ( SDL_GameControllerGetTouchpadFinger( gamepad, 0, 0, &state, &x, &y, &pressure ) != 0 )
+		return;
+
+	if ( state && !stick_state.touchDown )
+	{
+		// finger down
+		stick_state.touchDown = qtrue;
+		stick_state.touchSwiped = qfalse;
+		stick_state.touchStartX = stick_state.touchLastX = x;
+		stick_state.touchStartY = stick_state.touchLastY = y;
+		stick_state.touchStartTime = in_eventTime;
+	}
+	else if ( state && stick_state.touchDown )
+	{
+		float dx = x - stick_state.touchStartX;
+		float dy = y - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 ( fabs( dx ) > swipeThreshold || fabs( dy ) > swipeThreshold ) )
+		{
+			int key;
+
+			if ( fabs( dx ) > fabs( dy ) )
+				key = ( dx > 0 ) ? K_PAD0_TOUCH_SWIPE_RIGHT : K_PAD0_TOUCH_SWIPE_LEFT;
+			else
+				key = ( dy > 0 ) ? K_PAD0_TOUCH_SWIPE_DOWN : K_PAD0_TOUCH_SWIPE_UP;
+
+			// A swipe is a discrete action, so send it as a press and release
+			// in the same frame rather than leaving a key stuck down.
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qfalse, 0, NULL );
+			stick_state.touchSwiped = qtrue;
+		}
+
+		if ( in_touchpad->integer >= 2 )
+		{
+			float mx = ( x - stick_state.touchLastX ) * in_touchpadSens->value;
+			float my = ( y - stick_state.touchLastY ) * in_touchpadSens->value;
+
+			if ( (int)mx || (int)my )
+				Com_QueueEvent( in_eventTime, SE_MOUSE, (int)mx, (int)my, 0, NULL );
+		}
+
+		stick_state.touchLastX = x;
+		stick_state.touchLastY = y;
+	}
+	else if ( !state && stick_state.touchDown )
+	{
+		// finger up -- a quick, still contact counts as a tap
+		float dx = stick_state.touchLastX - stick_state.touchStartX;
+		float dy = stick_state.touchLastY - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 in_eventTime - stick_state.touchStartTime < tapMaxTime &&
+			 fabs( dx ) < tapMaxMove && fabs( dy ) < tapMaxMove )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qfalse, 0, NULL );
+		}
+
+		stick_state.touchDown = qfalse;
+	}
+#endif
+}
+
+/*
+===============
+IN_GamepadGyro
+
+Gyro aiming. SDL reports angular velocity in rad/s as
+{ pitch, yaw, roll } in the controller's own frame.
+
+This is fed in as joystick axes rather than as mouse motion on purpose:
+CL_JoystickMove scales its contribution by frametime, which is wrong for a
+stick (a stick is a position) but exactly right for a gyro (a gyro is a rate,
+and angle = rate * dt).
+===============
+*/
+static void IN_GamepadGyro( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	float data[3];
+	float pitch, yaw, scale, deadzone;
+
+	if ( !in_gyro || !in_gyro->integer || !gamepadCaps.hasGyro )
+		return;
+
+	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
+	{
+		// "only while aiming". RTCW has no explicit ADS flag, but cgame scales
+		// cgameSensitivity down whenever the view is zoomed (scope, binoculars,
+		// snooper), which is exactly the state we want gyro for.
+		return;
+	}
+
+	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
+		return;
+
+	deadzone = in_gyroDeadzone->value;
+
+	// data[0] is pitch (tilting the pad up/down), data[1] is yaw (turning it).
+	pitch = ( fabs( data[0] ) > deadzone ) ? -data[0] : 0.0f;
+	yaw   = ( fabs( data[1] ) > deadzone ) ? -data[1] : 0.0f;
+
+	if ( pitch == 0.0f && yaw == 0.0f )
+		return;
+
+	// rad/s -> the +-32767 range the joystick axis path expects, with
+	// in_gyroSens as the user-facing multiplier.
+	scale = in_gyroSens->value * 32767.0f / 4.0f;
+
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH,
+		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * scale ), 0, NULL );
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW,
+		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * scale ), 0, NULL );
+#endif
 }
 
 
@@ -1257,6 +1582,23 @@ void IN_Init( void *windowData )
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
 #endif
 	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
+
+	// DualSense extras. All default to off or neutral so a plain gamepad
+	// behaves exactly as before.
+	in_gyro         = Cvar_Get( "in_gyro",         "0",    CVAR_ARCHIVE );
+	in_gyroSens     = Cvar_Get( "in_gyroSens",     "1.0",  CVAR_ARCHIVE );
+	in_gyroDeadzone = Cvar_Get( "in_gyroDeadzone", "0.02", CVAR_ARCHIVE );
+	in_touchpad     = Cvar_Get( "in_touchpad",     "1",    CVAR_ARCHIVE );
+	in_touchpadSens = Cvar_Get( "in_touchpadSens", "600",  CVAR_ARCHIVE );
+	in_triggerSoft  = Cvar_Get( "in_triggerSoft",  "0.12", CVAR_ARCHIVE );
+	in_triggerHard  = Cvar_Get( "in_triggerHard",  "0.75", CVAR_ARCHIVE );
+	in_rumble       = Cvar_Get( "in_rumble",       "100",  CVAR_ARCHIVE );
+	in_ledFeedback  = Cvar_Get( "in_ledFeedback",  "1",    CVAR_ARCHIVE );
+
+	Cvar_CheckRange( in_gyroSens,     0.05f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroDeadzone, 0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_triggerHard,  0.05f, 1.0f,  qfalse );
+	Cvar_CheckRange( in_rumble,       0,     100,   qtrue  );
 
 #if !TARGET_OS_IPHONE
 	// On iOS this raises the on-screen keyboard and leaves it up over the game.

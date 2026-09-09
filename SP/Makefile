@@ -2516,6 +2516,7 @@ Q3CGOBJ_ = \
   $(B)/$(BASEGAME)/cgame/cg_effects.o \
   $(B)/$(BASEGAME)/cgame/cg_ents.o \
   $(B)/$(BASEGAME)/cgame/cg_event.o \
+  $(B)/$(BASEGAME)/cgame/cg_haptics.o \
   $(B)/$(BASEGAME)/cgame/cg_flamethrower.o \
   $(B)/$(BASEGAME)/cgame/cg_info.o \
   $(B)/$(BASEGAME)/cgame/cg_localents.o \

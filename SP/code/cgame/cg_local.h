@@ -2466,3 +2466,15 @@ qboolean    trap_GetModelInfo( int clientNum, char *modelName, animModelInfo_t *
 
 // New in IORTCW
 void		*trap_Alloc( int size );
+
+// Controller haptics
+void        trap_HapticRumble( float lowFreq, float highFreq, int durationMs );
+void        trap_HapticLED( int r, int g, int b );
+int         trap_HapticInfo( void );
+
+// cg_haptics.c
+void        CG_HapticsInit( void );
+void        CG_HapticFire( int weapon );
+void        CG_HapticDamage( int damage );
+void        CG_HapticExplosion( float distance );
+void        CG_HapticsFrame( void );

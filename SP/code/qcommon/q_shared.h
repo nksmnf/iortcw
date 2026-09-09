@@ -148,6 +148,14 @@ If you have questions concerning this license or the applicable additional terms
 #define Q_EXPORT
 #endif
 
+// Controller haptic capabilities, returned by the CG_HAPTIC_INFO trap. Both the
+// engine (sdl_input.c) and the game modules need these, including QVM builds,
+// so they must sit outside any compiler-specific branch.
+#define HAPTIC_CAP_RUMBLE   1
+#define HAPTIC_CAP_LED      2
+#define HAPTIC_CAP_GYRO     4
+#define HAPTIC_CAP_TOUCHPAD 8
+
 #if defined( ppc ) || defined( __ppc ) || defined( __ppc__ ) || defined( __POWERPC__ )
 #define idppc 1
 #endif

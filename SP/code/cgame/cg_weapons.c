@@ -4692,6 +4692,12 @@ void CG_FireWeapon( centity_t *cent ) {
 
 	ent = &cent->currentState;
 
+	// Recoil in the hands, but only for our own weapon -- rumbling for every
+	// gunshot in earshot would be constant noise.
+	if ( cent->currentState.clientNum == cg.snap->ps.clientNum ) {
+		CG_HapticFire( cent->currentState.weapon );
+	}
+
 	// Rafael - mg42
 	if ( ( cent->currentState.clientNum == cg.snap->ps.clientNum && cg.snap->ps.persistant[PERS_HWEAPON_USE] ) ||
 		 ( cent->currentState.clientNum != cg.snap->ps.clientNum && ( cent->currentState.eFlags & EF_MG42_ACTIVE ) ) ) {

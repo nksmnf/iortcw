@@ -130,3 +130,9 @@ equ trap_GetModelInfo			-126
 ; New in iortcw
 equ trap_Alloc					-901
 
+
+; Controller haptics. The QVM syscall index is -(trap + 1), so CG_HAPTIC_RUMBLE
+; (901) is -902, matching how trap_Alloc (CG_ALLOC 900) is -901 above.
+equ trap_HapticRumble			-902
+equ trap_HapticLED				-903
+equ trap_HapticInfo				-904

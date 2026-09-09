@@ -1105,6 +1105,17 @@ void IN_Frame( void );
 void IN_Shutdown( void );
 void IN_Restart( void );
 
+// Gyro aiming reports on these joystick axes. MAX_JOYSTICK_AXIS is 16 and the
+// j_*_axis cvars only default to 0-4, so these two are free.
+#define AXIS_GYRO_PITCH 5
+#define AXIS_GYRO_YAW   6
+
+// Controller haptics, implemented in the SDL input backend. Both must be called
+// from the main thread.
+void IN_Rumble( float lowFreq, float highFreq, int durationMs );
+void IN_SetControllerLED( int red, int green, int blue );
+int  IN_GetHapticCaps( void );
+
 /*
 ==============================================================
 

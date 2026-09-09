@@ -333,6 +333,7 @@ set(IORTCW_CGAME_SOURCES
     code/cgame/cg_effects.c
     code/cgame/cg_ents.c
     code/cgame/cg_event.c
+    code/cgame/cg_haptics.c
     code/cgame/cg_flamethrower.c
     code/cgame/cg_info.c
     code/cgame/cg_localents.c

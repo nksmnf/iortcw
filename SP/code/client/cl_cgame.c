@@ -846,6 +846,19 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_ALLOC:
 		return VM_Alloc( args[1] );
 
+	// Controller haptics. These run on the main thread because cgame is called
+	// from Com_Frame, which is what SDL's rumble path requires.
+	case CG_HAPTIC_RUMBLE:
+		IN_Rumble( VMF( 1 ), VMF( 2 ), args[3] );
+		return 0;
+
+	case CG_HAPTIC_LED:
+		IN_SetControllerLED( args[1], args[2], args[3] );
+		return 0;
+
+	case CG_HAPTIC_INFO:
+		return IN_GetHapticCaps();
+
 	default:
 		Com_Error( ERR_DROP, "Bad cgame system trap: %ld", (long int) args[0] );
 	}

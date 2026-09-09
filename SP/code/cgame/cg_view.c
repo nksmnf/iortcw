@@ -1459,6 +1459,9 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView, qboolean demo
 
 	// update cvars
 	CG_UpdateCvars();
+
+	// light bar tracks health; rate-limited internally
+	CG_HapticsFrame();
 /*
 	// RF, if we should force a weapon, then do so
 	if( !cg.weaponSelect ) {

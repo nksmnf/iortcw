@@ -2396,6 +2396,8 @@ void CG_Init( int serverMessageNum, int serverCommandSequence ) {
 
 	CG_StartMusic();
 
+	CG_HapticsInit();
+
 	cg.lightstylesInited = qfalse;
 
 	CG_LoadingString( "" );

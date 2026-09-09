@@ -538,3 +538,23 @@ qboolean trap_GetModelInfo( int clientNum, char *modelName, animModelInfo_t **mo
 void *trap_Alloc( int size ) {
 	return (void*)syscall( CG_ALLOC, size );
 }
+
+/*
+=================
+Controller haptics
+
+Guarded by cg_haptics so the whole feature can be switched off from the launcher
+without every call site needing to check.
+=================
+*/
+void trap_HapticRumble( float lowFreq, float highFreq, int durationMs ) {
+	syscall( CG_HAPTIC_RUMBLE, PASSFLOAT( lowFreq ), PASSFLOAT( highFreq ), durationMs );
+}
+
+void trap_HapticLED( int r, int g, int b ) {
+	syscall( CG_HAPTIC_LED, r, g, b );
+}
+
+int trap_HapticInfo( void ) {
+	return syscall( CG_HAPTIC_INFO );
+}
