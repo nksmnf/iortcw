@@ -51,3 +51,5 @@ cmake-build-*/
 # Claude Code
 ####################
 .claude/settings.local.json
+
+res/
