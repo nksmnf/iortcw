@@ -26,6 +26,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #	include <SDL.h>
 #endif
 
+#if TARGET_OS_IPHONE
+#ifdef USE_LOCAL_HEADERS
+#	include "SDL_syswm.h"
+#else
+#	include <SDL_syswm.h>
+#endif
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1472,6 +1480,11 @@ static void IN_ProcessEvents( void )
 			case SDL_CONTROLLERDEVICEREMOVED:
 				if (in_joystick->integer)
 					IN_InitJoystick();
+#if TARGET_OS_IPHONE
+				// Show or hide the on-screen controls to match: a controller
+				// arriving is exactly when the overlay should get out of the way.
+				Sys_IOS_TouchOverlayUpdate();
+#endif
 				break;
 
 			case SDL_QUIT:
@@ -1531,6 +1544,49 @@ IN_Frame
 ===============
 */
 #if TARGET_OS_IPHONE
+/*
+===============
+Touch overlay bridge
+
+The on-screen controls are a UIKit view (ios_touch.m) over SDL's GL view, so
+they need a way into the engine's event queue.
+
+No locking is needed here, which is worth stating: UIKit is pumped *by*
+Com_Frame -- SDL's UIKit_PumpEvents drains the CFRunLoop on every SDL_PollEvent
+-- so these run on the same thread as the frame loop, never concurrently.
+===============
+*/
+void IOSTouch_QueueKey( int key, int down )
+{
+	Com_QueueEvent( in_eventTime, SE_KEY, key, down ? qtrue : qfalse, 0, NULL );
+}
+
+void IOSTouch_QueueAxis( int axis, int value )
+{
+	// Reuses the joystick path, so the on-screen stick honours j_forward and
+	// j_side exactly like a real one.
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, axis, value, 0, NULL );
+}
+
+void IOSTouch_QueueMouse( int dx, int dy )
+{
+	// Deliberately mouse rather than joystick: CL_MouseMove is not
+	// frametime-scaled whereas CL_JoystickMove is, and the unscaled path is what
+	// makes touch look feel 1:1.
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+}
+
+int IOSTouch_ControllerConnected( void )
+{
+	return gamepad != NULL;
+}
+
+int IOSTouch_MovementAxis( int forward )
+{
+	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
+	               : Cvar_VariableIntegerValue( "j_side_axis" );
+}
+
 static qboolean iosSuspended = qfalse;
 
 // The renderer owns SDL_glContext, so stash the current one on the way out
@@ -1709,6 +1765,20 @@ void IN_Init( void *windowData )
 
 #if TARGET_OS_IPHONE
 	SDL_AddEventWatch( IN_IOSAppEventWatch, NULL );
+
+	{
+		// The overlay attaches to SDL's own UIWindow, so it needs the handle
+		// SDL only exposes through the WM info struct.
+		SDL_SysWMinfo wmInfo;
+
+		SDL_VERSION( &wmInfo.version );
+
+		if ( SDL_GetWindowWMInfo( SDL_window, &wmInfo ) ) {
+			Sys_IOS_TouchOverlayInit( (void *)wmInfo.info.uikit.window );
+		} else {
+			Com_Printf( "Touch overlay: SDL_GetWindowWMInfo failed: %s\n", SDL_GetError() );
+		}
+	}
 #endif
 
 	Com_DPrintf( "------------------------------------\n" );

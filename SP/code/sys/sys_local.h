@@ -65,6 +65,11 @@ void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its wi
 // ios_dualsense.m -- adaptive triggers, which SDL does not expose
 void        Sys_IOS_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
 qboolean    Sys_IOS_HasAdaptiveTriggers( void );
+
+// ios_touch.m -- on-screen controls, shown only when no controller is attached
+void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
+void        Sys_IOS_TouchOverlayUpdate( void );
+void        Sys_IOS_TouchOverlayShutdown( void );
 #endif
 
 void Sys_GLimpSafeInit( void );

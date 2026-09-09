@@ -175,6 +175,7 @@ if(IORTCW_IOS)
         "${SP_DIR}/code/sys/con_passive.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
     )
 endif()
 
