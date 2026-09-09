@@ -23,10 +23,11 @@ if [ -z "$DEVELOPER_DIR" ] && [ -d /Applications/Xcode.app ]; then
     export DEVELOPER_DIR
 fi
 
-if [ ! -d "$BUILD_DIR" ]; then
-    echo "No Xcode project yet -- running gen-xcode.sh first."
-    "$ROOT/ios/scripts/gen-xcode.sh" device
-fi
+# Always regenerate. CMake only rewrites what changed, and skipping this when
+# the directory already exists silently builds an out-of-date file list --
+# which shows up much later as undefined symbols at link time.
+echo "==> Generating project"
+"$ROOT/ios/scripts/gen-xcode.sh" device > /dev/null
 
 echo "Building iORTCW (Release, unsigned)..."
 cmake --build "$BUILD_DIR" --config Release -- \
