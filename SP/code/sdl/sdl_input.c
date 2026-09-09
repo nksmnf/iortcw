@@ -2128,7 +2128,10 @@ int IOSTouch_CinematicActive( void )
 		return 1;
 	}
 
-	if ( com_cameraMode && com_cameraMode->integer ) {
+	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
+	// CL_KeyDownEvent itself tests when deciding that a key means "skip", so
+	// using it keeps the two from disagreeing.
+	if ( cl.cameraMode ) {
 		return 1;
 	}
 
@@ -2139,22 +2142,19 @@ int IOSTouch_CinematicActive( void )
 ===============
 IOSTouch_SkipCinematic
 
-RoQ playback is skipped by any key, which CL_KeyEvent turns into Escape. A
-scripted camera does not respond to that, so it is stopped through the same
-console command the game itself uses when a cutscene ends.
+Escape, for both kinds of cutscene. That is the key the game itself skips on, so
+this takes the same route: CL_KeyDownEvent turns it into "cameraInterrupt" for a
+scripted camera, which lets the level script know the cutscene was cut short,
+and SCR_StopCinematic for a RoQ movie.
+
+Stopping the camera directly instead would leave the script waiting for an end
+that never comes.
 ===============
 */
 void IOSTouch_SkipCinematic( void )
 {
-	if ( clc.state == CA_CINEMATIC ) {
-		Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qtrue, 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
-		return;
-	}
-
-	if ( com_cameraMode && com_cameraMode->integer ) {
-		Cbuf_AddText( "stopCamera\n" );
-	}
+	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qtrue, 0, NULL );
+	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
 }
 
 int IOSTouch_MovementAxis( int forward )

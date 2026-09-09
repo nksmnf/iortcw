@@ -497,6 +497,16 @@ void AICast_Init( void ) {
 
 	aicast_skillscale = (float)trap_Cvar_VariableIntegerValue( "g_gameSkill" ) / (float)GSKILL_MAX;
 
+	// G_InitMemory has just reset the pool these came from, so every one of them
+	// now points at memory that is about to be handed out again. A bytecode or
+	// freshly loaded game module would have found this array zeroed for it; one
+	// linked into the engine keeps its globals across a restart, and
+	// AICast_SetupClient only allocates when a slot is empty -- so leaving them
+	// gives every AI a bot state made of whatever the last level left behind.
+	// Loading a savegame crashed on the first AI that looked at its own ammo.
+	memset( botstates, 0, sizeof( botstates ) );
+	numbots = 0;
+
 	caststates = G_Alloc( aicast_maxclients * sizeof( cast_state_t ) );
 	memset( caststates, 0, sizeof( *caststates ) );
 	for ( i = 0; i < MAX_CLIENTS; i++ ) {

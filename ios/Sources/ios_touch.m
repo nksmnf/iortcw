@@ -60,6 +60,7 @@ extern void IOSTouch_SkipCinematic( void );
 #define BUTTON_SIZE       88.0f
 #define BUTTON_GAP        16.0f
 #define EDGE_MARGIN       40.0f
+#define MENU_BUTTON_SIZE  64.0f
 
 // A button on the overlay: a circle with a label, bound to one key.
 @interface IORTCWTouchButton : UIView
@@ -179,6 +180,22 @@ extern void IOSTouch_SkipCinematic( void );
 		{ "NEXT",   ']',       2, 1 },
 	};
 
+	// Escape, where it can be found. A three-finger tap does the same and still
+	// works, but nobody discovers a gesture, and this is the button that leads
+	// to saving, loading and quitting.
+	{
+		IORTCWTouchButton *b = [[IORTCWTouchButton alloc] initWithFrame:
+			CGRectMake( w - EDGE_MARGIN - MENU_BUTTON_SIZE, EDGE_MARGIN,
+						MENU_BUTTON_SIZE, MENU_BUTTON_SIZE )];
+		b.backgroundColor = [UIColor clearColor];
+		b.opaque = NO;
+		b.userInteractionEnabled = NO;
+		b.keyCode = K_ESCAPE;
+		b.label = @"MENU";
+		[self addSubview:b];
+		[self.buttons addObject:b];
+	}
+
 	for ( size_t i = 0; i < sizeof( layout ) / sizeof( layout[0] ); i++ ) {
 		CGFloat x = w - EDGE_MARGIN - ( layout[i].col + 1 ) * ( BUTTON_SIZE + BUTTON_GAP );
 		CGFloat y = h - EDGE_MARGIN - ( layout[i].row + 1 ) * ( BUTTON_SIZE + BUTTON_GAP );
@@ -215,6 +232,12 @@ extern void IOSTouch_SkipCinematic( void );
 - (IORTCWTouchButton *)buttonAtPoint:(CGPoint)p
 {
 	for ( IORTCWTouchButton *b in self.buttons ) {
+		// A hidden button is not there. Without this, playing with a pad still
+		// fires the weapon when a thumb rests where FIRE used to be drawn.
+		if ( b.hidden ) {
+			continue;
+		}
+
 		if ( CGRectContainsPoint( CGRectInset( b.frame, -8, -8 ), p ) ) {
 			return b;
 		}
@@ -513,7 +536,9 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		default: visible = !IOSTouch_ControllerConnected(); break;
 	}
 
-	if ( CL_UIActive() ) {
+	// Menus, loading screens and cutscenes are all times when there is nothing
+	// for these to do, and a cutscene is watched, not played.
+	if ( CL_UIActive() || IOSTouch_CinematicActive() ) {
 		visible = NO;
 	}
 

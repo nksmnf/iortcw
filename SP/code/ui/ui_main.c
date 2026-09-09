@@ -3787,6 +3787,50 @@ void UI_ParseSavegame( int index ) {
 
 /*
 ==============
+UI_SuggestSavegameName
+
+Put a name in the "Save As" field when it is empty.
+
+Typing one needs a keyboard, and a tablet has none unless the player brought
+one, so without this the save menu can only ever answer "you must specify a
+filename" -- which is the difference between being able to finish the campaign
+and not. The name follows the map, and skips any that is already taken so the
+overwrite prompt does not appear for a save the player never made.
+==============
+*/
+static void UI_SuggestSavegameName( void ) {
+	char map[MAX_QPATH];
+	int i, n;
+
+	if ( strlen( UI_Cvar_VariableString( "ui_savegame" ) ) ) {
+		return;
+	}
+
+	trap_Cvar_VariableStringBuffer( "mapname", map, sizeof( map ) );
+
+	if ( !map[0] ) {
+		Q_strncpyz( map, "save", sizeof( map ) );
+	}
+
+	for ( n = 1; n < 1000; n++ ) {
+		const char *candidate = va( "%s_%i", map, n );
+
+		for ( i = 0; i < uiInfo.savegameCount; i++ ) {
+			if ( !Q_stricmp( candidate,
+					uiInfo.savegameList[uiInfo.savegameStatus.displaySavegames[i]].savegameName ) ) {
+				break;
+			}
+		}
+
+		if ( i == uiInfo.savegameCount ) {
+			trap_Cvar_Set( "ui_savegame", candidate );
+			return;
+		}
+	}
+}
+
+/*
+==============
 UI_LoadSavegames
 ==============
 */
@@ -4753,6 +4797,7 @@ static void UI_RunMenuScript( char **args ) {
 			//----(SA)	added
 		} else if ( Q_stricmp( name, "LoadSaveGames" ) == 0 ) {  // get the list
 			UI_LoadSavegames( NULL );
+			UI_SuggestSavegameName();
 		} else if ( Q_stricmp( name, "Loadgame" ) == 0 ) {
 			int i = UI_SavegameIndexFromName2( ui_savegameName.string );
 			// in developer, don't actually load the game

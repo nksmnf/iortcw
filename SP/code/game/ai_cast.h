@@ -744,3 +744,4 @@ void    GibEntity( gentity_t *self, int killer );
 void    GibHead( gentity_t *self, int killer );
 //
 extern bot_state_t  *botstates[MAX_CLIENTS];
+extern int          numbots;            // counted alongside botstates, reset with it
