@@ -134,6 +134,49 @@ static void IN_QueueMouseDelta( int dx, int dy )
 	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
 }
 
+/*
+===============
+IN_MenuCursorTo
+
+Put the menu cursor on a point now, without going through the event queue.
+
+Queueing would be too late for a keypress that has to act on a particular item:
+Com_EventLoop is already handling that key, so anything queued from here is
+processed after it.
+===============
+*/
+void IN_MenuCursorTo( int x, int y )
+{
+	int dx = x - menuCursorX;
+	int dy = y - menuCursorY;
+
+	if ( !dx && !dy ) {
+		return;
+	}
+
+	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
+	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
+
+	CL_MouseEvent( dx, dy, 0 );
+}
+
+/*
+===============
+IN_ResetMenuCursor
+
+Called when the UI is (re)started, which puts its cursor back at the origin.
+
+Resynchronising any other way is not possible: Com_QueueEvent folds consecutive
+mouse events into one, so the obvious trick of slamming the cursor into a corner
+and then moving it out lands in the corner and stays there.
+===============
+*/
+void IN_ResetMenuCursor( void )
+{
+	menuCursorX = 0;
+	menuCursorY = 0;
+}
+
 
 static SDL_Window *SDL_window = NULL;
 
@@ -2056,48 +2099,6 @@ void IOSTouch_QueueMouseTo( int x, int y )
 	IN_QueueMouseDelta( x - menuCursorX, y - menuCursorY );
 }
 
-/*
-===============
-IN_MenuCursorTo
-
-Put the menu cursor on a point now, without going through the event queue.
-
-Queueing would be too late for a keypress that has to act on a particular item:
-Com_EventLoop is already handling that key, so anything queued from here is
-processed after it.
-===============
-*/
-void IN_MenuCursorTo( int x, int y )
-{
-	int dx = x - menuCursorX;
-	int dy = y - menuCursorY;
-
-	if ( !dx && !dy ) {
-		return;
-	}
-
-	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
-	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
-
-	CL_MouseEvent( dx, dy, 0 );
-}
-
-/*
-===============
-IN_ResetMenuCursor
-
-Called when the UI is (re)started, which puts its cursor back at the origin.
-
-Resynchronising any other way is not possible: Com_QueueEvent folds consecutive
-mouse events into one, so the obvious trick of slamming the cursor into a corner
-and then moving it out lands in the corner and stays there.
-===============
-*/
-void IN_ResetMenuCursor( void )
-{
-	menuCursorX = 0;
-	menuCursorY = 0;
-}
 
 int IOSTouch_ControllerConnected( void )
 {
