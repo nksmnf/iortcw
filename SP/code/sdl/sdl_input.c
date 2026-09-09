@@ -74,6 +74,8 @@ static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player hea
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
 static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
 static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
+static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
+static cvar_t *in_dpadMove          = NULL;  // D-pad walks, like the arrow keys
 static cvar_t *in_invertLook        = NULL;
 static cvar_t *in_menuCursorSpeed   = NULL;  // pixels per frame at full deflection
 static cvar_t *in_lookYawSpeed      = NULL;  // degrees per second at full deflection
@@ -886,6 +888,58 @@ static void IN_ApplyStickCurve( float *x, float *y, float deadzone, float expo )
 
 /*
 ===============
+IN_DigitalMove
+
+Quantise the movement stick into eight directions and drive the same movement
+commands the keyboard uses.
+
+Each of the four commands is held while the stick is anywhere in its 180-degree
+half, which is what makes the diagonals work: north-east lands in both the
+forward half and the right half, so both are held, exactly as pressing W and D
+together would. A small overlap either side of each boundary would cause
+flicker, so the halves are trimmed slightly and the deadzone does the rest.
+
+Keys are emitted only on change, so the engine sees clean presses and releases
+rather than a stream of repeats.
+===============
+*/
+static void IN_DigitalMove( float x, float y )
+{
+	static qboolean held[4];   // forward, back, left, right
+	const char *commands[4] = { "+forward", "+back", "+moveleft", "+moveright" };
+	qboolean want[4] = { qfalse, qfalse, qfalse, qfalse };
+	float mag = sqrt( x * x + y * y );
+	int i;
+
+	if ( mag > 0.0f ) {
+		// 0.383 is sin(22.5 degrees): the point at which a direction stops
+		// counting towards a neighbouring axis, which is what gives eight even
+		// sectors rather than four wide ones with narrow diagonals.
+		const float edge = 0.383f;
+		float nx = x / mag;
+		float ny = y / mag;
+
+		want[0] = ( ny < -edge ) ? qtrue : qfalse;   // stick up    -> forward
+		want[1] = ( ny >  edge ) ? qtrue : qfalse;   // stick down  -> back
+		want[2] = ( nx < -edge ) ? qtrue : qfalse;   // stick left  -> strafe left
+		want[3] = ( nx >  edge ) ? qtrue : qfalse;   // stick right -> strafe right
+	}
+
+	for ( i = 0; i < 4; i++ ) {
+		if ( want[i] == held[i] ) {
+			continue;
+		}
+
+		// Sent as console commands rather than key events because these are not
+		// bindable keys -- the stick is the stick, and routing it through a
+		// binding is what put turn on the left stick in the first place.
+		Cbuf_AddText( va( "%c%s\n", want[i] ? '+' : '-', commands[i] + 1 ) );
+		held[i] = want[i];
+	}
+}
+
+/*
+===============
 IN_GamepadSticks
 
 Feed the two sticks straight into the joystick axes the client already reads.
@@ -965,6 +1019,33 @@ static void IN_GamepadSticks( void )
 		ry = -ry;
 	}
 
+	// Movement is digital by default: the stick is quantised into the same eight
+	// directions a keyboard gives you, and emitted as +forward / +moveleft and
+	// friends. Analogue movement sounds better than it plays here -- RTCW has no
+	// walk/run gradient worth steering with a thumb, and a stick that is always
+	// slightly off-centre makes the character drift. Quantising also means
+	// "north-east" is unambiguously forward+right rather than a blend that
+	// depends on exactly how the thumb sat.
+	if ( in_moveDigital->integer ) {
+		IN_DigitalMove( lx, ly );
+
+		// The movement axes must be silent, or the analogue path would fight
+		// the keys.
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+
+		{
+			float yawScale   = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
+			float pitchScale = in_lookPitchSpeed->value / IN_NonZero( j_pitch->value, 0.022f );
+
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
+				(int)( rx * yawScale ), 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
+				(int)( ry * pitchScale ), 0, NULL );
+		}
+		return;
+	}
+
 	// Scaling, and this is the part that was making the sticks feel broken.
 	//
 	// CL_JoystickMove multiplies whatever arrives here by j_side / j_forward and
@@ -994,6 +1075,27 @@ static void IN_GamepadSticks( void )
 			(int)( rx * yawScale ), 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
 			(int)( ry * pitchScale ), 0, NULL );
+	}
+}
+
+/*
+===============
+IN_DpadMoveCommand
+
+Movement command for a D-pad direction, or NULL for anything else.
+
+Returned without the leading sign; the caller prepends + or -.
+===============
+*/
+static const char *IN_DpadMoveCommand( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:    return "forward";
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return "back";
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return "moveleft";
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return "moveright";
+		default:                               return NULL;
 	}
 }
 
@@ -1057,10 +1159,19 @@ static void IN_GamepadMove( void )
 		if (pressed != stick_state.buttons[i])
 		{
 			int menuKey = menuMode ? IN_MenuKeyForPadButton( i ) : 0;
+			const char *dpadMove = ( !menuMode && in_dpadMove->integer )
+				? IN_DpadMoveCommand( i ) : NULL;
 
 			if ( menuKey )
 			{
 				Com_QueueEvent(in_eventTime, SE_KEY, menuKey, pressed, 0, NULL);
+			}
+			else if ( dpadMove )
+			{
+				// The D-pad walks, like the arrow keys on a keyboard. It stacks
+				// with the stick rather than replacing it, so holding up on the
+				// D-pad while aiming with the right stick works.
+				Cbuf_AddText( va( "%c%s\n", pressed ? '+' : '-', dpadMove ) );
 			}
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
 			else if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
@@ -1821,6 +1932,50 @@ int IOSTouch_ControllerConnected( void )
 	return gamepad != NULL;
 }
 
+/*
+===============
+IOSTouch_CinematicActive
+
+Whether a cutscene is playing, of either kind: a RoQ movie (clc.state is
+CA_CINEMATIC) or an in-engine scripted camera (com_cameraMode). The overlay uses
+this to turn a tap into "skip".
+===============
+*/
+int IOSTouch_CinematicActive( void )
+{
+	if ( clc.state == CA_CINEMATIC ) {
+		return 1;
+	}
+
+	if ( com_cameraMode && com_cameraMode->integer ) {
+		return 1;
+	}
+
+	return 0;
+}
+
+/*
+===============
+IOSTouch_SkipCinematic
+
+RoQ playback is skipped by any key, which CL_KeyEvent turns into Escape. A
+scripted camera does not respond to that, so it is stopped through the same
+console command the game itself uses when a cutscene ends.
+===============
+*/
+void IOSTouch_SkipCinematic( void )
+{
+	if ( clc.state == CA_CINEMATIC ) {
+		Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qtrue, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
+		return;
+	}
+
+	if ( com_cameraMode && com_cameraMode->integer ) {
+		Cbuf_AddText( "stopCamera\n" );
+	}
+}
+
 int IOSTouch_MovementAxis( int forward )
 {
 	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
@@ -1985,6 +2140,8 @@ void IN_Init( void *windowData )
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
 	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.6",  CVAR_ARCHIVE );
 	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
+	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );
+	in_dpadMove        = Cvar_Get( "in_dpadMove",        "1",    CVAR_ARCHIVE );
 	in_invertLook      = Cvar_Get( "in_invertLook",      "0",  CVAR_ARCHIVE );
 	in_menuCursorSpeed = Cvar_Get( "in_menuCursorSpeed", "14", CVAR_ARCHIVE );
 

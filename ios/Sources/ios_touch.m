@@ -50,6 +50,8 @@ extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
 extern int  IOSTouch_ControllerConnected( void );
 extern int  IOSTouch_MovementAxis( int forward );
+extern int  IOSTouch_CinematicActive( void );
+extern void IOSTouch_SkipCinematic( void );
 
 #define STICK_RADIUS      110.0f
 #define STICK_DEADZONE    0.15f
@@ -129,6 +131,8 @@ extern int  IOSTouch_MovementAxis( int forward );
 @property (nonatomic) CGPoint lookLast;
 @property (nonatomic, strong) UITouch *lookTouch;
 @property (nonatomic, strong) UITouch *stickTouch;
+@property (nonatomic) CGPoint menuTouchStart;
+@property (nonatomic) BOOL menuTouchMoved;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -259,14 +263,23 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
+	// A tap anywhere skips a cutscene, which is the one thing everyone reaches
+	// for and the game otherwise only offers on a keyboard.
+	if ( IOSTouch_CinematicActive() ) {
+		IOSTouch_SkipCinematic();
+		return;
+	}
+
 	if ( [self menuActive] ) {
-		// Point at what was tapped and click it. Without this the only way to
-		// press a menu item is to drag the cursor onto it and then find the
-		// fire button, which is not how anyone expects a touchscreen to work.
+		// Move the pointer to the touch, but do not click yet. Clicking on
+		// touch-down made every attempt to reposition the cursor also activate
+		// whatever it passed over; the click happens on release instead, and
+		// only if the finger stayed put.
 		UITouch *touch = [touches anyObject];
 
-		[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
-		IOSTouch_QueueKey( K_MOUSE1, 1 );
+		self.menuTouchStart = [touch locationInView:self];
+		self.menuTouchMoved = NO;
+		[self moveMenuCursorTo:[self virtualPointFor:self.menuTouchStart]];
 		return;
 	}
 
@@ -305,8 +318,14 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 {
 	if ( [self menuActive] ) {
 		UITouch *touch = [touches anyObject];
+		CGPoint p = [touch locationInView:self];
 
-		[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+		if ( fabs( p.x - self.menuTouchStart.x ) > 8.0 ||
+			 fabs( p.y - self.menuTouchStart.y ) > 8.0 ) {
+			self.menuTouchMoved = YES;
+		}
+
+		[self moveMenuCursorTo:[self virtualPointFor:p]];
 		return;
 	}
 
@@ -375,7 +394,11 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	if ( [self menuActive] ) {
-		IOSTouch_QueueKey( K_MOUSE1, 0 );
+		// Only a tap selects. A drag was the player aiming the cursor.
+		if ( !self.menuTouchMoved ) {
+			IOSTouch_QueueKey( K_MOUSE1, 1 );
+			IOSTouch_QueueKey( K_MOUSE1, 0 );
+		}
 		return;
 	}
 

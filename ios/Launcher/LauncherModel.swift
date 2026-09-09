@@ -14,26 +14,30 @@ struct GameAction: Identifiable, Hashable {
     let group: String
 
     static let all: [GameAction] = [
-        GameAction(id: "+attack",     title: "Fire",            group: "Combat"),
-        GameAction(id: "+zoom",       title: "Aim / scope",     group: "Combat"),
-        GameAction(id: "+reload",     title: "Reload",          group: "Combat"),
-        GameAction(id: "weapnext",    title: "Next weapon",     group: "Combat"),
-        GameAction(id: "weapprev",    title: "Previous weapon", group: "Combat"),
-        GameAction(id: "+movedown",   title: "Crouch",          group: "Movement"),
-        GameAction(id: "+moveup",     title: "Jump",            group: "Movement"),
-        GameAction(id: "+speed",      title: "Walk / run",      group: "Movement"),
-        GameAction(id: "+leanleft",   title: "Lean left",       group: "Movement"),
-        GameAction(id: "+leanright",  title: "Lean right",      group: "Movement"),
-        GameAction(id: "+useitem",    title: "Use / activate",  group: "Actions"),
-        GameAction(id: "+kick",       title: "Kick",            group: "Actions"),
-        GameAction(id: "itemnext",    title: "Next item",       group: "Actions"),
-        GameAction(id: "notebook",    title: "Notebook",        group: "Actions"),
-        GameAction(id: "save quick",  title: "Quick save",      group: "System"),
-        GameAction(id: "load quick",  title: "Quick load",      group: "System"),
-        GameAction(id: "togglemenu",  title: "Menu",            group: "System"),
+        GameAction(id: "+attack",    title: "Огонь",              group: "Бой"),
+        GameAction(id: "+attack2",   title: "Альт. огонь",        group: "Бой"),
+        GameAction(id: "+zoom",      title: "Прицел / кратность", group: "Бой"),
+        GameAction(id: "+reload",    title: "Перезарядка",        group: "Бой"),
+        GameAction(id: "weapnext",   title: "Следующее оружие",   group: "Бой"),
+        GameAction(id: "weapprev",   title: "Предыдущее оружие",  group: "Бой"),
+        GameAction(id: "+quickgren", title: "Быстрая граната",    group: "Бой"),
+        GameAction(id: "+moveup",    title: "Прыжок",             group: "Движение"),
+        GameAction(id: "+movedown",  title: "Присесть",           group: "Движение"),
+        GameAction(id: "+sprint",    title: "Спринт",             group: "Движение"),
+        GameAction(id: "+speed",     title: "Шагом",              group: "Движение"),
+        GameAction(id: "+leanleft",  title: "Наклон влево",       group: "Движение"),
+        GameAction(id: "+leanright", title: "Наклон вправо",      group: "Движение"),
+        GameAction(id: "+activate",  title: "Использовать",       group: "Действия"),
+        GameAction(id: "+useitem",   title: "Применить предмет",  group: "Действия"),
+        GameAction(id: "itemnext",   title: "Следующий предмет",  group: "Действия"),
+        GameAction(id: "+kick",      title: "Удар ногой",         group: "Действия"),
+        GameAction(id: "notebook",   title: "Журнал",             group: "Действия"),
+        GameAction(id: "save quick", title: "Быстрое сохранение", group: "Система"),
+        GameAction(id: "load quick", title: "Быстрая загрузка",   group: "Система"),
+        GameAction(id: "togglemenu", title: "Меню",               group: "Система"),
     ]
 
-    static var groups: [String] { ["Combat", "Movement", "Actions", "System"] }
+    static var groups: [String] { ["Бой", "Движение", "Действия", "Система"] }
 }
 
 /// The DualSense inputs a player can bind, named the way the engine names them.
@@ -69,6 +73,102 @@ struct PadButton: Identifiable, Hashable {
     ]
 }
 
+/// Graphics presets.
+///
+/// The M5 is enormously faster than anything RTCW was built for -- it is a 2001
+/// game running a fixed-function pipeline -- so "maximum" is the sensible
+/// default and the lower presets exist for battery life rather than for
+/// playability. The only genuinely expensive setting at this resolution is
+/// stencil shadows.
+enum GraphicsPreset: Int, CaseIterable, Identifiable {
+    case maximum = 0
+    case balanced = 1
+    case battery = 2
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .maximum:  return "Максимум"
+        case .balanced: return "Баланс"
+        case .battery:  return "Экономия"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .maximum:
+            return "Полное разрешение, анизотропная фильтрация, динамический свет и тени. M5 тянет это с запасом."
+        case .balanced:
+            return "То же, но без стенсильных теней — самой дорогой настройки на таком разрешении."
+        case .battery:
+            return "Половинное разрешение и упрощённые эффекты. Заметно дольше от батареи."
+        }
+    }
+
+    /// cvar name -> value. Applied on top of the game's own defaults.
+    var cvars: [String: String] {
+        var v: [String: String] = [
+            // Textures. picmip 0 is full detail; the pk3s are small by modern
+            // standards and there is no reason to downscale them here.
+            "r_picmip": "0",
+            "r_picmip2": "0",
+            "r_texturebits": "32",
+            "r_colorbits": "32",
+            "r_depthbits": "24",
+            "r_textureMode": "GL_LINEAR_MIPMAP_LINEAR",
+            "r_detailtextures": "1",
+            // No S3TC on Apple hardware, and the ES path does not implement the
+            // alternatives, so compression stays off.
+            "r_ext_compressed_textures": "0",
+            "r_ext_texture_filter_anisotropic": "1",
+            "r_ext_max_anisotropy": "16",
+
+            // Geometry. Lower subdivisions means finer curves.
+            "r_subdivisions": "1",
+            "r_lodbias": "0",
+            "r_lodCurveError": "999",
+
+            // World
+            "r_fastsky": "0",
+            "r_drawSun": "1",
+            "r_flares": "1",
+            "r_dynamiclight": "1",
+            "r_drawentities": "1",
+
+            // Bloom does a full-screen copy per frame through the ES1 path,
+            // which at 2752x2064 costs far more than it is worth.
+            "r_bloom": "0",
+
+            "cg_shadows": "2",       // stencil shadow volumes
+            "cg_brassTime": "2500",
+            "cg_gibs": "1",
+            "cg_wolfparticles": "1",
+            "cg_coronas": "1",
+            "cg_marktime": "20000",
+        ]
+
+        switch self {
+        case .maximum:
+            break
+        case .balanced:
+            v["cg_shadows"] = "1"    // blob shadows
+            v["r_ext_max_anisotropy"] = "8"
+        case .battery:
+            v["cg_shadows"] = "0"
+            v["r_ext_max_anisotropy"] = "2"
+            v["r_subdivisions"] = "4"
+            v["r_lodCurveError"] = "250"
+            v["r_dynamiclight"] = "0"
+            v["cg_wolfparticles"] = "0"
+            v["cg_brassTime"] = "0"
+            v["cg_marktime"] = "5000"
+        }
+
+        return v
+    }
+}
+
 @MainActor
 final class LauncherModel: ObservableObject {
     // Game data
@@ -76,6 +176,7 @@ final class LauncherModel: ObservableObject {
     @Published var dataPath: String = ""
 
     // Graphics
+    @Published var preset: GraphicsPreset = .maximum
     @Published var maxFPS: Int = 120
     @Published var hiDPI: Bool = true
     @Published var fov: Double = 90
@@ -94,6 +195,7 @@ final class LauncherModel: ObservableObject {
     @Published var triggerHard: Double = 0.75
     @Published var touchControls: Int = 0
     @Published var invertLook: Bool = false
+    @Published var moveDigital: Bool = true
 
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
@@ -160,25 +262,31 @@ final class LauncherModel: ObservableObject {
     /// game ships with. Applied on first run and by the Reset button.
     func applyDefaultBindings() {
         bindings = [
+            // Triggers do the shooting, shoulders change weapon -- the layout
+            // every console shooter uses, so it needs no learning.
             "PAD0_RIGHTTRIGGER":      "+attack",
             "PAD0_LEFTTRIGGER":       "+zoom",
-            "PAD0_A":                 "+moveup",
-            "PAD0_B":                 "+movedown",
-            "PAD0_X":                 "+useitem",
-            "PAD0_Y":                 "+reload",
             "PAD0_RIGHTSHOULDER":     "weapnext",
             "PAD0_LEFTSHOULDER":      "weapprev",
-            "PAD0_LEFTSTICK_CLICK":   "+speed",
+
+            "PAD0_A":                 "+moveup",     // Cross  -- jump
+            "PAD0_B":                 "+movedown",   // Circle -- crouch
+            "PAD0_X":                 "+reload",     // Square -- reload
+            "PAD0_Y":                 "+activate",   // Triangle -- use/open
+
+            "PAD0_LEFTSTICK_CLICK":   "+sprint",
             "PAD0_RIGHTSTICK_CLICK":  "+kick",
-            "PAD0_DPAD_UP":           "itemnext",
-            "PAD0_DPAD_DOWN":         "notebook",
-            "PAD0_DPAD_LEFT":         "+leanleft",
-            "PAD0_DPAD_RIGHT":        "+leanright",
+
             "PAD0_START":             "togglemenu",
-            "PAD0_BACK":              "save quick",
-            "PAD0_TOUCHPAD":          "load quick",
+            "PAD0_BACK":              "notebook",
+            "PAD0_TOUCHPAD":          "+useitem",
+
             "PAD0_TOUCH_SWIPE_LEFT":  "weapprev",
             "PAD0_TOUCH_SWIPE_RIGHT": "weapnext",
+            "PAD0_TOUCH_SWIPE_UP":    "itemnext",
+            "PAD0_TOUCH_SWIPE_DOWN":  "+quickgren",
+
+            // The D-pad is deliberately absent: it walks, like the arrow keys.
         ]
     }
 
@@ -213,6 +321,10 @@ final class LauncherModel: ObservableObject {
 
     /// Push everything to the engine and write the config it will exec.
     func commit() {
+        for (name, value) in preset.cvars {
+            IOSBridge_SetCvar(name, value)
+        }
+
         IOSBridge_SetCvar("com_maxfps", "\(maxFPS)")
         IOSBridge_SetCvar("r_hidpi", hiDPI ? "1" : "0")
         IOSBridge_SetCvar("cg_fov", String(format: "%.0f", fov))
@@ -224,6 +336,8 @@ final class LauncherModel: ObservableObject {
         // opaque multiplier, and the movement stick keeps a flatter curve than
         // the look stick -- aiming wants a soft centre, walking does not.
         IOSBridge_SetCvar("in_gamepadDirect", "1")
+        IOSBridge_SetCvar("in_moveDigital", moveDigital ? "1" : "0")
+        IOSBridge_SetCvar("in_dpadMove", "1")
         IOSBridge_SetCvar("in_lookYawSpeed", String(format: "%.0f", lookYawSpeed))
         IOSBridge_SetCvar("in_lookPitchSpeed", String(format: "%.0f", lookPitchSpeed))
         IOSBridge_SetCvar("in_stickExpo", String(format: "%.2f", stickExpo))
