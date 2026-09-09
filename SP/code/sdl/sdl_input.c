@@ -1800,6 +1800,17 @@ static void IN_ProcessEvents( void )
 			case SDL_MOUSEBUTTONUP:
 				{
 					int b;
+
+#if TARGET_OS_IPHONE
+					// A click SDL made up from a touch is exactly what the menus
+					// need and exactly what gameplay does not: there it lands on
+					// +attack, so simply touching the screen fires the weapon.
+					// Shooting by touch is the overlay's fire button instead.
+					if ( e.button.which == SDL_TOUCH_MOUSEID &&
+						 !( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) ) {
+						break;
+					}
+#endif
 					switch( e.button.button )
 					{
 						case SDL_BUTTON_LEFT:   b = K_MOUSE1;     break;

@@ -169,6 +169,42 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
     }
 }
 
+/// The campaign in order, so a mission can be started without going through
+/// RTCW's own menus -- which are cursor-driven and awkward on a touchscreen.
+struct CampaignMission: Identifiable, Hashable {
+    let id: String      // map name
+    let title: String
+
+    static let all: [CampaignMission] = [
+        CampaignMission(id: "escape1",   title: "1. Побег"),
+        CampaignMission(id: "escape2",   title: "2. Замок Вольфенштайн"),
+        CampaignMission(id: "tram",      title: "3. Фуникулёр"),
+        CampaignMission(id: "village1",  title: "4. Деревня"),
+        CampaignMission(id: "crypt1",    title: "5. Склеп"),
+        CampaignMission(id: "crypt2",    title: "6. Гробница"),
+        CampaignMission(id: "church",    title: "7. Церковь"),
+        CampaignMission(id: "boss1",     title: "8. Хайнрих"),
+        CampaignMission(id: "forest",    title: "9. Лес"),
+        CampaignMission(id: "dam",       title: "10. Плотина"),
+        CampaignMission(id: "village2",  title: "11. Деревня II"),
+        CampaignMission(id: "chateau",   title: "12. Шато"),
+        CampaignMission(id: "dark",      title: "13. Тёмная база"),
+        CampaignMission(id: "trainyard", title: "14. Депо"),
+        CampaignMission(id: "sfm",       title: "15. Секретный завод"),
+        CampaignMission(id: "factory",   title: "16. Завод"),
+        CampaignMission(id: "swf",       title: "17. Оружейный цех"),
+        CampaignMission(id: "assault",   title: "18. Штурм"),
+        CampaignMission(id: "xlabs",     title: "19. X-Лаборатории"),
+        CampaignMission(id: "dig",       title: "20. Раскопки"),
+        CampaignMission(id: "norway",    title: "21. Норвегия"),
+        CampaignMission(id: "rocket",    title: "22. Ракетная база"),
+        CampaignMission(id: "baseout",   title: "23. Побег с базы"),
+        CampaignMission(id: "castle",    title: "24. Замок"),
+        CampaignMission(id: "boss2",     title: "25. Пробуждение"),
+        CampaignMission(id: "end",       title: "26. Финал"),
+    ]
+}
+
 @MainActor
 final class LauncherModel: ObservableObject {
     // Game data
@@ -196,6 +232,7 @@ final class LauncherModel: ObservableObject {
     @Published var touchControls: Int = 0
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
+    @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
 
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
@@ -372,6 +409,15 @@ final class LauncherModel: ObservableObject {
 
     func play() {
         commit()
+        IOSBridge_SetStartupCommand("")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Start a mission directly, skipping the game's own menus.
+    func startMission(_ mission: CampaignMission) {
+        commit()
+        IOSBridge_SetCvar("g_gameskill", "\(skill)")
+        IOSBridge_SetStartupCommand("spmap \(mission.id)")
         IOSBridge_LauncherFinished()
     }
 }

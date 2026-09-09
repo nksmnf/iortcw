@@ -45,6 +45,7 @@ static int            numLauncherBinds;
 
 static qboolean launcherDone;
 static char     launcherCommandLine[1024];
+static char     launcherStartupCommand[256];
 static char     bridgeScratch[MAX_OSPATH];
 
 /*
@@ -292,6 +293,17 @@ void IOSBridge_WriteConfig( void )
 
 /*
 ==============
+IOSBridge_SetStartupCommand
+==============
+*/
+void IOSBridge_SetStartupCommand( const char *command )
+{
+	Q_strncpyz( launcherStartupCommand, command ? command : "",
+		sizeof( launcherStartupCommand ) );
+}
+
+/*
+==============
 IOSBridge_BuildCommandLine
 
 Arguments that cannot go in the config because they are read too early:
@@ -310,6 +322,13 @@ const char *IOSBridge_BuildCommandLine( void )
 	Com_sprintf( launcherCommandLine, sizeof( launcherCommandLine ),
 		"+set com_hunkMegs %s +set net_enabled 0 +set logfile 2",
 		( hunk && hunk[0] ) ? hunk : "512" );
+
+	// Appended last so it runs after everything else is configured.
+	if ( launcherStartupCommand[0] ) {
+		Q_strcat( launcherCommandLine, sizeof( launcherCommandLine ), " +" );
+		Q_strcat( launcherCommandLine, sizeof( launcherCommandLine ),
+			launcherStartupCommand );
+	}
 
 	return launcherCommandLine;
 }

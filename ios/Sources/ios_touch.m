@@ -194,6 +194,24 @@ extern void IOSTouch_SkipCinematic( void );
 	}
 }
 
+/*
+ * The overlay sits on the window, above SDL's view, so by default it would
+ * swallow every touch before SDL ever saw one -- including the ones the menus
+ * depend on.
+ *
+ * Returning nil here means "not mine, keep looking", which passes the touch
+ * down to SDL's view. Menus and the console are handed over wholesale; gameplay
+ * is kept, because that is where the sticks and buttons live.
+ */
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
+{
+	if ( ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) != 0 ) {
+		return nil;
+	}
+
+	return [super hitTest:point withEvent:event];
+}
+
 - (IORTCWTouchButton *)buttonAtPoint:(CGPoint)p
 {
 	for ( IORTCWTouchButton *b in self.buttons ) {
@@ -263,6 +281,14 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
+	// One line, once, so a report of "touch does nothing" can be separated from
+	// "touch never reaches us" without a debugger.
+	static BOOL loggedFirstTouch = NO;
+	if ( !loggedFirstTouch ) {
+		loggedFirstTouch = YES;
+		Com_Printf( "Touch overlay: first touch received\n" );
+	}
+
 	// A tap anywhere skips a cutscene, which is the one thing everyone reaches
 	// for and the game otherwise only offers on a keyboard.
 	if ( IOSTouch_CinematicActive() ) {
@@ -270,16 +296,10 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
+	// Menus are left to SDL's touch-to-mouse synthesis, which drives the game's
+	// own cursor correctly. Handling them here as well produced two cursors
+	// fighting: the pointer jumped and taps selected whatever it passed over.
 	if ( [self menuActive] ) {
-		// Move the pointer to the touch, but do not click yet. Clicking on
-		// touch-down made every attempt to reposition the cursor also activate
-		// whatever it passed over; the click happens on release instead, and
-		// only if the finger stayed put.
-		UITouch *touch = [touches anyObject];
-
-		self.menuTouchStart = [touch locationInView:self];
-		self.menuTouchMoved = NO;
-		[self moveMenuCursorTo:[self virtualPointFor:self.menuTouchStart]];
 		return;
 	}
 
@@ -317,15 +337,6 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	if ( [self menuActive] ) {
-		UITouch *touch = [touches anyObject];
-		CGPoint p = [touch locationInView:self];
-
-		if ( fabs( p.x - self.menuTouchStart.x ) > 8.0 ||
-			 fabs( p.y - self.menuTouchStart.y ) > 8.0 ) {
-			self.menuTouchMoved = YES;
-		}
-
-		[self moveMenuCursorTo:[self virtualPointFor:p]];
 		return;
 	}
 
@@ -394,11 +405,6 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	if ( [self menuActive] ) {
-		// Only a tap selects. A drag was the player aiming the cursor.
-		if ( !self.menuTouchMoved ) {
-			IOSTouch_QueueKey( K_MOUSE1, 1 );
-			IOSTouch_QueueKey( K_MOUSE1, 0 );
-		}
 		return;
 	}
 
@@ -423,34 +429,35 @@ static cvar_t *in_touchControls = NULL;
 ==============
 Sys_IOS_TouchOverlayInit
 
-Attaches the overlay to SDL's own view rather than to a new UIWindow, so there
-are no window-level games and unhandled touches fall through naturally.
+Attached to the window rather than to SDL's view.
+
+Adding it as a subview of the GL view looked tidier, but SDL owns that view and
+reorders its own subviews, so the overlay ended up underneath and never saw a
+touch -- and since SDL's touch-to-mouse synthesis is off (it was firing the
+weapon on every tap), that left no touch input at all. Sitting directly on the
+window, above SDL's view, is the arrangement that cannot be undone from
+underneath.
 ==============
 */
 void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 {
 	UIWindow *window = (__bridge UIWindow *)sdlWindowHandle;
-	UIView *host;
 
 	if ( touchOverlay || !window ) {
-		return;
-	}
-
-	host = window.rootViewController.view;
-	if ( !host ) {
 		return;
 	}
 
 	in_touchControls = Cvar_Get( "in_touchControls", "0", CVAR_ARCHIVE );
 	Cvar_CheckRange( in_touchControls, 0, 2, qtrue );
 
-	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:host.bounds];
+	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:window.bounds];
 	touchOverlay.autoresizingMask =
 		UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-	[host addSubview:touchOverlay];
+	[window addSubview:touchOverlay];
+	[window bringSubviewToFront:touchOverlay];
 
-	Com_Printf( "Touch overlay: attached, host %.0fx%.0f, in_touchControls %d\n",
-		host.bounds.size.width, host.bounds.size.height,
+	Com_Printf( "Touch overlay: attached to window %.0fx%.0f, in_touchControls %d\n",
+		window.bounds.size.width, window.bounds.size.height,
 		in_touchControls->integer );
 
 	Sys_IOS_TouchOverlayUpdate();
@@ -479,12 +486,16 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		default: visible = !IOSTouch_ControllerConnected(); break;
 	}
 
-	// The view stays in the hierarchy either way: the multi-finger escape
-	// gestures have to keep working when the controls are hidden, since on a
-	// sideloaded build they are the only route to the menu and console.
+	// Only the controls are hidden, never the overlay itself: it still has to
+	// receive touches so menus, cutscene skipping and the multi-finger gestures
+	// keep working with a controller attached.
 	for ( UIView *sub in touchOverlay.subviews ) {
 		sub.hidden = !visible;
 	}
+
+	// SDL recreates and reorders its views on vid_restart, which would bury the
+	// overlay again.
+	[touchOverlay.superview bringSubviewToFront:touchOverlay];
 
 	Com_DPrintf( "Touch overlay: %s (mode %d, controller %s)\n",
 		visible ? "shown" : "hidden",

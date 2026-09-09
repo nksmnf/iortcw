@@ -18,8 +18,9 @@ struct LauncherView: View {
 
             Picker("", selection: $tab) {
                 Text("Данные").tag(0)
-                Text("Графика").tag(1)
-                Text("Управление").tag(2)
+                Text("Кампания").tag(1)
+                Text("Графика").tag(2)
+                Text("Управление").tag(3)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 24)
@@ -30,7 +31,8 @@ struct LauncherView: View {
             Group {
                 switch tab {
                 case 0: DataView(model: model)
-                case 1: GraphicsView(model: model)
+                case 1: CampaignView(model: model)
+                case 2: GraphicsView(model: model)
                 default: ControlsView(model: model)
                 }
             }
@@ -159,6 +161,56 @@ private struct DataView: View {
             }
             .padding(24)
         }
+    }
+}
+
+// MARK: - Кампания
+
+private struct CampaignView: View {
+    @ObservedObject var model: LauncherModel
+
+    var body: some View {
+        Form {
+            Section("Сложность") {
+                Picker("Сложность", selection: $model.skill) {
+                    Text("Не делай мне больно").tag(1)
+                    Text("Не так уж и плохо").tag(2)
+                    Text("Схватка").tag(3)
+                    Text("Смерть во плоти").tag(4)
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+
+            Section("Миссии") {
+                ForEach(CampaignMission.all) { mission in
+                    Button {
+                        model.startMission(mission)
+                    } label: {
+                        HStack {
+                            Text(mission.title)
+                                .foregroundStyle(model.canPlay ? Color.primary : Color.secondary)
+                            Spacer()
+                            Image(systemName: "play.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .disabled(!model.canPlay)
+                }
+            }
+
+            Section {
+                Text("""
+                     Запуск отсюда идёт мимо меню игры. Меню RTCW рассчитано на                      мышь, и на планшете попасть в его пункты неудобно — так что                      это самый прямой путь к игре.
+
+                     Сохранения работают как обычно: быстрое сохранение и                      загрузка есть в раскладке контроллера.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .scrollContentBackground(.hidden)
     }
 }
 

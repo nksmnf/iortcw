@@ -76,6 +76,11 @@ const char *IOSBridge_GetBinding( const char *keyName );
 // Flush the launcher's settings and bindings to ios_launcher.cfg.
 void IOSBridge_WriteConfig( void );
 
+// A console command to run once the engine is up, or "" for none. Used by the
+// launcher's "start campaign" button, which exists because RTCW's own menus are
+// awkward to drive without a mouse.
+void IOSBridge_SetStartupCommand( const char *command );
+
 // Extra arguments the engine should start with, as a single string. Built from
 // the launcher's choices for the values that must be set before the configs are
 // read.
