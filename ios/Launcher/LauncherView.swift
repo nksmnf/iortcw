@@ -1,9 +1,10 @@
 //  LauncherView.swift -- the launcher UI.
 //
-//  Three tabs: getting the game data in, graphics, and controls (including the
-//  bind editor). The Play button is disabled until pak0.pk3 is present, which is
-//  the one thing that will otherwise send the engine straight into a fatal
-//  error on startup.
+//  Three tabs: getting the game data in, graphics, and controls. Play stays
+//  disabled until pak0.pk3 is present, which is the one thing that otherwise
+//  sends the engine straight into a fatal error on startup.
+//
+//  Russian throughout, since that is the language the person playing this reads.
 
 import SwiftUI
 
@@ -16,9 +17,9 @@ struct LauncherView: View {
             header
 
             Picker("", selection: $tab) {
-                Text("Game Data").tag(0)
-                Text("Graphics").tag(1)
-                Text("Controls").tag(2)
+                Text("Данные").tag(0)
+                Text("Графика").tag(1)
+                Text("Управление").tag(2)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 24)
@@ -58,7 +59,7 @@ struct LauncherView: View {
                     .font(.callout)
                     .foregroundStyle(.green)
             } else {
-                Label("No controller", systemImage: "gamecontroller")
+                Label("Нет контроллера", systemImage: "gamecontroller")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -69,14 +70,14 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack {
-            Text(model.canPlay ? "Ready" : "Waiting for game data")
+            Text(model.canPlay ? "Готово" : "Нет игровых файлов")
                 .font(.callout)
-                .foregroundStyle(model.canPlay ? .green : .orange)
+                .foregroundStyle(model.canPlay ? Color.green : Color.orange)
             Spacer()
             Button {
                 model.play()
             } label: {
-                Text("PLAY")
+                Text("ИГРАТЬ")
                     .font(.system(size: 18, weight: .bold))
                     .tracking(2)
                     .padding(.horizontal, 44)
@@ -91,7 +92,7 @@ struct LauncherView: View {
     }
 }
 
-// MARK: - Game data
+// MARK: - Данные
 
 private struct DataView: View {
     @ObservedObject var model: LauncherModel
@@ -100,29 +101,28 @@ private struct DataView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if model.hasAllData {
-                    Label("All game files found.", systemImage: "checkmark.seal.fill")
+                    Label("Все игровые файлы найдены.", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                         .font(.headline)
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Copy your Return to Castle Wolfenstein data")
+                        Text("Скопируйте данные Return to Castle Wolfenstein")
                             .font(.headline)
                         Text("""
-                             Copy the .pk3 files from your RTCW installation \
-                             into this app's folder. They are in the Main folder \
-                             of a GOG or Steam copy.
+                             Нужны файлы .pk3 из вашей копии игры — они лежат в \
+                             папке Main установленной RTCW (GOG или Steam).
 
-                             From a Mac: connect the iPad, open it in Finder, go \
-                             to the Files tab and drag the .pk3 files (or the \
-                             whole Main folder) onto iORTCW. Finder will only \
-                             drop them at the top level — that is fine, they get \
-                             moved into main/ automatically.
+                             С Mac: подключите iPad, откройте его в Finder, \
+                             вкладка «Файлы», и перетащите файлы .pk3 (или всю \
+                             папку Main) на iORTCW. Finder кладёт их только в \
+                             корень — это нормально, приложение само перенесёт \
+                             их в main/.
 
-                             On the iPad: Files → On My iPad → iORTCW.
+                             На самом iPad: Файлы → На iPad → iORTCW.
 
-                             This list updates as the files arrive. Large files \
-                             appear only once they have finished copying, so a \
-                             pause on pak0.pk3 is normal.
+                             Список обновляется по мере копирования. Большие \
+                             файлы появляются только когда докопируются, так что \
+                             пауза на pak0.pk3 — это нормально.
                              """)
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -134,12 +134,12 @@ private struct DataView: View {
                         let present = model.dataMask & (1 << idx) != 0
                         HStack {
                             Image(systemName: present ? "checkmark.circle.fill" : "circle.dotted")
-                                .foregroundStyle(present ? .green : .secondary)
+                                .foregroundStyle(present ? Color.green : Color.secondary)
                             Text(name)
                                 .font(.system(.callout, design: .monospaced))
                             Spacer()
                             if idx == 0 && !present {
-                                Text("required")
+                                Text("обязателен")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
                             }
@@ -150,7 +150,7 @@ private struct DataView: View {
                 .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Folder").font(.caption).foregroundStyle(.secondary)
+                    Text("Папка").font(.caption).foregroundStyle(.secondary)
                     Text(model.dataPath + "/main")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -162,40 +162,53 @@ private struct DataView: View {
     }
 }
 
-// MARK: - Graphics
+// MARK: - Графика
 
 private struct GraphicsView: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
         Form {
-            Section("Display") {
-                Picker("Frame rate", selection: $model.maxFPS) {
-                    Text("60 fps").tag(60)
-                    Text("90 fps").tag(90)
-                    Text("120 fps (ProMotion)").tag(120)
+            Section("Качество") {
+                Picker("Пресет", selection: $model.preset) {
+                    ForEach(GraphicsPreset.allCases) { p in
+                        Text(p.title).tag(p)
+                    }
                 }
-                Toggle("Full resolution", isOn: $model.hiDPI)
-                Text(model.hiDPI
-                     ? "Renders at the panel's native 2752×2064."
-                     : "Renders at half resolution. Sharper battery life, softer picture.")
+                .pickerStyle(.segmented)
+                Text(model.preset.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Picture") {
+            Section("Экран") {
+                Picker("Кадры/с", selection: $model.maxFPS) {
+                    Text("60").tag(60)
+                    Text("90").tag(90)
+                    Text("120").tag(120)
+                }
+                .pickerStyle(.segmented)
+                Toggle("Полное разрешение", isOn: $model.hiDPI)
+                Text(model.hiDPI
+                     ? "Рендер в родных 2752×2064."
+                     : "Половинное разрешение: мягче картинка, дольше батарея.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Изображение") {
                 HStack {
-                    Text("Field of view")
+                    Text("Поле зрения")
                     Slider(value: $model.fov, in: 70...110, step: 5)
                     Text("\(Int(model.fov))°").monospacedDigit().frame(width: 46)
                 }
                 HStack {
-                    Text("Brightness")
+                    Text("Яркость")
                     Slider(value: $model.brightness, in: 1.0...2.5, step: 0.1)
                     Text(String(format: "%.1f", model.brightness))
                         .monospacedDigit().frame(width: 46)
                 }
-                Text("iOS has no hardware gamma, so brightness is baked into textures and only takes effect on the next launch.")
+                Text("Аппаратной гаммы на iOS нет, поэтому яркость запекается в текстуры и применяется при следующем запуске.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -204,113 +217,88 @@ private struct GraphicsView: View {
     }
 }
 
-// MARK: - Controls
+// MARK: - Управление
 
 private struct ControlsView: View {
     @ObservedObject var model: LauncherModel
     @State private var showBinds = false
+    @State private var showTest = false
 
     var body: some View {
         Form {
-            Section("Sticks") {
-                HStack {
-                    Text("Turn speed")
-                    Slider(value: $model.lookYawSpeed, in: 60...400, step: 10)
-                    Text("\(Int(model.lookYawSpeed))°/s")
-                        .monospacedDigit().frame(width: 62)
-                }
-                HStack {
-                    Text("Look up/down")
-                    Slider(value: $model.lookPitchSpeed, in: 40...300, step: 10)
-                    Text("\(Int(model.lookPitchSpeed))°/s")
-                        .monospacedDigit().frame(width: 62)
-                }
-                HStack {
-                    Text("Aim precision")
-                    Slider(value: $model.stickExpo, in: 0...1, step: 0.05)
-                    Text(String(format: "%.2f", model.stickExpo))
-                        .monospacedDigit().frame(width: 62)
-                }
-                Text("Higher makes the centre of the look stick finer for small corrections, without lowering the top speed.")
+            Section("Стики") {
+                Toggle("Движение по 8 направлениям", isOn: $model.moveDigital)
+                Text(model.moveDigital
+                     ? "Левый стик работает как WASD: северо-восток — это вперёд и вправо. Предсказуемо и без сноса."
+                     : "Плавное аналоговое движение.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
                 HStack {
-                    Text("Deadzone")
+                    Text("Скорость поворота")
+                    Slider(value: $model.lookYawSpeed, in: 60...400, step: 10)
+                    Text("\(Int(model.lookYawSpeed))°/с")
+                        .monospacedDigit().frame(width: 64)
+                }
+                HStack {
+                    Text("Вертикаль")
+                    Slider(value: $model.lookPitchSpeed, in: 40...300, step: 10)
+                    Text("\(Int(model.lookPitchSpeed))°/с")
+                        .monospacedDigit().frame(width: 64)
+                }
+                HStack {
+                    Text("Мёртвая зона")
                     Slider(value: $model.stickDeadzone, in: 0.02...0.35, step: 0.01)
                     Text(String(format: "%.0f%%", model.stickDeadzone * 100))
-                        .monospacedDigit().frame(width: 62)
+                        .monospacedDigit().frame(width: 64)
                 }
-                Toggle("Invert vertical look", isOn: $model.invertLook)
-            }
-
-            Section("Mouse / touch look") {
-                HStack {
-                    Text("Sensitivity")
-                    Slider(value: $model.sensitivity, in: 1...20, step: 0.5)
-                    Text(String(format: "%.1f", model.sensitivity))
-                        .monospacedDigit().frame(width: 46)
-                }
-            }
-
-            Section("Gyro aiming") {
-                Picker("Gyro", selection: $model.gyroMode) {
-                    Text("Off").tag(0)
-                    Text("Always on").tag(1)
-                    Text("Only while aiming").tag(2)
-                }
-                if model.gyroMode != 0 {
-                    HStack {
-                        Text("Gyro sensitivity")
-                        Slider(value: $model.gyroSens, in: 0.2...4.0, step: 0.1)
-                        Text(String(format: "%.1f", model.gyroSens))
-                            .monospacedDigit().frame(width: 46)
-                    }
-                    Text("Tilting the controller adds to the right stick rather than replacing it — stick for the big turn, gyro for the fine aim.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Toggle("Инверсия вертикали", isOn: $model.invertLook)
             }
 
             Section("DualSense") {
                 HStack {
-                    Text("Vibration")
+                    Text("Вибрация")
                     Slider(value: $model.rumble, in: 0...100, step: 5)
-                    Text("\(Int(model.rumble))%").monospacedDigit().frame(width: 52)
+                    Text("\(Int(model.rumble))%").monospacedDigit().frame(width: 54)
                 }
-                Toggle("Adaptive triggers", isOn: $model.adaptiveTriggers)
-                Text("Each weapon gets its own trigger resistance — a light break on the Luger, a heavy one on the Mauser, a rattle on automatics.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Text("Full-pull point")
-                    Slider(value: $model.triggerHard, in: 0.4...0.95, step: 0.05)
-                    Text(String(format: "%.0f%%", model.triggerHard * 100))
-                        .monospacedDigit().frame(width: 52)
+                Toggle("Адаптивные триггеры", isOn: $model.adaptiveTriggers)
+                Picker("Гироскоп", selection: $model.gyroMode) {
+                    Text("Выкл").tag(0)
+                    Text("Всегда").tag(1)
+                    Text("В прицеле").tag(2)
                 }
             }
 
-            Section("On-screen controls") {
-                Picker("Show", selection: $model.touchControls) {
-                    Text("Only without a controller").tag(0)
-                    Text("Always").tag(1)
-                    Text("Never").tag(2)
+            Section("Экранные кнопки") {
+                Picker("Показывать", selection: $model.touchControls) {
+                    Text("Без контроллера").tag(0)
+                    Text("Всегда").tag(1)
+                    Text("Никогда").tag(2)
                 }
-                Text("Three-finger tap is Escape and four-finger tap opens the console, whether or not the controls are shown.")
+                Text("Три пальца — Esc, четыре — консоль, работает всегда. Тап пропускает заставку.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Bindings") {
-                Button("Edit controller bindings…") { showBinds = true }
-                Button("Reset to defaults", role: .destructive) {
+            Section("Раскладка") {
+                Button("Проверка контроллера…") { showTest = true }
+                Button("Настроить кнопки…") { showBinds = true }
+                Button("Сбросить к стандартной", role: .destructive) {
                     model.applyDefaultBindings()
                 }
+                Text("""
+                     По умолчанию: R2 — огонь, L2 — прицел, R1/L1 — смена оружия, \
+                     Квадрат — перезарядка, Треугольник — использовать, Крест — \
+                     прыжок, Круг — присесть, L3 — спринт, R3 — удар ногой. \
+                     Крестовина ходит, как стрелки на клавиатуре.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .scrollContentBackground(.hidden)
-        .sheet(isPresented: $showBinds) {
-            BindingsView(model: model)
-        }
+        .sheet(isPresented: $showBinds) { BindingsView(model: model) }
+        .sheet(isPresented: $showTest) { ControllerTestView() }
     }
 }
 
@@ -328,9 +316,6 @@ private struct BindingsView: View {
                         HStack {
                             Text(pad.title)
                             Spacer()
-                            // Both branches must be the same ShapeStyle type;
-                            // mixing .secondary (hierarchical) with .orange
-                            // (Color) breaks inference for the whole ForEach.
                             Text(model.binding(for: pad)?.title ?? "—")
                                 .foregroundStyle(model.binding(for: pad) == nil
                                                  ? Color.secondary : Color.orange)
@@ -338,11 +323,11 @@ private struct BindingsView: View {
                     }
                 }
             }
-            .navigationTitle("Controller bindings")
+            .navigationTitle("Кнопки контроллера")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Готово") { dismiss() }
                 }
             }
         }
@@ -358,7 +343,7 @@ private struct ActionPicker: View {
     var body: some View {
         List {
             Section {
-                Button("Unbound", role: .destructive) {
+                Button("Не назначено", role: .destructive) {
                     model.assign(nil, to: pad)
                     dismiss()
                 }

@@ -304,8 +304,11 @@ const char *IOSBridge_BuildCommandLine( void )
 {
 	const char *hunk = IOSBridge_GetCvar( "com_hunkMegs" );
 
+	// logfile 2 is on by default and flushes each line. On a sideloaded build
+	// with no debugger attached, Documents/main/rtcwconsole.log is the only way
+	// to see what the engine did, and it is readable from Files.app.
 	Com_sprintf( launcherCommandLine, sizeof( launcherCommandLine ),
-		"+set com_hunkMegs %s +set net_enabled 0",
+		"+set com_hunkMegs %s +set net_enabled 0 +set logfile 2",
 		( hunk && hunk[0] ) ? hunk : "512" );
 
 	return launcherCommandLine;

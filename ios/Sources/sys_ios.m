@@ -359,10 +359,12 @@ void Sys_IOS_InitSDLHints( void )
 	// rather than reserving a strip of the screen for it.
 	SDL_SetHint( SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2" );
 
-	// Touch drives the mouse cursor for now, which is what makes the game's own
-	// menus usable before the touch overlay exists. Once the overlay queues its
-	// own events this should become 0 so the two do not both fire.
-	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "1" );
+	// The overlay queues its own events, so SDL must not also synthesise mouse
+	// input from touches. Leaving this on meant every tap anywhere produced a
+	// left click, which in game is +attack -- the "touching the screen fires the
+	// gun" problem.
+	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "0" );
+	SDL_SetHint( SDL_HINT_MOUSE_TOUCH_EVENTS, "0" );
 
 	// PS5 controllers report their full feature set only when SDL is allowed to
 	// talk to them in enhanced mode.

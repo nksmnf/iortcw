@@ -260,8 +260,15 @@ endif()
 # ---------------------------------------------------------------------------
 if(IORTCW_IOS)
     set(APP_NAME iORTCW)
+    # The asset catalogue carries the app icon. It has to be a source of the
+    # target, not just a bundle resource, so Xcode runs actool over it.
+    set(ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets")
+    set_source_files_properties(${ASSET_CATALOG} PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources)
+
     add_executable(${APP_NAME} MACOSX_BUNDLE
-        ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ})
+        ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ}
+        ${ASSET_CATALOG})
 
     set(IORTCW_BUNDLE_ID "com.iortcw.sp" CACHE STRING
         "Bundle identifier. Keep it stable: AltStore preserves the app's
@@ -278,6 +285,7 @@ if(IORTCW_IOS)
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${IORTCW_BUNDLE_ID}"
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "2"   # iPad
         XCODE_ATTRIBUTE_ENABLE_BITCODE NO
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
     )
 else()
     set(APP_NAME iowolfsp_cmake)
