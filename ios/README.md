@@ -63,15 +63,30 @@ state.
 
 ## Without a controller
 
-On-screen controls appear whenever no controller is connected (`in_touchControls`
+On-screen controls appear unless a controller is being used (`in_touchControls`
 0 automatic / 1 always / 2 never). Left half is a floating movement stick, right
-half is look, with fire/jump/use/crouch/reload/next-weapon bottom right.
+half is look, with fire/jump/use/crouch/reload/next-weapon bottom right and a
+MENU button top right. They hide themselves whenever the game is not what is on
+screen: a menu, a loading screen, the mission briefing, a cutscene.
 
-Two gestures work whether or not the controls are shown, and they are the only
-way into the menu and console on a sideloaded build with no debugger attached:
+"Automatic" waits for the pad to actually be used rather than merely reported.
+iOS reports a gamepad with nothing attached -- the simulator always does -- and
+hiding the controls on that leaves a tablet with no way to play at all.
 
-- **three-finger tap** — Escape
+Two gestures work whether or not the controls are shown:
+
+- **three-finger tap** — Escape, the same as the MENU button
 - **four-finger tap** — console
+
+The overlay owns every touch and drives the game's own cursor to the finger.
+Letting SDL synthesise mouse events from touches, which is the obvious way and
+what this did at first, does not work: the engine runs the mouse in relative
+mode for aiming, and in that mode a synthesised event arrives pinned to the
+centre of the window with a zero delta, so the cursor never moves and a tap
+activates whatever it was already over.
+
+`in_debugTouch 1` logs every touch and the state it arrived in. There is no
+console on a tablet, and that log is what found the above.
 
 ## How it is put together
 
@@ -124,9 +139,21 @@ ios/
 
 ## Notes and limitations
 
-- **The simulator shows the game letterboxed** and hides the right-hand
-  on-screen controls. That is the simulator keeping its frame in portrait while
-  the app draws landscape; a device honours the landscape-only Info.plist.
+- **The simulator renders in software** (`GL_RENDERER: Apple Software Renderer`)
+  and is nowhere near playable speed at 2752x2064 -- roughly a frame a second,
+  which reads as a hang. `+set r_hidpi 0` quarters the pixel count and makes it
+  usable for testing flow and input. It says nothing about the device, where
+  ES 1.1 runs on the GPU.
+- **The simulator shows the game letterboxed** when its own frame is portrait.
+  The app itself stays landscape; a device honours the landscape-only Info.plist.
+- **A game module linked into the engine keeps its globals across a level
+  change**, where a bytecode or freshly loaded one would not. Anything written
+  as "allocate once, the pointer starts null" is therefore a dangling pointer
+  after the first map. Two were found this way and fixed at the source
+  (`botstates` in the game, the portal fog flag in cgame); a third of the same
+  shape would look like a crash on level change or on loading a savegame.
+- **Savegame names are filled in** from the map (escape1_1, escape1_2). The save
+  menu refuses an empty name and there is no keyboard to type one with.
 - **`IORTCWSkipLauncher`** (a `UserDefaults` bool) starts straight into the game
   for players who have already set everything up.
 - **`qconsole.log`** — set `logfile 2`. It lands in Documents, so it is readable

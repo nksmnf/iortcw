@@ -16,7 +16,9 @@ struct GameAction: Identifiable, Hashable {
     static let all: [GameAction] = [
         GameAction(id: "+attack",    title: "Огонь",              group: "Бой"),
         GameAction(id: "+attack2",   title: "Альт. огонь",        group: "Бой"),
-        GameAction(id: "+zoom",      title: "Прицел / кратность", group: "Бой"),
+        GameAction(id: "+zoom",      title: "Прицел",             group: "Бой"),
+        GameAction(id: "zoomin",     title: "Кратность +",        group: "Бой"),
+        GameAction(id: "zoomout",    title: "Кратность −",        group: "Бой"),
         GameAction(id: "+reload",    title: "Перезарядка",        group: "Бой"),
         GameAction(id: "weapnext",   title: "Следующее оружие",   group: "Бой"),
         GameAction(id: "weapprev",   title: "Предыдущее оружие",  group: "Бой"),
@@ -32,8 +34,10 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "itemnext",   title: "Следующий предмет",  group: "Действия"),
         GameAction(id: "+kick",      title: "Удар ногой",         group: "Действия"),
         GameAction(id: "notebook",   title: "Журнал",             group: "Действия"),
-        GameAction(id: "save quick", title: "Быстрое сохранение", group: "Система"),
-        GameAction(id: "load quick", title: "Быстрая загрузка",   group: "Система"),
+        // The names default.cfg binds to F5 and F9. "save quick" was neither a
+        // command nor an argument the engine knows, so binding it did nothing.
+        GameAction(id: "savegame quicksave", title: "Быстрое сохранение", group: "Система"),
+        GameAction(id: "loadgame quicksave", title: "Быстрая загрузка",   group: "Система"),
         GameAction(id: "togglemenu", title: "Меню",               group: "Система"),
     ]
 
@@ -318,12 +322,23 @@ final class LauncherModel: ObservableObject {
             "PAD0_BACK":              "notebook",
             "PAD0_TOUCHPAD":          "+useitem",
 
+            // The touchpad handles what a pad has no buttons left for. Up and
+            // down are the scope's magnification, which the sniper rifle,
+            // snooper and binoculars all use and which is otherwise only on the
+            // mouse wheel.
             "PAD0_TOUCH_SWIPE_LEFT":  "weapprev",
             "PAD0_TOUCH_SWIPE_RIGHT": "weapnext",
-            "PAD0_TOUCH_SWIPE_UP":    "itemnext",
-            "PAD0_TOUCH_SWIPE_DOWN":  "+quickgren",
+            "PAD0_TOUCH_SWIPE_UP":    "zoomin",
+            "PAD0_TOUCH_SWIPE_DOWN":  "zoomout",
+            "PAD0_TOUCH_TAP":         "itemnext",
 
             // The D-pad is deliberately absent: it walks, like the arrow keys.
+            //
+            // So are the second stages of the triggers. They fire on a full pull
+            // in addition to the soft stage, so anything bound here also happens
+            // whenever the player shoots or aims hard. They are in the binding
+            // editor for anyone who wants to build a two-stage layout on
+            // purpose.
         ]
     }
 
