@@ -15,10 +15,15 @@
 #
 # Configure for iOS (device):
 #   cmake -S ios -B build/ios -GXcode \
-#         -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+#         -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 
 cmake_minimum_required(VERSION 3.24)
 project(iortcw_sp LANGUAGES C CXX OBJC)
+
+# Swift is only needed for the launcher UI, and only on iOS.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    enable_language(Swift)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
@@ -45,7 +50,7 @@ list(GET CMAKE_OSX_ARCHITECTURES 0 IORTCW_LD_ARCH)
 
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     if(IORTCW_IOS)
-        set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET 16.0)
     else()
         set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0)
     endif()
@@ -95,15 +100,17 @@ target_include_directories(iortcw_common INTERFACE
     "${SP_DIR}/code/freetype-2.9/include"
 )
 
+# Guarded by language: swiftc rejects clang flags outright ("Driver threw
+# unknown argument: '-fno-strict-aliasing'"), and the launcher is Swift.
 target_compile_options(iortcw_common INTERFACE
-    -fno-strict-aliasing
-    -fno-common
-    -pipe
-    -Wno-format-nonliteral
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-fno-strict-aliasing>
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-fno-common>
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-Wno-format-nonliteral>
     # The vendored libraries are from 2001-2018 and trip a lot of modern
     # diagnostics that we are not going to fix.
-    -Wno-deprecated-non-prototype
-    -Wno-implicit-function-declaration
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-Wno-deprecated-non-prototype>
+    $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-Wno-implicit-function-declaration>
 )
 
 if(IORTCW_IOS)
@@ -176,6 +183,7 @@ if(IORTCW_IOS)
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.c"
     )
 endif()
 
@@ -230,6 +238,24 @@ iortcw_add_vm_module(ui SOURCES ${UI_SRC}
     INCLUDES ${VM_INCLUDES})
 
 # ---------------------------------------------------------------------------
+# Launcher (Swift). Kept in its own target so the Swift driver never sees the
+# engine's clang flags, and reached from C purely through @_cdecl symbols, which
+# avoids the generated -Swift.h header ordering problem entirely.
+# ---------------------------------------------------------------------------
+if(IORTCW_IOS)
+    file(GLOB LAUNCHER_SWIFT "${CMAKE_CURRENT_SOURCE_DIR}/Launcher/*.swift")
+    add_library(iortcw_launcher STATIC ${LAUNCHER_SWIFT})
+    set_target_properties(iortcw_launcher PROPERTIES
+        Swift_MODULE_NAME iortcwLauncher
+        XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
+        # A single narrow header rather than the engine's own, which does not
+        # import into Swift cleanly.
+        XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER
+            "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.h"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # The application
 # ---------------------------------------------------------------------------
 if(IORTCW_IOS)
@@ -260,6 +286,10 @@ else()
 endif()
 
 add_dependencies(${APP_NAME} qagame_mod cgame_mod ui_mod)
+
+if(IORTCW_IOS)
+    target_link_libraries(${APP_NAME} PRIVATE iortcw_launcher)
+endif()
 
 target_link_libraries(${APP_NAME} PRIVATE
     iortcw_engine

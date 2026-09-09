@@ -746,6 +746,13 @@ int main( int argc, char **argv )
 	Sys_IOS_InitPaths( );
 	Sys_IOS_InitAudioSession( );
 	Sys_IOS_InitSDLHints( );
+
+	// The launcher runs before Com_Init. SDL's delegate has finished launching
+	// by now, so UIKit and the runloop are live, but SDL has not created its
+	// window yet (that happens inside Com_Init), so there is nothing to fight
+	// over. It also catches the missing-game-data case here, where we can
+	// explain it, rather than in FS_Startup, where it is a fatal error.
+	IOSLauncher_RunModal();
 #elif defined(__APPLE__)
 	// This is passed if we are launched by double-clicking
 	if ( argc >= 2 && Q_strncmp ( argv[1], "-psn", 4 ) == 0 )
@@ -770,6 +777,14 @@ int main( int argc, char **argv )
 
 		Q_strcat( commandLine, sizeof( commandLine ), " " );
 	}
+
+#if TARGET_OS_IPHONE
+	// Settings that are read before any config is exec'd have to arrive as
+	// arguments: Com_InitHunkMemory consumes com_hunkMegs before default.cfg
+	// runs, and net_enabled must be off from the start or iOS puts up the Local
+	// Network permission prompt for a single-player game.
+	Q_strcat( commandLine, sizeof( commandLine ), IOSBridge_BuildCommandLine() );
+#endif
 
 	CON_Init( );
 	Com_Init( commandLine );

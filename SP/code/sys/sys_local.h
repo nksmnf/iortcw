@@ -70,6 +70,11 @@ qboolean    Sys_IOS_HasAdaptiveTriggers( void );
 void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
 void        Sys_IOS_TouchOverlayUpdate( void );
 void        Sys_IOS_TouchOverlayShutdown( void );
+
+// Launcher (Swift, via @_cdecl) and its C-side bridge
+void        IOSLauncher_RunModal( void );
+void        IOSLauncher_Show( void );
+const char *IOSBridge_BuildCommandLine( void );
 #endif
 
 void Sys_GLimpSafeInit( void );

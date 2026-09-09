@@ -40,7 +40,7 @@ echo "Generating Xcode project for $TARGET in $BUILD_DIR"
 
 cmake -S "$ROOT/ios" -B "$BUILD_DIR" -GXcode \
       -DCMAKE_SYSTEM_NAME=iOS \
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
       -DCMAKE_OSX_ARCHITECTURES=arm64 \
       $SYSROOT_ARG \
       "$@"

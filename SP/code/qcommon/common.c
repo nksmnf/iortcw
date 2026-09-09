@@ -1953,6 +1953,20 @@ void Com_ExecuteCfg(void)
 		Cbuf_ExecuteText(EXEC_NOW, "exec autoexec.cfg\n");
 		Cbuf_Execute();
 	}
+
+#if TARGET_OS_IPHONE
+	// Last word, deliberately. default.cfg lives inside pak0.pk3 and sets things
+	// like r_mode that would otherwise override whatever the launcher chose, and
+	// wolfconfig.cfg carries the previous session's values. Both have run by
+	// now. autoexec.cfg is left alone -- that one belongs to the user.
+	Com_Printf( "Applying launcher settings (ios_launcher.cfg)\n" );
+	Cbuf_ExecuteText(EXEC_NOW, "exec ios_launcher.cfg\n");
+	Cbuf_Execute();
+	Com_Printf( "com_maxfps %s, r_hidpi %s, in_joystick %s\n",
+		Cvar_VariableString( "com_maxfps" ),
+		Cvar_VariableString( "r_hidpi" ),
+		Cvar_VariableString( "in_joystick" ) );
+#endif
 }
 
 /*
