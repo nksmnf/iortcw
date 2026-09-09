@@ -94,6 +94,34 @@ static int in_eventTime = 0;
 static int menuCursorX = 0;
 static int menuCursorY = 0;
 
+// Set once the player touches the pad. See IOSTouch_ControllerConnected.
+static qboolean gamepadUsed = qfalse;
+
+static void IN_NoteGamepadActivity( void )
+{
+	int i;
+
+	if ( gamepadUsed || !gamepad ) {
+		return;
+	}
+
+	for ( i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++ ) {
+		if ( SDL_GameControllerGetButton( gamepad, i ) ) {
+			gamepadUsed = qtrue;
+			Com_Printf( "Gamepad in use\n" );
+			return;
+		}
+	}
+
+	for ( i = 0; i < SDL_CONTROLLER_AXIS_MAX; i++ ) {
+		if ( abs( SDL_GameControllerGetAxis( gamepad, i ) ) > 8000 ) {
+			gamepadUsed = qtrue;
+			Com_Printf( "Gamepad in use\n" );
+			return;
+		}
+	}
+}
+
 static void IN_QueueMouseDelta( int dx, int dy )
 {
 	if ( !dx && !dy ) {
@@ -540,6 +568,7 @@ static void IN_InitJoystick( void )
 
 	stick = NULL;
 	gamepad = NULL;
+	gamepadUsed = qfalse;
 	memset(&stick_state, '\0', sizeof (stick_state));
 
 	// SDL 2.0.4 requires SDL_INIT_JOYSTICK to be initialized separately from
@@ -575,6 +604,12 @@ static void IN_InitJoystick( void )
 	// Print list and build cvar to allow ui to select joystick.
 	for (i = 0; i < total; i++)
 	{
+		// Named, not just counted. On a controller-first port the difference
+		// between "the pad is here" and "SDL is reporting something else"
+		// decides where to look next, and there is no console to ask on.
+		Com_Printf( "  %d: %s%s\n", i, SDL_JoystickNameForIndex(i),
+			SDL_IsGameController(i) ? " (gamepad)" : "" );
+
 		Q_strcat(buf, sizeof(buf), SDL_JoystickNameForIndex(i));
 		Q_strcat(buf, sizeof(buf), "\n");
 	}
@@ -593,6 +628,26 @@ static void IN_InitJoystick( void )
 	in_joystickNo = Cvar_Get( "in_joystickNo", "0", CVAR_ARCHIVE );
 	if( in_joystickNo->integer < 0 || in_joystickNo->integer >= total )
 		Cvar_Set( "in_joystickNo", "0" );
+
+	// Prefer a device SDL recognises as a game controller.
+	//
+	// Index order is not ours to choose and the first device is not necessarily
+	// the interesting one -- on iOS index 0 is "iOS Accelerometer", so a pad
+	// plugged in afterwards lands at index 1 and the default of 0 opens the
+	// accelerometer instead. That looks exactly like a pad that does nothing.
+	if( !SDL_IsGameController( in_joystickNo->integer ) )
+	{
+		for( i = 0; i < total; i++ )
+		{
+			if( SDL_IsGameController( i ) )
+			{
+				Com_Printf( "Joystick %d is not a gamepad, using %d (%s) instead\n",
+					in_joystickNo->integer, i, SDL_JoystickNameForIndex( i ) );
+				Cvar_Set( "in_joystickNo", va( "%d", i ) );
+				break;
+			}
+		}
+	}
 
 	in_joystickUseAnalog = Cvar_Get( "in_joystickUseAnalog", "0", CVAR_ARCHIVE );
 
@@ -1317,6 +1372,8 @@ static void IN_GamepadMove( void )
 		}
 	}
 
+	IN_NoteGamepadActivity();
+
 	if ( in_gamepadDirect->integer ) {
 		IN_GamepadSticks();
 	}
@@ -2001,6 +2058,32 @@ void IOSTouch_QueueMouseTo( int x, int y )
 
 /*
 ===============
+IN_MenuCursorTo
+
+Put the menu cursor on a point now, without going through the event queue.
+
+Queueing would be too late for a keypress that has to act on a particular item:
+Com_EventLoop is already handling that key, so anything queued from here is
+processed after it.
+===============
+*/
+void IN_MenuCursorTo( int x, int y )
+{
+	int dx = x - menuCursorX;
+	int dy = y - menuCursorY;
+
+	if ( !dx && !dy ) {
+		return;
+	}
+
+	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
+	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
+
+	CL_MouseEvent( dx, dy, 0 );
+}
+
+/*
+===============
 IN_ResetMenuCursor
 
 Called when the UI is (re)started, which puts its cursor back at the origin.
@@ -2018,7 +2101,11 @@ void IN_ResetMenuCursor( void )
 
 int IOSTouch_ControllerConnected( void )
 {
-	return gamepad != NULL;
+	// Being connected is not enough to take the on-screen controls away. iOS
+	// reports a gamepad that nobody plugged in -- the simulator always does, and
+	// a device may too -- and hiding the controls on that alone leaves a tablet
+	// with no way to play at all. Wait until the pad is actually used.
+	return gamepad != NULL && gamepadUsed;
 }
 
 int IOSTouch_DebugEnabled( void )

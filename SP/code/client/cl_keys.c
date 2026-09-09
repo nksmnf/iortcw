@@ -2126,6 +2126,11 @@ static void Key_CompleteBind( char *args, int argNum )
 	}
 }
 
+// Middle of the forward arrow on the pregame briefing, in the 640x480 space the
+// menus are laid out in. From its itemDef in ui/pregame.menu: rect 560 420 80 60.
+#define PREGAME_CONTINUE_X  600
+#define PREGAME_CONTINUE_Y  450
+
 /*
 ===================
 CL_UIActive
@@ -2415,8 +2420,20 @@ void CL_KeyDownEvent( int key, unsigned time )
 			// any key gets out of clipboard
 			key = K_ESCAPE;
 		} else if ( activeMenu == UIMENU_PREGAME ) {
-			if ( key != K_MOUSE1 ) {
-				return; // eat all keys except mouse click
+			// All this screen does is wait for a click on a forward arrow in its
+			// bottom right corner, and it ignores everything else. That arrow is
+			// a poor target for a thumb and unreachable with a pad without
+			// steering a cursor onto it first, which is why starting a mission
+			// on a tablet was effectively impossible.
+			//
+			// There is nothing else on the screen to hit, so anything that means
+			// "go" aims at the arrow and clicks it.
+			if ( key == K_MOUSE1 || key == K_ENTER || key == K_KP_ENTER ||
+				 key == K_SPACE || key == K_PAD0_A || key == K_PAD0_START ) {
+				IN_MenuCursorTo( PREGAME_CONTINUE_X, PREGAME_CONTINUE_Y );
+				key = K_MOUSE1;
+			} else {
+				return; // eat everything else, as the screen expects
 			}
 		} else {
 

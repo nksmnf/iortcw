@@ -368,6 +368,11 @@ void Sys_IOS_InitSDLHints( void )
 	SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "0" );
 	SDL_SetHint( SDL_HINT_MOUSE_TOUCH_EVENTS, "0" );
 
+	// SDL presents the device's accelerometer as a joystick by default, and it
+	// takes index 0 -- ahead of any real pad. The game has no use for tilt as a
+	// stick and every use for the indices being predictable.
+	SDL_SetHint( SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0" );
+
 	// PS5 controllers report their full feature set only when SDL is allowed to
 	// talk to them in enhanced mode.
 	SDL_SetHint( SDL_HINT_JOYSTICK_HIDAPI_PS5, "1" );
