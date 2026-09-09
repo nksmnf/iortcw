@@ -83,6 +83,10 @@ final class LauncherModel: ObservableObject {
 
     // Controls
     @Published var sensitivity: Double = 5
+    @Published var lookYawSpeed: Double = 180
+    @Published var lookPitchSpeed: Double = 130
+    @Published var stickExpo: Double = 0.6
+    @Published var stickDeadzone: Double = 0.15
     @Published var gyroMode: Int = 0
     @Published var gyroSens: Double = 1.0
     @Published var rumble: Double = 100
@@ -124,7 +128,18 @@ final class LauncherModel: ObservableObject {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
+    @Published var importedCount: Int = 0
+
     func refreshData() {
+        // Sweep anything dropped at the top level into main/ first. Finder will
+        // not drop into a subfolder over file sharing, so from a Mac this is the
+        // only way the data ever gets where the engine looks for it. Files still
+        // being written are skipped and picked up on a later pass.
+        let moved = Int(IOSBridge_ImportLooseData())
+        if moved > 0 {
+            importedCount += moved
+        }
+
         dataMask = Int(IOSBridge_GameDataMask())
     }
 
@@ -204,7 +219,17 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("r_gamma", String(format: "%.2f", brightness))
 
         IOSBridge_SetCvar("sensitivity", String(format: "%.2f", sensitivity))
-        IOSBridge_SetCvar("m_pitch", invertLook ? "-0.022" : "0.022")
+
+        // Stick feel. Turn rates are in degrees per second rather than an
+        // opaque multiplier, and the movement stick keeps a flatter curve than
+        // the look stick -- aiming wants a soft centre, walking does not.
+        IOSBridge_SetCvar("in_gamepadDirect", "1")
+        IOSBridge_SetCvar("in_lookYawSpeed", String(format: "%.0f", lookYawSpeed))
+        IOSBridge_SetCvar("in_lookPitchSpeed", String(format: "%.0f", lookPitchSpeed))
+        IOSBridge_SetCvar("in_stickExpo", String(format: "%.2f", stickExpo))
+        IOSBridge_SetCvar("in_moveExpo", "0.15")
+        IOSBridge_SetCvar("joy_threshold", String(format: "%.2f", stickDeadzone))
+        IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")
         IOSBridge_SetCvar("in_gyroSens", String(format: "%.2f", gyroSens))
         IOSBridge_SetCvar("in_rumble", String(format: "%.0f", rumble))

@@ -52,6 +52,13 @@ bool IOSBridge_HasGameData( void );
 // pak0, sp_pak1, sp_pak2, sp_pak3, sp_pak4. Drives the per-file checklist.
 int IOSBridge_GameDataMask( void );
 
+// Move any .pk3 dropped at the top level of the app's folder down into main/.
+// Finder refuses to drop files into a subfolder over file sharing, so this is
+// how data copied from a Mac actually gets where the engine looks for it.
+// Returns how many files were moved. Safe to call repeatedly; it ignores files
+// that are still being written.
+int IOSBridge_ImportLooseData( void );
+
 // --- settings --------------------------------------------------------------
 //
 // Written to Documents/main/ios_launcher.cfg, which the engine execs last --

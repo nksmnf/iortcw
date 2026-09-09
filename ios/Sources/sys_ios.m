@@ -135,6 +135,160 @@ void Sys_IOS_InitPaths( void )
 			}
 		}
 	}
+
+	// Pick up anything dropped at the top level. Finder will not drop into a
+	// subfolder, so this is the only way data copied from a Mac ever reaches
+	// main/.
+	Sys_IOS_ImportLooseData();
+}
+
+/*
+==============
+IOS_FileLooksComplete
+
+Whether a .pk3 has finished copying. Moving a half-written file would leave the
+user with a corrupt archive and no clue why.
+
+A pk3 is a zip, so this checks both ends: the local file header signature at the
+start, and the end-of-central-directory record near the end. A partially copied
+file has the former but not the latter.
+==============
+*/
+static BOOL IOS_FileLooksComplete( NSString *path )
+{
+	NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+	unsigned long long size;
+	NSData *head, *tail;
+	const uint8_t *bytes;
+	NSUInteger i;
+
+	if ( !fh ) {
+		return NO;
+	}
+
+	size = [fh seekToEndOfFile];
+
+	// Smallest possible zip is the 22-byte end-of-central-directory record.
+	if ( size < 22 ) {
+		[fh closeFile];
+		return NO;
+	}
+
+	[fh seekToFileOffset:0];
+	head = [fh readDataOfLength:4];
+
+	if ( [head length] < 4 ) {
+		[fh closeFile];
+		return NO;
+	}
+
+	bytes = [head bytes];
+	if ( !( bytes[0] == 'P' && bytes[1] == 'K' && bytes[2] == 3 && bytes[3] == 4 ) ) {
+		[fh closeFile];
+		return NO;
+	}
+
+	// The EOCD sits in the last 22 bytes, plus up to 64KB of trailing comment.
+	{
+		unsigned long long window = ( size < 65558ULL ) ? size : 65558ULL;
+
+		[fh seekToFileOffset:size - window];
+		tail = [fh readDataOfLength:(NSUInteger)window];
+	}
+
+	[fh closeFile];
+
+	if ( [tail length] < 22 ) {
+		return NO;
+	}
+
+	bytes = [tail bytes];
+	for ( i = [tail length] - 22 + 1; i-- > 0; ) {
+		if ( bytes[i] == 'P' && bytes[i + 1] == 'K' &&
+			 bytes[i + 2] == 5 && bytes[i + 3] == 6 ) {
+			return YES;
+		}
+	}
+
+	return NO;
+}
+
+/*
+==============
+Sys_IOS_ImportLooseData
+
+Move any .pk3 the user has dropped into the top of the app's folder down into
+main/, where the engine looks for it.
+
+This exists because of a Finder limitation, not a preference: when you drag
+files onto an app under Files on the Mac, Finder will only drop them at the top
+level of the container -- it refuses to drop into a subfolder. So telling people
+to "copy them into main" does not work from a Mac at all.
+
+Also handles a whole Main/ folder being dropped in, which is the other obvious
+thing to do since that is what the folder is called in a GOG or Steam install.
+
+Returns the number of files moved, so the launcher can say something.
+==============
+*/
+int Sys_IOS_ImportLooseData( void )
+{
+	__block int moved = 0;
+
+	@autoreleasepool {
+		NSFileManager *fm = [NSFileManager defaultManager];
+		NSString *root = [NSString stringWithUTF8String:Sys_IOS_DataPath()];
+		NSString *dest = [root stringByAppendingPathComponent:@"main"];
+		NSMutableArray<NSString *> *searchDirs = [NSMutableArray arrayWithObject:root];
+
+		// Any subfolder that is not main/ is worth a look -- most likely a
+		// dropped-in "Main" from the original install.
+		for ( NSString *entry in [fm contentsOfDirectoryAtPath:root error:nil] ) {
+			NSString *full = [root stringByAppendingPathComponent:entry];
+			BOOL isDir = NO;
+
+			if ( [fm fileExistsAtPath:full isDirectory:&isDir] && isDir &&
+				 [entry caseInsensitiveCompare:@"main"] != NSOrderedSame ) {
+				[searchDirs addObject:full];
+			}
+		}
+
+		for ( NSString *dir in searchDirs ) {
+			for ( NSString *entry in [fm contentsOfDirectoryAtPath:dir error:nil] ) {
+				NSString *src, *target;
+				NSError *err = nil;
+
+				if ( [[entry pathExtension] caseInsensitiveCompare:@"pk3"] != NSOrderedSame ) {
+					continue;
+				}
+
+				src = [dir stringByAppendingPathComponent:entry];
+				target = [dest stringByAppendingPathComponent:[entry lowercaseString]];
+
+				if ( [fm fileExistsAtPath:target] ) {
+					// Already have it; drop the stray copy rather than leaving
+					// the folder cluttered with something that does nothing.
+					[fm removeItemAtPath:src error:nil];
+					continue;
+				}
+
+				if ( !IOS_FileLooksComplete( src ) ) {
+					// Still being copied. It will be picked up on the next pass.
+					continue;
+				}
+
+				if ( [fm moveItemAtPath:src toPath:target error:&err] ) {
+					Com_Printf( "Imported %s into main/\n", [entry UTF8String] );
+					moved++;
+				} else {
+					os_log_error( OS_LOG_DEFAULT, "iORTCW: cannot move %{public}s: %{public}s",
+						[entry UTF8String], [[err localizedDescription] UTF8String] );
+				}
+			}
+		}
+	}
+
+	return moved;
 }
 
 /*

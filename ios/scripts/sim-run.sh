@@ -36,13 +36,21 @@ CONTAINER=$(xcrun simctl get_app_container "$DEVICE" "$BUNDLE_ID" data)
 MAIN="$CONTAINER/Documents/main"
 mkdir -p "$MAIN"
 
-echo "==> Linking game data from $DATA_SRC"
+echo "==> Copying game data from $DATA_SRC"
+# Copied, not symlinked. A symlink pointing outside the app container is not
+# resolved inside the simulator's sandbox, so the engine sees no data at all --
+# which looks exactly like a bug in the port and is not one.
 for f in pak0.pk3 sp_pak1.pk3 sp_pak2.pk3 sp_pak3.pk3 sp_pak4.pk3; do
-    if [ -f "$DATA_SRC/$f" ]; then
-        ln -sf "$DATA_SRC/$f" "$MAIN/$f"
-    else
+    if [ ! -f "$DATA_SRC/$f" ]; then
         echo "   warning: $DATA_SRC/$f not found"
+        continue
     fi
+    if [ -f "$MAIN/$f" ] && [ ! -L "$MAIN/$f" ]; then
+        continue    # already copied
+    fi
+    rm -f "$MAIN/$f"
+    echo "   $f"
+    cp "$DATA_SRC/$f" "$MAIN/$f"
 done
 
 echo "==> Launching"
