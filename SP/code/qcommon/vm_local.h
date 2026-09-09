@@ -187,8 +187,20 @@ struct vm_s {
 
 	byte		*jumpTableTargets;
 	int			numJumpTableTargets;
+
+	qboolean	isStatic;		// module is linked into the executable; dllHandle is not a real handle
 };
 
+
+// Statically linked native game modules (iOS, or any target that forbids dlopen).
+// VM_Create treats these exactly like a native dll, except that nothing is unloaded.
+typedef struct {
+	const char	*name;
+	void		(QDECL *dllEntry)( intptr_t (QDECL *syscallptr)( intptr_t arg, ... ) );
+	vmMainProc	vmMain;
+} vmStaticModule_t;
+
+const vmStaticModule_t *VM_FindStaticModule( const char *name );
 
 extern	vm_t	*currentVM;
 extern	int		vm_debugLevel;

@@ -74,6 +74,11 @@ void VM_Init( void ) {
 	Cvar_Get( "vm_cgame", "0", CVAR_ARCHIVE );	// !@# SHIP WITH SET TO 0
 	Cvar_Get( "vm_game", "0", CVAR_ARCHIVE );	// !@# SHIP WITH SET TO 0
 	Cvar_Get( "vm_ui", "0", CVAR_ARCHIVE );		// !@# SHIP WITH SET TO 0
+#ifdef USE_STATIC_VM
+	// lets a build with statically linked modules fall back to the normal
+	// dll/QVM search at runtime, for A/B testing
+	Cvar_Get( "vm_static", "1", CVAR_INIT );
+#endif
 
 	vm_minQvmHunkMegs = Cvar_Get( "vm_minQvmHunkMegs", "2", CVAR_ARCHIVE );
 	Cvar_CheckRange( vm_minQvmHunkMegs, 0, 1024, qtrue );
@@ -619,6 +624,24 @@ vm_t *VM_Create( const char *module, intptr_t (*systemCalls)(intptr_t *),
 
 	Q_strncpyz(vm->name, module, sizeof(vm->name));
 
+#ifdef USE_STATIC_VM
+	{
+		const vmStaticModule_t *sm = VM_FindStaticModule( module );
+
+		if ( sm ) {
+			Com_Printf( "%s: using statically linked native module\n", module );
+			// dllHandle must be non-NULL so the rest of the engine treats this as
+			// a native module; isStatic keeps VM_Free from trying to unload it.
+			vm->dllHandle = (void *)sm;
+			vm->isStatic = qtrue;
+			vm->entryPoint = sm->vmMain;
+			sm->dllEntry( VM_DllSyscall );
+			vm->systemCall = systemCalls;
+			return vm;
+		}
+	}
+#endif
+
 	do
 	{
 		retval = FS_FindVM(&startSearch, filename, sizeof(filename), module, (interpret == VMI_NATIVE));
@@ -721,7 +744,7 @@ void VM_Free( vm_t *vm ) {
 	if(vm->destroy)
 		vm->destroy(vm);
 
-	if ( vm->dllHandle ) {
+	if ( vm->dllHandle && !vm->isStatic ) {
 		Sys_UnloadDll( vm->dllHandle );
 		Com_Memset( vm, 0, sizeof( *vm ) );
 	}

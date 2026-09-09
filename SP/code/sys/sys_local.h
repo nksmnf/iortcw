@@ -54,6 +54,15 @@ unsigned int CON_LogRead( char *out, unsigned int outSize );
 char *Sys_StripAppBundle( char *pwd );
 #endif
 
+#if TARGET_OS_IPHONE
+// implemented in ios/Sources/sys_ios.m
+const char *Sys_IOS_DataPath( void );      // <container>/Documents, read/write
+const char *Sys_IOS_AppPath( void );       // bundle resources, read-only
+void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
+qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
+void        Sys_IOS_InitAudioSession( void );
+#endif
+
 void Sys_GLimpSafeInit( void );
 void Sys_GLimpInit( void );
 void Sys_PlatformInit( void );

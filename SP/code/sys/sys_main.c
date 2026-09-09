@@ -100,7 +100,14 @@ Sys_DefaultAppPath
 */
 char *Sys_DefaultAppPath(void)
 {
+#if TARGET_OS_IPHONE
+	// Read-only bundle resources, searched below the writable Documents tree.
+	// Anything we ship with the app (as opposed to what the user copies in)
+	// lives here.
+	return (char *)Sys_IOS_AppPath();
+#else
 	return Sys_BinaryPath();
+#endif
 }
 
 /*
@@ -643,7 +650,13 @@ void Sys_ParseArgs( int argc, char **argv )
 }
 
 #ifndef DEFAULT_BASEDIR
-#	ifdef __APPLE__
+#	if TARGET_OS_IPHONE
+		// The bundle is read-only, so the base directory has to be the writable
+		// Documents container -- the same place as fs_homepath. FS_Startup skips
+		// adding the homepath when it equals the basepath, so the pk3s are
+		// indexed once rather than twice.
+#		define DEFAULT_BASEDIR Sys_IOS_DataPath()
+#	elif defined(__APPLE__)
 #		define DEFAULT_BASEDIR Sys_StripAppBundle(Sys_BinaryPath())
 #	else
 #		define DEFAULT_BASEDIR Sys_BinaryPath()
