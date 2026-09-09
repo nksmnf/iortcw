@@ -99,6 +99,16 @@ int IOSBridge_GameDataMask( void )
 
 /*
 ==============
+IOSBridge_ImportLooseData
+==============
+*/
+int IOSBridge_ImportLooseData( void )
+{
+	return Sys_IOS_ImportLooseData();
+}
+
+/*
+==============
 IOSBridge_SetCvar
 
 Recorded for the generated config, and applied live too when the engine is

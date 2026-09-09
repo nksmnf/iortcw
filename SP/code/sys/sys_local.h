@@ -60,6 +60,7 @@ const char *Sys_IOS_DataPath( void );      // <container>/Documents, read/write
 const char *Sys_IOS_AppPath( void );       // bundle resources, read-only
 void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
 qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
+int         Sys_IOS_ImportLooseData( void ); // move stray pk3s into main/
 void        Sys_IOS_InitAudioSession( void );
 void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its window
 // ios_dualsense.m -- adaptive triggers, which SDL does not expose

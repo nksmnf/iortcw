@@ -108,13 +108,21 @@ private struct DataView: View {
                         Text("Copy your Return to Castle Wolfenstein data")
                             .font(.headline)
                         Text("""
-                             Open Files, go to On My iPad → iORTCW → main, and \
-                             copy the .pk3 files from your RTCW installation \
-                             into it. They are found in the Main folder of a \
-                             GOG or Steam copy.
+                             Copy the .pk3 files from your RTCW installation \
+                             into this app's folder. They are in the Main folder \
+                             of a GOG or Steam copy.
 
-                             This list updates on its own as the files arrive — \
-                             you do not need to restart.
+                             From a Mac: connect the iPad, open it in Finder, go \
+                             to the Files tab and drag the .pk3 files (or the \
+                             whole Main folder) onto iORTCW. Finder will only \
+                             drop them at the top level — that is fine, they get \
+                             moved into main/ automatically.
+
+                             On the iPad: Files → On My iPad → iORTCW.
+
+                             This list updates as the files arrive. Large files \
+                             appear only once they have finished copying, so a \
+                             pause on pak0.pk3 is normal.
                              """)
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -204,14 +212,44 @@ private struct ControlsView: View {
 
     var body: some View {
         Form {
-            Section("Aiming") {
+            Section("Sticks") {
+                HStack {
+                    Text("Turn speed")
+                    Slider(value: $model.lookYawSpeed, in: 60...400, step: 10)
+                    Text("\(Int(model.lookYawSpeed))°/s")
+                        .monospacedDigit().frame(width: 62)
+                }
+                HStack {
+                    Text("Look up/down")
+                    Slider(value: $model.lookPitchSpeed, in: 40...300, step: 10)
+                    Text("\(Int(model.lookPitchSpeed))°/s")
+                        .monospacedDigit().frame(width: 62)
+                }
+                HStack {
+                    Text("Aim precision")
+                    Slider(value: $model.stickExpo, in: 0...1, step: 0.05)
+                    Text(String(format: "%.2f", model.stickExpo))
+                        .monospacedDigit().frame(width: 62)
+                }
+                Text("Higher makes the centre of the look stick finer for small corrections, without lowering the top speed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Deadzone")
+                    Slider(value: $model.stickDeadzone, in: 0.02...0.35, step: 0.01)
+                    Text(String(format: "%.0f%%", model.stickDeadzone * 100))
+                        .monospacedDigit().frame(width: 62)
+                }
+                Toggle("Invert vertical look", isOn: $model.invertLook)
+            }
+
+            Section("Mouse / touch look") {
                 HStack {
                     Text("Sensitivity")
                     Slider(value: $model.sensitivity, in: 1...20, step: 0.5)
                     Text(String(format: "%.1f", model.sensitivity))
                         .monospacedDigit().frame(width: 46)
                 }
-                Toggle("Invert vertical look", isOn: $model.invertLook)
             }
 
             Section("Gyro aiming") {

@@ -200,6 +200,48 @@ extern int  IOSTouch_MovementAxis( int forward );
 	return nil;
 }
 
+/*
+ * Menus are cursor-driven and the engine only ever moves that cursor by
+ * relative deltas, so to make "tap the thing you want" work we have to track
+ * where the cursor is ourselves and steer it there.
+ *
+ * The engine's cursor lives in the virtual 640x480 space its menus are laid out
+ * in, which is why the touch position is scaled into that rather than used in
+ * screen pixels.
+ */
+static CGPoint menuCursor = { 320.0f, 240.0f };
+
+- (BOOL)menuActive
+{
+	return ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) != 0;
+}
+
+- (CGPoint)virtualPointFor:(CGPoint)p
+{
+	CGFloat w = self.bounds.size.width;
+	CGFloat h = self.bounds.size.height;
+
+	if ( w <= 0 || h <= 0 ) {
+		return menuCursor;
+	}
+
+	return CGPointMake( ( p.x / w ) * 640.0f, ( p.y / h ) * 480.0f );
+}
+
+- (void)moveMenuCursorTo:(CGPoint)target
+{
+	int dx = (int)lround( target.x - menuCursor.x );
+	int dy = (int)lround( target.y - menuCursor.y );
+
+	if ( dx || dy ) {
+		IOSTouch_QueueMouse( dx, dy );
+		// Track what we asked for, not what we wanted, so rounding does not
+		// accumulate into drift over many taps.
+		menuCursor.x += dx;
+		menuCursor.y += dy;
+	}
+}
+
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
 	// Multi-finger taps are the escape hatches, and they must work whether or
@@ -214,6 +256,17 @@ extern int  IOSTouch_MovementAxis( int forward );
 	if ( count == 4 ) {
 		IOSTouch_QueueKey( K_CONSOLE, 1 );
 		IOSTouch_QueueKey( K_CONSOLE, 0 );
+		return;
+	}
+
+	if ( [self menuActive] ) {
+		// Point at what was tapped and click it. Without this the only way to
+		// press a menu item is to drag the cursor onto it and then find the
+		// fire button, which is not how anyone expects a touchscreen to work.
+		UITouch *touch = [touches anyObject];
+
+		[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+		IOSTouch_QueueKey( K_MOUSE1, 1 );
 		return;
 	}
 
@@ -250,6 +303,13 @@ extern int  IOSTouch_MovementAxis( int forward );
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	if ( [self menuActive] ) {
+		UITouch *touch = [touches anyObject];
+
+		[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+		return;
+	}
+
 	for ( UITouch *touch in touches ) {
 		CGPoint p = [touch locationInView:self];
 
@@ -314,6 +374,11 @@ extern int  IOSTouch_MovementAxis( int forward );
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	if ( [self menuActive] ) {
+		IOSTouch_QueueKey( K_MOUSE1, 0 );
+		return;
+	}
+
 	for ( UITouch *touch in touches ) {
 		[self releaseTouch:touch];
 	}

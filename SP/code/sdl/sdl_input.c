@@ -71,6 +71,13 @@ static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts a
 static cvar_t *in_triggerHard       = NULL;  // deeper threshold, bound separately
 static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
 static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
+static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
+static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
+static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
+static cvar_t *in_invertLook        = NULL;
+static cvar_t *in_menuCursorSpeed   = NULL;  // pixels per frame at full deflection
+static cvar_t *in_lookYawSpeed      = NULL;  // degrees per second at full deflection
+static cvar_t *in_lookPitchSpeed    = NULL;
 
 static int vidRestartTime = 0;
 
@@ -819,6 +826,210 @@ static qboolean KeyToAxisAndSign(int keynum, int *outAxis, int *outSign)
 
 /*
 ===============
+IN_NonZero
+
+Guards against a divide by zero if a j_* cvar has been set to 0, which would
+otherwise silently produce an infinite axis value.
+===============
+*/
+static float IN_NonZero( float value, float fallback )
+{
+	float v = fabs( value );
+
+	return ( v > 0.0001f ) ? v : fallback;
+}
+
+/*
+===============
+IN_ApplyStickCurve
+
+Turns a raw stick reading into something usable.
+
+Two things matter here and both were wrong before. First, the deadzone has to be
+*radial*: applied per-axis, a stick pushed straight up still leaks a little X,
+and if that X is driving yaw the player walks in a slow circle. That is exactly
+the "walks in circles when I push forward" symptom. Second, the response is
+curved rather than linear, because a linear stick makes small aiming
+corrections almost impossible on a thumbstick.
+
+x and y come in as -1..1 and are rewritten in place.
+===============
+*/
+static void IN_ApplyStickCurve( float *x, float *y, float deadzone, float expo )
+{
+	float mag = sqrt( (*x) * (*x) + (*y) * (*y) );
+	float scaled, curved;
+
+	if ( mag < deadzone ) {
+		*x = 0.0f;
+		*y = 0.0f;
+		return;
+	}
+
+	if ( mag > 1.0f ) {
+		mag = 1.0f;
+	}
+
+	// Rescale so the stick starts moving from zero at the edge of the deadzone
+	// instead of jumping to whatever the deadzone cut off.
+	scaled = ( mag - deadzone ) / ( 1.0f - deadzone );
+
+	// expo 0 is linear, 1 is fully cubed. Blending keeps the top end at full
+	// speed while making the centre much finer.
+	curved = scaled * ( ( 1.0f - expo ) + expo * scaled * scaled );
+
+	// Renormalise the direction vector and reapply the curved magnitude, which
+	// keeps diagonals at the same speed as the cardinals.
+	*x = ( *x / mag ) * curved;
+	*y = ( *y / mag ) * curved;
+}
+
+/*
+===============
+IN_GamepadSticks
+
+Feed the two sticks straight into the joystick axes the client already reads.
+
+The alternative -- what this replaces -- was to synthesise a key press per stick
+direction and let KeyToAxisAndSign map it back to an axis through whatever that
+key happened to be bound to. That indirection meant the stick layout was decided
+by default.cfg inside pak0.pk3, which binds the left stick's horizontal to turn
+rather than strafe, so both sticks appeared to do the same thing and pushing
+forward walked in a circle.
+
+Left stick is movement, right stick is look. That is not configurable here on
+purpose: it is what every player expects, and the bindable surface is the
+buttons.
+===============
+*/
+static void IN_GamepadSticks( void )
+{
+	float lx, ly, rx, ry;
+	float deadzone = in_joystickThreshold->value;
+	float expo = in_stickExpo->value;
+	float moveExpo = in_moveExpo->value;
+
+	if ( deadzone < 0.0f || deadzone > 0.9f ) {
+		deadzone = 0.15f;
+	}
+	if ( expo < 0.0f || expo > 1.0f ) {
+		expo = 0.6f;
+	}
+	if ( moveExpo < 0.0f || moveExpo > 1.0f ) {
+		moveExpo = 0.15f;
+	}
+
+	lx = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_LEFTX ) / 32767.0f;
+	ly = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_LEFTY ) / 32767.0f;
+	rx = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTX ) / 32767.0f;
+	ry = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTY ) / 32767.0f;
+
+	// Different curves for the two sticks, on purpose. Aiming wants a soft
+	// centre so small corrections are possible; walking does not -- a strong
+	// curve there just makes the character feel sluggish at half deflection,
+	// when what the player asked for was "walk forward".
+	IN_ApplyStickCurve( &lx, &ly, deadzone, moveExpo );
+	IN_ApplyStickCurve( &rx, &ry, deadzone, expo );
+
+	// While a menu or the console is up, the right stick drives the cursor
+	// instead. Without this there is no way to start a mission from the pad.
+	if ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) {
+		float speed = in_menuCursorSpeed->value;
+		int dx, dy;
+
+		// Either stick, so it does not matter which one the player reaches for.
+		if ( rx == 0.0f && ry == 0.0f ) {
+			rx = lx;
+			ry = ly;
+		}
+
+		dx = (int)( rx * speed );
+		dy = (int)( ry * speed );
+
+		if ( dx || dy ) {
+			Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+		}
+
+		// Nothing should reach the movement axes while a menu is up.
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer, 0, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer, 0, 0, NULL );
+		return;
+	}
+
+	// SDL's Y axes point down, and the engine's j_forward and j_pitch scales are
+	// already negative to suit that, so the raw sign is passed through and the
+	// direction is left to the cvars. in_invertLook flips pitch only.
+	if ( in_invertLook->integer ) {
+		ry = -ry;
+	}
+
+	// Scaling, and this is the part that was making the sticks feel broken.
+	//
+	// CL_JoystickMove multiplies whatever arrives here by j_side / j_forward and
+	// then ClampChars the result into a movement byte. j_side defaults to 0.25,
+	// so feeding it the full +-32767 produces 8191 and clamps to 127 -- meaning
+	// about 2% of stick travel already commands full speed and the stick is
+	// effectively a digital switch. Scaling so that full deflection lands
+	// exactly on 127 gives back the whole analogue range.
+	//
+	// The look axes have the opposite problem: +-32767 through j_yaw works out
+	// at roughly 720 degrees per second, which is unusable. Because
+	// CL_JoystickMove scales by frametime, the per-second turn rate is simply
+	// j_yaw * axis, so the axis value for a wanted rate is just rate / j_yaw.
+	// That lets the speed be expressed in degrees per second, which is a number
+	// a player can reason about, instead of an arbitrary multiplier.
+	{
+		float sideScale    = 127.0f / IN_NonZero( j_side->value, 0.25f );
+		float forwardScale = 127.0f / IN_NonZero( j_forward->value, 0.25f );
+		float yawScale     = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
+		float pitchScale   = in_lookPitchSpeed->value / IN_NonZero( j_pitch->value, 0.022f );
+
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
+			(int)( lx * sideScale ), 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
+			(int)( ly * forwardScale ), 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
+			(int)( rx * yawScale ), 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
+			(int)( ry * pitchScale ), 0, NULL );
+	}
+}
+
+/*
+===============
+IN_MenuKeyForPadButton
+
+What a pad button should mean while a menu or the console is up, or 0 to leave
+it as a normal PAD0_* key.
+
+Cross acts as a click because RTCW's menus are cursor-driven -- the stick moves
+the pointer and Cross presses what is under it, which is how a console port of a
+mouse-driven menu normally behaves. The D-pad is also mapped to the arrow keys
+so list-style menus (difficulty, saved games) can be walked without aiming.
+===============
+*/
+static int IN_MenuKeyForPadButton( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_A:          return K_MOUSE1;
+		case SDL_CONTROLLER_BUTTON_B:          return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_X:          return K_ENTER;
+		case SDL_CONTROLLER_BUTTON_Y:          return K_SPACE;
+		case SDL_CONTROLLER_BUTTON_START:      return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_BACK:       return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:    return K_UPARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return K_DOWNARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return K_LEFTARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return K_RIGHTARROW;
+		default:                               return 0;
+	}
+}
+
+/*
+===============
 IN_GamepadMove
 ===============
 */
@@ -827,8 +1038,17 @@ static void IN_GamepadMove( void )
 	int i;
 	int translatedAxes[MAX_JOYSTICK_AXIS];
 	qboolean translatedAxesSet[MAX_JOYSTICK_AXIS];
+	qboolean menuMode;
 
 	SDL_GameControllerUpdate();
+
+	// While a menu or the console is up, the pad drives the UI rather than the
+	// player. RTCW's menus only understand mouse and keyboard, so the buttons
+	// are translated instead of being sent as PAD0_* keys that no menu binds --
+	// otherwise there is no way to pick a difficulty and start a mission
+	// without putting the iPad down and using the touchscreen.
+	menuMode = ( in_gamepadDirect->integer &&
+		( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) ) ? qtrue : qfalse;
 
 	// check buttons
 	for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
@@ -836,11 +1056,18 @@ static void IN_GamepadMove( void )
 		qboolean pressed = SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_A + i);
 		if (pressed != stick_state.buttons[i])
 		{
+			int menuKey = menuMode ? IN_MenuKeyForPadButton( i ) : 0;
+
+			if ( menuKey )
+			{
+				Com_QueueEvent(in_eventTime, SE_KEY, menuKey, pressed, 0, NULL);
+			}
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
-			if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
+			else if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_MISC1 + i - SDL_CONTROLLER_BUTTON_MISC1, pressed, 0, NULL);
-			} else
+			}
 #endif
+			else
 			{
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_A + i, pressed, 0, NULL);
 			}
@@ -864,6 +1091,15 @@ static void IN_GamepadMove( void )
 	{
 		int axis = SDL_GameControllerGetAxis(gamepad, SDL_CONTROLLER_AXIS_LEFTX + i);
 		int oldAxis = stick_state.oldaaxes[i];
+
+		// The sticks are handled by IN_GamepadSticks, which reads them directly
+		// instead of routing them through synthesised key presses. Letting this
+		// loop see them too would emit both, and the key path is the one that
+		// picks up default.cfg's turn-instead-of-strafe layout.
+		if ( in_gamepadDirect->integer &&
+			 ( SDL_CONTROLLER_AXIS_LEFTX + i ) <= SDL_CONTROLLER_AXIS_RIGHTY ) {
+			continue;
+		}
 
 		// Smoothly ramp from dead zone to maximum value
 		float f = ((float)abs(axis) / 32767.0f - in_joystickThreshold->value) / (1.0f - in_joystickThreshold->value);
@@ -949,6 +1185,10 @@ static void IN_GamepadMove( void )
 			if (translatedAxesSet[i])
 				Com_QueueEvent(in_eventTime, SE_JOYSTICK_AXIS, i, translatedAxes[i], 0, NULL);
 		}
+	}
+
+	if ( in_gamepadDirect->integer ) {
+		IN_GamepadSticks();
 	}
 
 	IN_GamepadTriggers();
@@ -1741,6 +1981,21 @@ void IN_Init( void *windowData )
 	in_triggerHard  = Cvar_Get( "in_triggerHard",  "0.75", CVAR_ARCHIVE );
 	in_rumble       = Cvar_Get( "in_rumble",       "100",  CVAR_ARCHIVE );
 	in_ledFeedback  = Cvar_Get( "in_ledFeedback",  "1",    CVAR_ARCHIVE );
+
+	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
+	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.6",  CVAR_ARCHIVE );
+	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
+	in_invertLook      = Cvar_Get( "in_invertLook",      "0",  CVAR_ARCHIVE );
+	in_menuCursorSpeed = Cvar_Get( "in_menuCursorSpeed", "14", CVAR_ARCHIVE );
+
+	in_lookYawSpeed    = Cvar_Get( "in_lookYawSpeed",   "180", CVAR_ARCHIVE );
+	in_lookPitchSpeed  = Cvar_Get( "in_lookPitchSpeed", "130", CVAR_ARCHIVE );
+
+	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_menuCursorSpeed, 1.0f,  60.0f, qfalse );
+	Cvar_CheckRange( in_lookYawSpeed,    20.0f, 720.0f, qfalse );
+	Cvar_CheckRange( in_lookPitchSpeed,  20.0f, 720.0f, qfalse );
 
 	Cvar_CheckRange( in_gyroSens,     0.05f, 10.0f, qfalse );
 	Cvar_CheckRange( in_gyroDeadzone, 0.0f,  1.0f,  qfalse );
