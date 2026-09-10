@@ -57,135 +57,50 @@ void CG_HapticsInit( void ) {
 
 /*
 ==============
-CG_HapticFire
-
-Per-weapon recoil. The numbers are deliberately not uniform: a Luger should
-feel like a tap and a Panzerfaust should feel like it nearly took your arm off,
-because that difference is most of the point of having rumble at all.
-
-low = the heavy motor (body of the shot), high = the light motor (mechanism).
-==============
-*/
-void CG_HapticFire( int weapon ) {
-	float low, high;
-	int duration;
-
-	if ( !( hapticCaps & HAPTIC_CAP_RUMBLE ) ) {
-		return;
-	}
-
-	switch ( weapon ) {
-	case WP_LUGER:
-	case WP_SILENCER:
-	case WP_COLT:
-	case WP_AKIMBO:
-		low = 0.20f; high = 0.35f; duration = 60;
-		break;
-
-	case WP_MP40:
-	case WP_THOMPSON:
-	case WP_STEN:
-		// Automatics fire fast enough that a long pulse would smear into a
-		// constant buzz, so keep each shot short and let them overlap.
-		low = 0.25f; high = 0.20f; duration = 45;
-		break;
-
-	case WP_MAUSER:
-	case WP_GARAND:
-	case WP_SNIPERRIFLE:
-	case WP_SNOOPERSCOPE:
-		low = 0.55f; high = 0.30f; duration = 110;
-		break;
-
-	case WP_FG42:
-	case WP_FG42SCOPE:
-		low = 0.35f; high = 0.25f; duration = 60;
-		break;
-
-	case WP_PANZERFAUST:
-		low = 1.00f; high = 0.70f; duration = 320;
-		break;
-
-	case WP_VENOM:
-		low = 0.45f; high = 0.40f; duration = 50;
-		break;
-
-	case WP_FLAMETHROWER:
-		// Continuous, so a gentle sustained hum rather than a kick.
-		low = 0.18f; high = 0.12f; duration = 90;
-		break;
-
-	case WP_TESLA:
-		low = 0.30f; high = 0.60f; duration = 80;
-		break;
-
-	case WP_GRENADE_LAUNCHER:
-	case WP_GRENADE_PINEAPPLE:
-	case WP_DYNAMITE:
-		low = 0.30f; high = 0.20f; duration = 70;
-		break;
-
-	case WP_KNIFE:
-		low = 0.10f; high = 0.25f; duration = 40;
-		break;
-
-	default:
-		low = 0.30f; high = 0.25f; duration = 60;
-		break;
-	}
-
-	trap_HapticRumble( low, high, duration );
-}
-
-/*
-==============
 CG_HapticDamage
 
-Taking a hit. Scaled by how hard it was, with a floor so light chip damage is
-still noticeable and a ceiling so a big hit does not just saturate.
+The only thing the pad rumbles for, and it says how much it hurt.
+
+Rumbling for every shot fired turns the pad into background noise and tells the
+player nothing they did not already know -- they pulled the trigger. A hit is
+different: it is the one piece of information the screen conveys badly, in a
+number at the bottom of the display that nobody reads mid-fight.
+
+So the length of the pulse carries the damage and the strength stays low and
+roughly even. Length is what a hand can judge without counting: a graze is a
+tick, a serious hit lasts long enough to be alarming, and the difference between
+them is felt rather than read. Amplitude is deliberately not the signal -- it
+saturates quickly and every pad and every player scales it differently.
+
+A little over 20ms per point of health, so a 10-point graze is a 190ms tick and
+anything past about 60 sits at the 1.3s ceiling, which is already long enough to
+mean "that was very bad".
 ==============
 */
 void CG_HapticDamage( int damage ) {
-	float scale;
+	int duration;
+	float low, high;
 
 	if ( !( hapticCaps & HAPTIC_CAP_RUMBLE ) ) {
 		return;
 	}
 
-	scale = damage / 50.0f;
-
-	if ( scale < 0.25f ) {
-		scale = 0.25f;
-	}
-	if ( scale > 1.0f ) {
-		scale = 1.0f;
-	}
-
-	trap_HapticRumble( scale, scale * 0.4f, 120 + (int)( scale * 180 ) );
-}
-
-/*
-==============
-CG_HapticExplosion
-
-Nearby blast. distance is in world units; beyond a few hundred it is not worth
-feeling.
-==============
-*/
-void CG_HapticExplosion( float distance ) {
-	float falloff;
-
-	if ( !( hapticCaps & HAPTIC_CAP_RUMBLE ) ) {
+	if ( damage <= 0 ) {
 		return;
 	}
 
-	falloff = 1.0f - ( distance / 800.0f );
+	duration = 80 + damage * 21;
 
-	if ( falloff <= 0.0f ) {
-		return;
+	if ( duration > 1300 ) {
+		duration = 1300;
 	}
 
-	trap_HapticRumble( falloff, falloff * 0.5f, 150 + (int)( falloff * 250 ) );
+	// Light, and only barely rising with the damage: enough that a big hit still
+	// feels heavier, not so much that it drowns out the length.
+	low  = 0.18f + ( damage > 40 ? 0.12f : damage * 0.003f );
+	high = low * 0.45f;
+
+	trap_HapticRumble( low, high, duration );
 }
 
 /*

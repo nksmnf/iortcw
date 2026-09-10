@@ -74,6 +74,7 @@ static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
 static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
 static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
+static cvar_t *in_debugPad          = NULL;  // log gamepad buttons and sticks
 static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
 static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
 static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
@@ -561,6 +562,10 @@ static int hat_keys[16] = {
 struct
 {
 	qboolean buttons[SDL_CONTROLLER_BUTTON_MAX + 1]; // +1 because old max was 16, current SDL_CONTROLLER_BUTTON_MAX is 15
+
+	// How each held button was delivered, so its release can be delivered the
+	// same way even if the game changed underneath it. See IN_GamepadMove.
+	byte     buttonRoute[SDL_CONTROLLER_BUTTON_MAX + 1];
 	unsigned int oldaxes;
 	int oldaaxes[MAX_JOYSTICK_AXIS];
 	unsigned int oldhats;
@@ -586,6 +591,8 @@ static struct
 	qboolean hasLED;
 	int      numTouchpads;
 } gamepadCaps;
+
+enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD };
 
 static void IN_GamepadTriggers( void );
 static void IN_GamepadTouchpad( void );
@@ -1027,6 +1034,15 @@ static void IN_DigitalMove( float x, float y )
 {
 	static qboolean held[4];   // forward, back, left, right
 	const char *commands[4] = { "+forward", "+back", "+moveleft", "+moveright" };
+
+	// One key number per direction, and not the ones the D-pad uses.
+	//
+	// A +command carries the key that pressed it, and a -command with no key at
+	// all clears every holder. Leaving these blank meant the stick and the D-pad
+	// shared a slot: whichever let go first released the other one too, so
+	// holding a direction on the D-pad did nothing as soon as the stick moved.
+	const int keys[4] = { K_PAD0_LEFTSTICK_UP, K_PAD0_LEFTSTICK_DOWN,
+						  K_PAD0_LEFTSTICK_LEFT, K_PAD0_LEFTSTICK_RIGHT };
 	qboolean want[4] = { qfalse, qfalse, qfalse, qfalse };
 	float mag = sqrt( x * x + y * y );
 	int i;
@@ -1053,8 +1069,12 @@ static void IN_DigitalMove( float x, float y )
 		// Sent as console commands rather than key events because these are not
 		// bindable keys -- the stick is the stick, and routing it through a
 		// binding is what put turn on the left stick in the first place.
-		Cbuf_AddText( va( "%c%s\n", want[i] ? '+' : '-', commands[i] + 1 ) );
+		Cbuf_AddText( va( "%c%s %d\n", want[i] ? '+' : '-', commands[i] + 1, keys[i] ) );
 		held[i] = want[i];
+
+		if ( in_debugPad && in_debugPad->integer ) {
+			Com_Printf( "pad: stick %c%s\n", want[i] ? '+' : '-', commands[i] + 1 );
+		}
 	}
 }
 
@@ -1097,6 +1117,20 @@ static void IN_GamepadSticks( void )
 	ly = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_LEFTY ) / 32767.0f;
 	rx = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTX ) / 32767.0f;
 	ry = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTY ) / 32767.0f;
+
+	// Raw, before anything is done to them. This is the only way to tell a stick
+	// that reports a small range from a curve that is eating it, and there is no
+	// console on a tablet to ask.
+	if ( in_debugPad && in_debugPad->integer ) {
+		static int nextLog;
+
+		if ( Sys_Milliseconds() >= nextLog &&
+			 ( fabs( lx ) > 0.02f || fabs( ly ) > 0.02f ||
+			   fabs( rx ) > 0.02f || fabs( ry ) > 0.02f ) ) {
+			nextLog = Sys_Milliseconds() + 250;
+			Com_Printf( "pad: raw L %.3f %.3f  R %.3f %.3f\n", lx, ly, rx, ry );
+		}
+	}
 
 	// Different curves for the two sticks, on purpose. Aiming wants a soft
 	// centre so small corrections are possible; walking does not -- a strong
@@ -1244,6 +1278,12 @@ static int IN_MenuKeyForPadButton( int button )
 		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return K_DOWNARROW;
 		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return K_LEFTARROW;
 		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return K_RIGHTARROW;
+
+		// The notebook and the mission objectives are paged, not scrolled, and
+		// the shoulders are where a pad player reaches for pages.
+		case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return K_PGUP;
+		case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return K_PGDN;
+
 		default:                               return 0;
 	}
 }
@@ -1273,33 +1313,67 @@ static void IN_GamepadMove( void )
 	for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
 	{
 		qboolean pressed = SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_A + i);
-		if (pressed != stick_state.buttons[i])
-		{
-			int menuKey = menuMode ? IN_MenuKeyForPadButton( i ) : 0;
-			const char *dpadMove = ( !menuMode && in_dpadMove->integer )
-				? IN_DpadMoveCommand( i ) : NULL;
 
-			if ( menuKey )
-			{
-				Com_QueueEvent(in_eventTime, SE_KEY, menuKey, pressed, 0, NULL);
+		if (pressed == stick_state.buttons[i])
+		{
+			continue;
+		}
+
+		stick_state.buttons[i] = pressed;
+
+		// A release must travel the same road as its press.
+		//
+		// Deciding this per frame instead was a real bug with a nasty shape: a
+		// button held while a menu opened had its press sent as PAD0_B and its
+		// release sent as Escape, so the engine never saw PAD0_B come up and
+		// +movedown stayed latched. The player then crouched for the rest of the
+		// session and every later press looked like it did two things at once.
+		if ( pressed )
+		{
+			stick_state.buttonRoute[i] = ROUTE_KEY;
+
+			if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_MENU;
+			} else if ( in_dpadMove->integer && IN_DpadMoveCommand( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_DPAD;
 			}
-			else if ( dpadMove )
-			{
-				// The D-pad walks, like the arrow keys on a keyboard. It stacks
-				// with the stick rather than replacing it, so holding up on the
-				// D-pad while aiming with the right stick works.
-				Cbuf_AddText( va( "%c%s\n", pressed ? '+' : '-', dpadMove ) );
-			}
+		}
+
+		switch ( stick_state.buttonRoute[i] )
+		{
+		case ROUTE_MENU:
+			Com_QueueEvent(in_eventTime, SE_KEY, IN_MenuKeyForPadButton( i ), pressed, 0, NULL);
+			break;
+
+		case ROUTE_DPAD:
+			// The D-pad walks, like the arrow keys on a keyboard. It stacks with
+			// the stick rather than replacing it, so holding up on the D-pad
+			// while aiming with the right stick works.
+			//
+			// The key number matters: a +command with no key argument occupies a
+			// shared slot, and a release with no key argument clears every holder
+			// of that button. Without it the stick's own digital movement and the
+			// D-pad cancel each other out.
+			Cbuf_AddText( va( "%c%s %d\n", pressed ? '+' : '-',
+				IN_DpadMoveCommand( i ), K_PAD0_A + i ) );
+			break;
+
+		default:
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
-			else if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
+			if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_MISC1 + i - SDL_CONTROLLER_BUTTON_MISC1, pressed, 0, NULL);
-			}
+			} else
 #endif
-			else
 			{
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_A + i, pressed, 0, NULL);
 			}
-			stick_state.buttons[i] = pressed;
+			break;
+		}
+
+		if ( in_debugPad && in_debugPad->integer ) {
+			Com_Printf( "pad: button %d %s via %s\n", i, pressed ? "down" : "up",
+				stick_state.buttonRoute[i] == ROUTE_MENU ? "menu" :
+				stick_state.buttonRoute[i] == ROUTE_DPAD ? "dpad" : "key" );
 		}
 	}
 
@@ -1818,6 +1892,71 @@ static void IN_JoyMove( void )
 
 /*
 ===============
+IN_PadEchoKey
+
+iPadOS hands a game controller's buttons to the app twice: once as controller
+input, and again as UIPress events for menu navigation. SDL turns the second
+copy into keyboard keys -- D-pad to the arrows, Cross to Return, Options to
+Escape, the PS button to Pause -- and RTCW's stock keyboard bindings then act on
+them as well as on ours.
+
+The result was one press doing two things: D-pad left walked left and turned the
+view, Cross jumped and opened the door, Options opened the menu and printed
+"unknown cmd pause".
+
+Dropping these keys outright would break a real Bluetooth keyboard, so a key is
+only dropped while the controller button that would have produced it is actually
+held. A release is matched to the press that was dropped, since the button may
+already be up by then.
+
+Returns qtrue if the key is an echo of the pad and should be ignored.
+===============
+*/
+static qboolean IN_PadEchoKey( int key, qboolean down )
+{
+	static qboolean dropped[8];
+	int i;
+
+	const struct { int key; int button; } echoes[] = {
+		{ K_LEFTARROW,  SDL_CONTROLLER_BUTTON_DPAD_LEFT  },
+		{ K_RIGHTARROW, SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+		{ K_UPARROW,    SDL_CONTROLLER_BUTTON_DPAD_UP    },
+		{ K_DOWNARROW,  SDL_CONTROLLER_BUTTON_DPAD_DOWN  },
+		{ K_ENTER,      SDL_CONTROLLER_BUTTON_A          },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_START      },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_B          },
+		{ K_PAUSE,      SDL_CONTROLLER_BUTTON_GUIDE      },
+	};
+
+	if ( !gamepad ) {
+		return qfalse;
+	}
+
+	for ( i = 0; i < (int)ARRAY_LEN( echoes ); i++ ) {
+		if ( echoes[i].key != key ) {
+			continue;
+		}
+
+		if ( down ) {
+			if ( SDL_GameControllerGetButton( gamepad, echoes[i].button ) ) {
+				dropped[i] = qtrue;
+				if ( in_debugPad && in_debugPad->integer ) {
+					Com_Printf( "pad: dropped keyboard echo of button %d\n",
+						echoes[i].button );
+				}
+				return qtrue;
+			}
+		} else if ( dropped[i] ) {
+			dropped[i] = qfalse;
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+===============
 IN_ProcessEvents
 ===============
 */
@@ -1839,7 +1978,12 @@ static void IN_ProcessEvents( void )
 					break;
 
 				if( ( key = IN_TranslateSDLToQ3Key( &e.key.keysym, qtrue ) ) )
+				{
+					if ( IN_PadEchoKey( key, qtrue ) )
+						break;
+
 					Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+				}
 
 				if( key == K_BACKSPACE )
 					Com_QueueEvent( in_eventTime, SE_CHAR, CTRL('h'), 0, 0, NULL );
@@ -1851,7 +1995,12 @@ static void IN_ProcessEvents( void )
 
 			case SDL_KEYUP:
 				if( ( key = IN_TranslateSDLToQ3Key( &e.key.keysym, qfalse ) ) )
+				{
+					if ( IN_PadEchoKey( key, qfalse ) )
+						break;
+
 					Com_QueueEvent( in_eventTime, SE_KEY, key, qfalse, 0, NULL );
+				}
 
 				lastKeyDown = 0;
 				break;
@@ -2311,7 +2460,7 @@ void IN_Init( void *windowData )
 #else
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
 #endif
-	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
+	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.12", CVAR_ARCHIVE );
 
 	// DualSense extras. All default to off or neutral so a plain gamepad
 	// behaves exactly as before.
@@ -2327,15 +2476,16 @@ void IN_Init( void *windowData )
 
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
 	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
-	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.6",  CVAR_ARCHIVE );
+	in_debugPad        = Cvar_Get( "in_debugPad",        "0",  CVAR_ARCHIVE );
+	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.35",  CVAR_ARCHIVE );
 	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
 	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );
 	in_dpadMove        = Cvar_Get( "in_dpadMove",        "1",    CVAR_ARCHIVE );
 	in_invertLook      = Cvar_Get( "in_invertLook",      "0",  CVAR_ARCHIVE );
-	in_menuCursorSpeed = Cvar_Get( "in_menuCursorSpeed", "14", CVAR_ARCHIVE );
+	in_menuCursorSpeed = Cvar_Get( "in_menuCursorSpeed", "6", CVAR_ARCHIVE );
 
-	in_lookYawSpeed    = Cvar_Get( "in_lookYawSpeed",   "180", CVAR_ARCHIVE );
-	in_lookPitchSpeed  = Cvar_Get( "in_lookPitchSpeed", "130", CVAR_ARCHIVE );
+	in_lookYawSpeed    = Cvar_Get( "in_lookYawSpeed",   "220", CVAR_ARCHIVE );
+	in_lookPitchSpeed  = Cvar_Get( "in_lookPitchSpeed", "190", CVAR_ARCHIVE );
 
 	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
 	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );

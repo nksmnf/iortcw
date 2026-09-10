@@ -313,6 +313,16 @@ private struct ControlsView: View {
                     Slider(value: $model.rumble, in: 0...100, step: 5)
                     Text("\(Int(model.rumble))%").monospacedDigit().frame(width: 54)
                 }
+                Text("""
+                     Вибрация только при получении урона, и её длительность \
+                     показывает, сколько сняли: царапина — короткий тик, \
+                     тяжёлое попадание тянется заметно дольше. При стрельбе \
+                     контроллер молчит — иначе он гудит постоянно и не сообщает \
+                     ничего нового.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Toggle("Адаптивные триггеры", isOn: $model.adaptiveTriggers)
                 Picker("Гироскоп", selection: $model.gyroMode) {
                     Text("Выкл").tag(0)

@@ -224,16 +224,16 @@ final class LauncherModel: ObservableObject {
 
     // Controls
     @Published var sensitivity: Double = 5
-    @Published var lookYawSpeed: Double = 180
-    @Published var lookPitchSpeed: Double = 130
-    @Published var stickExpo: Double = 0.6
-    @Published var stickDeadzone: Double = 0.15
+    @Published var lookYawSpeed: Double = 220
+    @Published var lookPitchSpeed: Double = 190
+    @Published var stickExpo: Double = 0.35
+    @Published var stickDeadzone: Double = 0.12
     @Published var gyroMode: Int = 0
     @Published var gyroSens: Double = 1.0
     @Published var rumble: Double = 100
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
-    @Published var touchControls: Int = 0
+    @Published var touchControls: Int = 1   // shown always; the pad does not replace touch
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
@@ -342,6 +342,11 @@ final class LauncherModel: ObservableObject {
         ]
     }
 
+    /// Bumped when the shipped control feel changes. A settings file written by
+    /// an older build is ignored once, so a retune actually reaches the player
+    /// instead of being overwritten by their stored copy of the old numbers.
+    private static let tuningVersion = 2
+
     private func loadDefaults() {
         applyDefaultBindings()
 
@@ -352,6 +357,42 @@ final class LauncherModel: ObservableObject {
                 bindings[pad.id] = current
             }
         }
+
+        // Settings used to be write-only: every launch wrote these defaults over
+        // whatever the player had chosen, so nothing they changed here survived.
+        let stored = Int(cvar("in_tuningVersion") ?? "") ?? 0
+        guard stored >= LauncherModel.tuningVersion else { return }
+
+        sensitivity      = cvarValue("sensitivity", sensitivity)
+        lookYawSpeed     = cvarValue("in_lookYawSpeed", lookYawSpeed)
+        lookPitchSpeed   = cvarValue("in_lookPitchSpeed", lookPitchSpeed)
+        stickExpo        = cvarValue("in_stickExpo", stickExpo)
+        stickDeadzone    = cvarValue("joy_threshold", stickDeadzone)
+        gyroSens         = cvarValue("in_gyroSens", gyroSens)
+        rumble           = cvarValue("in_rumble", rumble)
+        triggerHard      = cvarValue("in_triggerHard", triggerHard)
+        fov              = cvarValue("cg_fov", fov)
+        brightness       = cvarValue("r_gamma", brightness)
+
+        gyroMode         = Int(cvarValue("in_gyro", Double(gyroMode)))
+        touchControls    = Int(cvarValue("in_touchControls", Double(touchControls)))
+        maxFPS           = Int(cvarValue("com_maxfps", Double(maxFPS)))
+        skill            = Int(cvarValue("g_gameskill", Double(skill)))
+
+        invertLook       = cvarValue("in_invertLook", invertLook ? 1 : 0) != 0
+        moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
+        adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
+        hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
+    }
+
+    private func cvar(_ name: String) -> String? {
+        let value = String(cString: IOSBridge_GetCvar(name))
+        return value.isEmpty ? nil : value
+    }
+
+    private func cvarValue(_ name: String, _ fallback: Double) -> Double {
+        guard let text = cvar(name), let value = Double(text) else { return fallback }
+        return value
     }
 
     func binding(for pad: PadButton) -> GameAction? {
@@ -410,6 +451,8 @@ final class LauncherModel: ObservableObject {
         // the cleaner answer and it makes 120Hz safe.
         IOSBridge_SetCvar("pmove_fixed", "1")
         IOSBridge_SetCvar("pmove_msec", "8")
+
+        IOSBridge_SetCvar("in_tuningVersion", "\(LauncherModel.tuningVersion)")
 
         // Give the engine room; the default 256MB hunk is tight for the larger
         // campaign maps and an iPad has plenty.

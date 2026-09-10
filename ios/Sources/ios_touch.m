@@ -269,7 +269,15 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	CGFloat h = self.bounds.size.height;
 
 	if ( w <= 0 || h <= 0 ) {
-		return menuCursor;
+		// Falling back to the current cursor would mean every touch asked for the
+		// place the cursor already is, which reads as touch being dead rather
+		// than as a layout problem.
+		w = self.superview ? self.superview.bounds.size.width : 0;
+		h = self.superview ? self.superview.bounds.size.height : 0;
+
+		if ( w <= 0 || h <= 0 ) {
+			return menuCursor;
+		}
 	}
 
 	return CGPointMake( ( p.x / w ) * 640.0f, ( p.y / h ) * 480.0f );
@@ -542,6 +550,24 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		visible = NO;
 	}
 
+	// Before anything else, and on every frame rather than only when something
+	// changed: SDL reorders its own views -- on a layout pass, on a rotation, on
+	// vid_restart -- and a buried overlay receives no touches at all. Nothing
+	// else would notice, because SDL's touch-to-mouse synthesis is off, so the
+	// symptom is the whole screen going dead rather than anything degrading.
+	if ( touchOverlay.superview &&
+		 touchOverlay.superview.subviews.lastObject != touchOverlay ) {
+		[touchOverlay.superview bringSubviewToFront:touchOverlay];
+		Com_Printf( "Touch overlay: raised back above SDL's view\n" );
+	}
+
+	// Autoresizing normally keeps up, but a zero or stale frame would make every
+	// touch land at the same place, so take the window's word for it.
+	if ( touchOverlay.superview &&
+		 !CGRectEqualToRect( touchOverlay.frame, touchOverlay.superview.bounds ) ) {
+		touchOverlay.frame = touchOverlay.superview.bounds;
+	}
+
 	if ( everSet && visible == wasVisible ) {
 		return;
 	}
@@ -555,10 +581,6 @@ void Sys_IOS_TouchOverlayUpdate( void )
 	for ( UIView *sub in touchOverlay.subviews ) {
 		sub.hidden = !visible;
 	}
-
-	// SDL recreates and reorders its views on vid_restart, which would bury the
-	// overlay again.
-	[touchOverlay.superview bringSubviewToFront:touchOverlay];
 
 	Com_DPrintf( "Touch overlay: %s (mode %d, controller %s)\n",
 		visible ? "shown" : "hidden",

@@ -2480,8 +2480,6 @@ void        trap_HapticTrigger( int side, int mode, float start, float end, floa
 
 // cg_haptics.c
 void        CG_HapticsInit( void );
-void        CG_HapticFire( int weapon );
 void        CG_HapticDamage( int damage );
-void        CG_HapticExplosion( float distance );
 void        CG_HapticsFrame( void );
 void        CG_HapticWeaponChanged( int weapon );
