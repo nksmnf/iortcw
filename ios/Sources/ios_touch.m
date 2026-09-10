@@ -62,6 +62,16 @@ extern void IOSTouch_SkipCinematic( void );
 #define EDGE_MARGIN       40.0f
 #define MENU_BUTTON_SIZE  64.0f
 
+// How long the on-screen controls stay up after the last touch when a
+// controller is also in use. Long enough to cross the screen and press
+// something, short enough that they are gone by the time it matters.
+#define TOUCH_IDLE_HIDE   5.0
+
+// Cursor travel per point of finger travel, in the menus' 640x480 space. The
+// screen is 1376 points wide against 640, so this is a little faster than 1:1
+// on screen and a full swipe crosses about half the menu.
+#define MENU_TOUCH_SCALE  0.70f
+
 // A button on the overlay: a circle with a label, bound to one key.
 @interface IORTCWTouchButton : UIView
 @property (nonatomic) int keyCode;
@@ -135,6 +145,9 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic, strong) UITouch *lookTouch;
 @property (nonatomic, strong) UITouch *stickTouch;
 @property (nonatomic, strong) UITouch *menuTouch;   // the finger acting as the mouse
+@property (nonatomic) CFTimeInterval lastTouchTime; // for the automatic hide
+@property (nonatomic) CGPoint menuTouchLast;
+@property (nonatomic) BOOL menuTouchMoved;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -312,6 +325,8 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
+	self.lastTouchTime = CACurrentMediaTime();
+
 	// One line, once, so a report of "touch does nothing" can be separated from
 	// "touch never reaches us" without a debugger.
 	static BOOL loggedFirstTouch = NO;
@@ -332,9 +347,13 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		UITouch *touch = touches.anyObject;
 
 		if ( touch && !self.menuTouch ) {
+			// The cursor moves with the finger rather than jumping to it, so a
+			// target out of comfortable reach can be walked to over several
+			// strokes -- the same way a trackpad works. A tap that did not
+			// travel is the click.
 			self.menuTouch = touch;
-			[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
-			IOSTouch_QueueKey( K_MOUSE1, 1 );
+			self.menuTouchLast = [touch locationInView:self];
+			self.menuTouchMoved = NO;
 		}
 		return;
 	}
@@ -372,13 +391,28 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	self.lastTouchTime = CACurrentMediaTime();
+
 	if ( [self menuActive] ) {
-		// Dragging keeps the cursor under the finger, which is what sliders and
-		// the save-game list need.
 		for ( UITouch *touch in touches ) {
-			if ( touch == self.menuTouch ) {
-				[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+			CGPoint p;
+			CGFloat dx, dy;
+
+			if ( touch != self.menuTouch ) {
+				continue;
 			}
+
+			p = [touch locationInView:self];
+			dx = p.x - self.menuTouchLast.x;
+			dy = p.y - self.menuTouchLast.y;
+			self.menuTouchLast = p;
+
+			if ( fabs( dx ) > 2.0f || fabs( dy ) > 2.0f ) {
+				self.menuTouchMoved = YES;
+			}
+
+			IOSTouch_QueueMouse( (int)lround( dx * MENU_TOUCH_SCALE ),
+								 (int)lround( dy * MENU_TOUCH_SCALE ) );
 		}
 		return;
 	}
@@ -449,8 +483,15 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 {
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
+			BOOL tapped = !self.menuTouchMoved;
+
 			self.menuTouch = nil;
-			IOSTouch_QueueKey( K_MOUSE1, 0 );
+
+			// A tap clicks wherever the cursor ended up; a drag was the aiming.
+			if ( tapped ) {
+				IOSTouch_QueueKey( K_MOUSE1, 1 );
+				IOSTouch_QueueKey( K_MOUSE1, 0 );
+			}
 			continue;
 		}
 
@@ -463,7 +504,6 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
 			self.menuTouch = nil;
-			IOSTouch_QueueKey( K_MOUSE1, 0 );
 			continue;
 		}
 
@@ -473,43 +513,89 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 @end
 
+/*
+ * The overlay lives in its own window, and that window's root view controller.
+ *
+ * A subview of SDL's window is not good enough. It worked in the simulator and
+ * received nothing at all on a device: the launcher puts up its own UIWindow
+ * before the engine starts, and between that and SDL's own view management the
+ * overlay ends up somewhere touches do not reach. A separate window above
+ * SDL's cannot be reordered by anything SDL does.
+ *
+ * It is deliberately never made key -- SDL keeps that, and with it the keyboard
+ * and the rest of its event handling. A visible window still receives touches
+ * without being key.
+ */
+@interface IORTCWTouchController : UIViewController
+@end
+
+@implementation IORTCWTouchController
+
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+	return UIInterfaceOrientationMaskLandscape;
+}
+
+@end
+
 static IORTCWTouchOverlay *touchOverlay = nil;
+static UIWindow *touchWindow = nil;
 static cvar_t *in_touchControls = NULL;
 
 /*
 ==============
 Sys_IOS_TouchOverlayInit
-
-Attached to the window rather than to SDL's view.
-
-Adding it as a subview of the GL view looked tidier, but SDL owns that view and
-reorders its own subviews, so the overlay ended up underneath and never saw a
-touch -- and since SDL's touch-to-mouse synthesis is off (it was firing the
-weapon on every tap), that left no touch input at all. Sitting directly on the
-window, above SDL's view, is the arrangement that cannot be undone from
-underneath.
 ==============
 */
 void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 {
-	UIWindow *window = (__bridge UIWindow *)sdlWindowHandle;
+	UIWindow *sdlWindow = (__bridge UIWindow *)sdlWindowHandle;
+	IORTCWTouchController *controller;
 
-	if ( touchOverlay || !window ) {
+	if ( touchOverlay || !sdlWindow ) {
 		return;
 	}
 
-	in_touchControls = Cvar_Get( "in_touchControls", "0", CVAR_ARCHIVE );
+	in_touchControls = Cvar_Get( "in_touchControls", "1", CVAR_ARCHIVE );
 	Cvar_CheckRange( in_touchControls, 0, 2, qtrue );
 
-	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:window.bounds];
+	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:sdlWindow.bounds];
 	touchOverlay.autoresizingMask =
 		UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-	[window addSubview:touchOverlay];
-	[window bringSubviewToFront:touchOverlay];
+	touchOverlay.backgroundColor = [UIColor clearColor];
+	touchOverlay.opaque = NO;
 
-	Com_Printf( "Touch overlay: attached to window %.0fx%.0f, in_touchControls %d\n",
-		window.bounds.size.width, window.bounds.size.height,
-		in_touchControls->integer );
+	controller = [[IORTCWTouchController alloc] init];
+	controller.view = touchOverlay;
+
+	if ( sdlWindow.windowScene ) {
+		touchWindow = [[UIWindow alloc] initWithWindowScene:sdlWindow.windowScene];
+	} else {
+		touchWindow = [[UIWindow alloc] initWithFrame:sdlWindow.bounds];
+	}
+
+	touchWindow.frame = sdlWindow.bounds;
+	touchWindow.backgroundColor = [UIColor clearColor];
+	touchWindow.opaque = NO;
+	touchWindow.rootViewController = controller;
+
+	// Above the game, below anything the system or the launcher puts up.
+	touchWindow.windowLevel = UIWindowLevelNormal + 1;
+
+	// Visible, but never key: makeKeyAndVisible here would take the keyboard
+	// and the rest of the event handling away from SDL.
+	touchWindow.hidden = NO;
+
+	Com_Printf( "Touch overlay: own window %.0fx%.0f level %.0f, in_touchControls %d\n",
+		touchWindow.bounds.size.width, touchWindow.bounds.size.height,
+		(double)touchWindow.windowLevel, in_touchControls->integer );
+
+	// The readout lives in the same window: it is already above the game and
+	// already knows about the safe area.
+	Sys_IOS_PerfInit( (__bridge void *)touchOverlay );
 
 	Sys_IOS_TouchOverlayUpdate();
 }
@@ -541,7 +627,21 @@ void Sys_IOS_TouchOverlayUpdate( void )
 	switch ( in_touchControls ? in_touchControls->integer : 0 ) {
 		case 1:  visible = YES; break;
 		case 2:  visible = NO;  break;
-		default: visible = !IOSTouch_ControllerConnected(); break;
+
+		default:
+			// Automatic: the pad and the screen take turns rather than one
+			// locking the other out. With no controller in use the controls are
+			// simply there. With one in use they stay out of the way, and come
+			// back the moment a finger touches the screen -- then fade out again
+			// once the screen has been left alone for a while.
+			if ( !IOSTouch_ControllerConnected() ) {
+				visible = YES;
+			} else {
+				visible = ( touchOverlay.lastTouchTime &&
+							CACurrentMediaTime() - touchOverlay.lastTouchTime
+								< TOUCH_IDLE_HIDE ) ? YES : NO;
+			}
+			break;
 	}
 
 	// Menus, loading screens and cutscenes are all times when there is nothing
@@ -550,22 +650,12 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		visible = NO;
 	}
 
-	// Before anything else, and on every frame rather than only when something
-	// changed: SDL reorders its own views -- on a layout pass, on a rotation, on
-	// vid_restart -- and a buried overlay receives no touches at all. Nothing
-	// else would notice, because SDL's touch-to-mouse synthesis is off, so the
-	// symptom is the whole screen going dead rather than anything degrading.
-	if ( touchOverlay.superview &&
-		 touchOverlay.superview.subviews.lastObject != touchOverlay ) {
-		[touchOverlay.superview bringSubviewToFront:touchOverlay];
-		Com_Printf( "Touch overlay: raised back above SDL's view\n" );
-	}
-
-	// Autoresizing normally keeps up, but a zero or stale frame would make every
-	// touch land at the same place, so take the window's word for it.
-	if ( touchOverlay.superview &&
-		 !CGRectEqualToRect( touchOverlay.frame, touchOverlay.superview.bounds ) ) {
-		touchOverlay.frame = touchOverlay.superview.bounds;
+	// Keep the window over the whole screen. Nothing should move it, but a zero
+	// or stale frame would send every touch to the same place, which reads as
+	// touch being dead rather than as a layout problem.
+	if ( touchWindow && touchWindow.screen &&
+		 !CGRectEqualToRect( touchWindow.frame, touchWindow.screen.bounds ) ) {
+		touchWindow.frame = touchWindow.screen.bounds;
 	}
 
 	if ( everSet && visible == wasVisible ) {
@@ -593,10 +683,31 @@ void Sys_IOS_TouchOverlayUpdate( void )
 Sys_IOS_TouchOverlayShutdown
 ==============
 */
+/*
+==============
+IOSTouch_MovementActive
+
+Whether the on-screen stick is being held.
+
+The pad's own movement handling writes the movement axes every frame -- zeroing
+them when it is using the digital path -- which wiped whatever the on-screen
+stick had just put there. Walking by touch stopped after a step or two unless
+the thumb kept moving, because only the frames between the touch event and the
+next pad update survived.
+==============
+*/
+int IOSTouch_MovementActive( void )
+{
+	return ( touchOverlay && touchOverlay.stickTouch ) ? 1 : 0;
+}
+
 void Sys_IOS_TouchOverlayShutdown( void )
 {
-	if ( touchOverlay ) {
-		[touchOverlay removeFromSuperview];
-		touchOverlay = nil;
+	if ( touchWindow ) {
+		touchWindow.hidden = YES;
+		touchWindow.rootViewController = nil;
+		touchWindow = nil;
 	}
+
+	touchOverlay = nil;
 }

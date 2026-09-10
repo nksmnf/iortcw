@@ -592,8 +592,9 @@ static struct
 	int      numTouchpads;
 } gamepadCaps;
 
-enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD };
+enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD, ROUTE_SKIP };
 
+static qboolean IN_TouchOwnsMovement( void );
 static void IN_GamepadTriggers( void );
 static void IN_GamepadTouchpad( void );
 static void IN_GamepadGyro( void );
@@ -1157,8 +1158,10 @@ static void IN_GamepadSticks( void )
 		IN_QueueMouseDelta( dx, dy );
 
 		// Nothing should reach the movement axes while a menu is up.
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer, 0, 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer, 0, 0, NULL );
 		return;
@@ -1182,9 +1185,13 @@ static void IN_GamepadSticks( void )
 		IN_DigitalMove( lx, ly );
 
 		// The movement axes must be silent, or the analogue path would fight
-		// the keys.
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		// the keys -- unless the on-screen stick is being held, in which case
+		// they are its, and zeroing them here is what stopped touch walking
+		// after a step or two.
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
 
 		{
 			float yawScale   = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
@@ -1219,10 +1226,12 @@ static void IN_GamepadSticks( void )
 		float yawScale     = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
 		float pitchScale   = in_lookPitchSpeed->value / IN_NonZero( j_pitch->value, 0.022f );
 
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
-			(int)( lx * sideScale ), 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
-			(int)( ly * forwardScale ), 0, NULL );
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
+				(int)( lx * sideScale ), 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
+				(int)( ly * forwardScale ), 0, NULL );
+		}
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
 			(int)( rx * yawScale ), 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
@@ -1264,6 +1273,61 @@ mouse-driven menu normally behaves. The D-pad is also mapped to the arrow keys
 so list-style menus (difficulty, saved games) can be walked without aiming.
 ===============
 */
+/*
+===============
+IN_SkipsCutscene
+
+Which buttons mean "get on with it" while a cutscene is playing.
+
+Needed since the keyboard duplicates iPadOS sends for these buttons started
+being dropped: skipping used to happen by accident, because the duplicate of
+Cross arrived as Return and Options as Escape, and the game skips on those.
+===============
+*/
+/*
+===============
+IN_TouchOwnsMovement
+
+True while the on-screen stick is held. Only ever true on iOS; elsewhere this
+folds away to a constant.
+===============
+*/
+static qboolean IN_TouchOwnsMovement( void )
+{
+#if TARGET_OS_IPHONE
+	extern int IOSTouch_MovementActive( void );
+
+	return IOSTouch_MovementActive() ? qtrue : qfalse;
+#else
+	return qfalse;
+#endif
+}
+
+static qboolean IN_CutsceneActive( void )
+{
+	if ( clc.state == CA_CINEMATIC ) {
+		return qtrue;
+	}
+
+	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
+	// CL_KeyDownEvent itself tests when deciding that a key means "skip".
+	return cl.cameraMode ? qtrue : qfalse;
+}
+
+static qboolean IN_SkipsCutscene( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_A:
+		case SDL_CONTROLLER_BUTTON_B:
+		case SDL_CONTROLLER_BUTTON_START:
+		case SDL_CONTROLLER_BUTTON_BACK:
+			return qtrue;
+		default:
+			return qfalse;
+	}
+}
+
 static int IN_MenuKeyForPadButton( int button )
 {
 	switch ( button )
@@ -1332,7 +1396,9 @@ static void IN_GamepadMove( void )
 		{
 			stick_state.buttonRoute[i] = ROUTE_KEY;
 
-			if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
+			if ( IN_CutsceneActive() && IN_SkipsCutscene( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_SKIP;
+			} else if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
 				stick_state.buttonRoute[i] = ROUTE_MENU;
 			} else if ( in_dpadMove->integer && IN_DpadMoveCommand( i ) ) {
 				stick_state.buttonRoute[i] = ROUTE_DPAD;
@@ -1341,6 +1407,12 @@ static void IN_GamepadMove( void )
 
 		switch ( stick_state.buttonRoute[i] )
 		{
+		case ROUTE_SKIP:
+			// Escape is what the game skips a cutscene on, and CL_KeyDownEvent
+			// turns it into "cameraInterrupt" so the level script knows.
+			Com_QueueEvent(in_eventTime, SE_KEY, K_ESCAPE, pressed, 0, NULL);
+			break;
+
 		case ROUTE_MENU:
 			Com_QueueEvent(in_eventTime, SE_KEY, IN_MenuKeyForPadButton( i ), pressed, 0, NULL);
 			break;
@@ -2274,18 +2346,7 @@ this to turn a tap into "skip".
 */
 int IOSTouch_CinematicActive( void )
 {
-	if ( clc.state == CA_CINEMATIC ) {
-		return 1;
-	}
-
-	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
-	// CL_KeyDownEvent itself tests when deciding that a key means "skip", so
-	// using it keeps the two from disagreeing.
-	if ( cl.cameraMode ) {
-		return 1;
-	}
-
-	return 0;
+	return IN_CutsceneActive() ? 1 : 0;
 }
 
 /*
@@ -2414,6 +2475,7 @@ void IN_Frame( void )
 	// Cheap when nothing changed, and it has to run every frame: the overlay
 	// hides itself whenever a menu, the console or a loading screen takes over.
 	Sys_IOS_TouchOverlayUpdate( );
+	Sys_IOS_PerfFrame( );
 #endif
 
 	// Set event time for next frame to earliest possible time an event could happen

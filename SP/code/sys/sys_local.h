@@ -69,6 +69,9 @@ qboolean    Sys_IOS_HasAdaptiveTriggers( void );
 
 // ios_touch.m -- on-screen controls, shown only when no controller is attached
 void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
+void        Sys_IOS_PerfInit( void *parentView );
+void        Sys_IOS_PerfFrame( void );
+void        Sys_IOS_PerfNoteSwap( double ms );
 void        Sys_IOS_TouchOverlayUpdate( void );
 void        Sys_IOS_TouchOverlayShutdown( void );
 

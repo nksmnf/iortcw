@@ -1267,7 +1267,16 @@ void GLimp_EndFrame( void )
 	// don't flip if drawing to front buffer
 	if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 )
 	{
+#if TARGET_OS_IPHONE
+		// A GPU-bound frame waits here, and iOS exposes no GPU utilisation to
+		// ask instead, so this is the signal the performance readout reports.
+		int before = Sys_Milliseconds();
+
 		SDL_GL_SwapWindow( SDL_window );
+		Sys_IOS_PerfNoteSwap( Sys_Milliseconds() - before );
+#else
+		SDL_GL_SwapWindow( SDL_window );
+#endif
 	}
 
 	if( r_fullscreen->modified )
