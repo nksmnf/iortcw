@@ -516,6 +516,11 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 	if ( mode != -2 ) {
 		ri.Printf( PRINT_ALL, " (ignored on iOS, using native resolution)" );
 		mode = -2;
+
+		// Tell the cvar too, or everything that reads it keeps describing a
+		// resolution the game is not using -- the in-game System menu reads
+		// r_mode and was reporting 640x480 on a 2752x2064 screen.
+		ri.Cvar_Set( "r_mode", "-2" );
 	}
 	fullscreen = qtrue;
 #endif

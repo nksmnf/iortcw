@@ -594,6 +594,10 @@ static struct
 
 enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD, ROUTE_SKIP };
 
+// What counts as "not moving" for the gyro, in rad/s. About 2 degrees a second:
+// below anything a hand does on purpose, above what a still controller reports.
+#define GYRO_REST_RATE  0.035f
+
 static qboolean IN_TouchOwnsMovement( void );
 static void IN_GamepadTriggers( void );
 static void IN_GamepadTouchpad( void );
@@ -1754,6 +1758,42 @@ static void IN_GamepadGyro( void )
 	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
 		return;
 
+	// Take the resting bias out before anything else.
+	//
+	// A gyro at rest does not read zero; it reads a small, slowly wandering
+	// offset. A deadzone can hide it but cannot remove it -- anything just
+	// outside the deadzone still leaks, and the aim creeps across the screen
+	// while the controller sits on a table. So the offset is measured instead:
+	// whenever the readings have been small for a moment the estimate is pulled
+	// gently towards them, and it is subtracted from every sample.
+	{
+		static float bias[3];
+		static int   restSince;
+		int i;
+		float magnitude = 0.0f;
+
+		for ( i = 0; i < 3; i++ ) {
+			data[i] -= bias[i];
+			magnitude += data[i] * data[i];
+		}
+
+		if ( magnitude < GYRO_REST_RATE * GYRO_REST_RATE ) {
+			if ( !restSince ) {
+				restSince = Sys_Milliseconds();
+			}
+
+			// Only after it has been still for a moment, so a slow deliberate
+			// pan is never mistaken for rest and learned as bias.
+			if ( Sys_Milliseconds() - restSince > 250 ) {
+				for ( i = 0; i < 3; i++ ) {
+					bias[i] += data[i] * 0.02f;
+				}
+			}
+		} else {
+			restSince = 0;
+		}
+	}
+
 	deadzone = in_gyroDeadzone->value;
 
 	// data[0] is pitch (tilting the pad up/down), data[1] is yaw (turning it).
@@ -2391,6 +2431,26 @@ void IOSTouch_SkipCinematic( void )
 	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
 }
 
+/*
+===============
+IOSTouch_QueueCommand
+
+Run a +command / -command on the overlay's behalf, with its own key number.
+
+The key number is what keeps two sources of the same button apart: a -command
+without one releases every holder, so the on-screen controls and the pad would
+cancel each other.
+===============
+*/
+void IOSTouch_QueueCommand( const char *command, int key )
+{
+	if ( !command || !*command ) {
+		return;
+	}
+
+	Cbuf_AddText( va( "%s %d\n", command, key ) );
+}
+
 int IOSTouch_MovementAxis( int forward )
 {
 	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
@@ -2499,6 +2559,7 @@ void IN_Frame( void )
 	// hides itself whenever a menu, the console or a loading screen takes over.
 	Sys_IOS_TouchOverlayUpdate( );
 	Sys_IOS_PerfFrame( );
+	Sys_IOS_GyroFrame( );
 #endif
 
 	// Set event time for next frame to earliest possible time an event could happen

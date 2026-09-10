@@ -186,6 +186,20 @@ struct CampaignMission: Identifiable, Hashable {
     let id: String      // map name
     let title: String
 
+    /// Which quarter of the campaign this mission sits in, used to decide what
+    /// the player arrives carrying. Starting a map from here has no savegame
+    /// behind it, and single player normally carries weapons forward inside
+    /// one, so without this the player spawns with empty hands.
+    var chapter: Int {
+        guard let index = CampaignMission.all.firstIndex(where: { $0.id == id }) else { return 1 }
+        switch index {
+        case 0...2:   return 1
+        case 3...7:   return 2
+        case 8...16:  return 3
+        default:      return 4
+        }
+    }
+
     static let all: [CampaignMission] = [
         CampaignMission(id: "escape1",   title: "1. Побег"),
         CampaignMission(id: "escape2",   title: "2. Замок Вольфенштайн"),
@@ -468,6 +482,12 @@ final class LauncherModel: ObservableObject {
 
         IOSBridge_SetCvar("com_maxfps", "\(maxFPS)")
         IOSBridge_SetCvar("r_hidpi", hiDPI ? "1" : "0")
+
+        // -2 is "whatever the screen is", which is the only honest answer on a
+        // device with one fixed panel. default.cfg inside pak0 sets r_mode 3 --
+        // 640x480 in the mode table -- and that is what the game's own System
+        // menu was reporting.
+        IOSBridge_SetCvar("r_mode", "-2")
         IOSBridge_SetCvar("cg_fov", String(format: "%.0f", fov))
         IOSBridge_SetCvar("r_gamma", String(format: "%.2f", brightness))
 
@@ -527,6 +547,7 @@ final class LauncherModel: ObservableObject {
     func startMission(_ mission: CampaignMission) {
         commit()
         IOSBridge_SetCvar("g_gameskill", "\(skill)")
+        IOSBridge_SetCvar("g_missionLoadout", "\(mission.chapter)")
         IOSBridge_SetStartupCommand("spmap \(mission.id)")
         IOSBridge_LauncherFinished()
     }

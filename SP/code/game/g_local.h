@@ -1096,6 +1096,8 @@ extern vmCvar_t g_debugMove;
 extern vmCvar_t g_debugAlloc;
 extern vmCvar_t g_debugDamage;
 extern vmCvar_t g_debugBullets;     //----(SA)	added
+extern vmCvar_t g_debugAI;          // per-cast timing, to see AI running slow
+extern vmCvar_t g_missionLoadout;   // gear for a mission started outside the campaign
 extern vmCvar_t g_debugAudibleEvents;       //----(SA)	added
 extern vmCvar_t g_headshotMaxDist;      //----(SA)	added
 extern vmCvar_t g_weaponRespawn;

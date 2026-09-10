@@ -849,6 +849,42 @@ void ClientThink_real( gentity_t *ent ) {
 		msec = 200;
 	}
 
+	// How much simulated time this client is actually getting against how much
+	// real time passed. An AI that is only updated every few hundred
+	// milliseconds loses whatever the clamp above cuts off, and moves at that
+	// fraction of its proper speed -- which is what "the guards behind the bars
+	// walk in slow motion until they see you" looks like from the inside.
+	//
+	// Logged as a ratio because that is the number that says how wrong it is:
+	// 1.00 is correct, 0.67 is two thirds speed.
+	if ( g_debugAI.integer && ( ent->r.svFlags & SVF_CASTAI ) ) {
+		static int  lastReport;
+		static int  granted[MAX_CLIENTS];
+		static int  wallStart;
+
+		granted[ent->s.number] += msec;
+
+		if ( !wallStart ) {
+			wallStart = level.time;
+		}
+
+		if ( level.time - lastReport > 2000 ) {
+			int i;
+			int wall = level.time - wallStart;
+
+			for ( i = 0; i < level.maxclients; i++ ) {
+				if ( granted[i] && wall > 0 ) {
+					G_Printf( "ai %2d: %4d of %4d ms  ratio %.2f\n",
+						i, granted[i], wall, (float)granted[i] / (float)wall );
+				}
+				granted[i] = 0;
+			}
+
+			lastReport = level.time;
+			wallStart = level.time;
+		}
+	}
+
 	if ( pmove_msec.integer < 8 ) {
 		trap_Cvar_Set( "pmove_msec", "8" );
 		trap_Cvar_Update( &pmove_msec );

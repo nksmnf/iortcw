@@ -1562,6 +1562,67 @@ char *ClientConnect( int clientNum, qboolean firstTime, qboolean isBot ) {
 }
 
 /*
+==============
+G_GiveMissionLoadout
+
+Hand the player the gear the campaign would have given them by this point.
+
+Single player carries weapons from map to map inside the savegame, so a map
+started cold -- which is what the launcher's mission list does -- arrives with
+only whatever that map's own script hands out. For anything past the prologue
+that is nothing, and the player spawns empty handed in front of armed guards.
+
+The sets below follow the campaign's own pacing rather than handing over
+everything: arriving at the crypt with a Venom would not be starting the
+mission, it would be skipping it.
+==============
+*/
+static void G_GiveLoadoutWeapon( gclient_t *client, int weapon, int clips, int spare ) {
+	COM_BitSet( client->ps.weapons, weapon );
+	client->ps.ammoclip[BG_FindClipForWeapon( weapon )] += clips;
+	client->ps.ammo[BG_FindAmmoForWeapon( weapon )] += spare;
+}
+
+void G_GiveMissionLoadout( gentity_t *ent, int chapter ) {
+	gclient_t *client = ent->client;
+
+	if ( !client ) {
+		return;
+	}
+
+	// Always: the knife and the sidearm the game opens with.
+	G_GiveLoadoutWeapon( client, WP_KNIFE, 1, 0 );
+	G_GiveLoadoutWeapon( client, WP_LUGER, 8, 32 );
+
+	if ( chapter >= 1 ) {
+		G_GiveLoadoutWeapon( client, WP_MP40, 32, 90 );
+		G_GiveLoadoutWeapon( client, WP_GRENADE_LAUNCHER, 4, 0 );
+	}
+
+	if ( chapter >= 2 ) {
+		G_GiveLoadoutWeapon( client, WP_THOMPSON, 30, 90 );
+		G_GiveLoadoutWeapon( client, WP_STEN, 32, 60 );
+	}
+
+	if ( chapter >= 3 ) {
+		G_GiveLoadoutWeapon( client, WP_FG42, 20, 60 );
+		G_GiveLoadoutWeapon( client, WP_MAUSER, 10, 30 );
+		G_GiveLoadoutWeapon( client, WP_PANZERFAUST, 1, 3 );
+	}
+
+	if ( chapter >= 4 ) {
+		G_GiveLoadoutWeapon( client, WP_SNIPERRIFLE, 10, 30 );
+		G_GiveLoadoutWeapon( client, WP_VENOM, 200, 200 );
+		G_GiveLoadoutWeapon( client, WP_FLAMETHROWER, 200, 200 );
+	}
+
+	client->ps.weapon = WP_MP40;
+	client->ps.stats[STAT_HEALTH] = ent->health = client->ps.stats[STAT_MAX_HEALTH];
+
+	G_Printf( "mission loadout: chapter %d\n", chapter );
+}
+
+/*
 ===========
 ClientBegin
 
@@ -1621,6 +1682,14 @@ void ClientBegin( int clientNum ) {
 	// DHM - Nerve :: Only in single player
 	if ( g_gametype.integer == GT_SINGLE_PLAYER && !( ent->r.svFlags & SVF_CASTAI ) ) {
 		AICast_ScriptEvent( AICast_GetCastState( clientNum ), "spawn", "" );
+
+		// Set by the launcher when a mission is started straight from its list,
+		// and cleared here so it only ever applies to that one spawn.
+		if ( g_missionLoadout.integer > 0 ) {
+			G_GiveMissionLoadout( ent, g_missionLoadout.integer );
+			trap_Cvar_Set( "g_missionLoadout", "0" );
+			trap_Cvar_Update( &g_missionLoadout );
+		}
 	}
 
 /*

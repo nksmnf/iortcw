@@ -49,6 +49,7 @@ extern void IOSTouch_QueueKey( int key, int down );
 extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
 extern void IOSTouch_QueueMouseTo( int x, int y );
+extern void IOSTouch_QueueCommand( const char *command, int key );
 extern int  IOSTouch_ControllerConnected( void );
 extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
@@ -62,15 +63,15 @@ extern void IOSTouch_SkipCinematic( void );
 #define EDGE_MARGIN       40.0f
 #define MENU_BUTTON_SIZE  64.0f
 
+// How far the movement stick has to go before it means "run". Past the point a
+// thumb reaches without deciding to.
+#define SPRINT_THRESHOLD  0.85f
+
 // How long the on-screen controls stay up after the last touch when a
 // controller is also in use. Long enough to cross the screen and press
 // something, short enough that they are gone by the time it matters.
 #define TOUCH_IDLE_HIDE   5.0
 
-// Cursor travel per point of finger travel, in the menus' 640x480 space. The
-// screen is 1376 points wide against 640, so this is a little faster than 1:1
-// on screen and a full swipe crosses about half the menu.
-#define MENU_TOUCH_SCALE  0.70f
 
 // A button on the overlay: a circle with a label, bound to one key.
 @interface IORTCWTouchButton : UIView
@@ -148,6 +149,9 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic) CFTimeInterval lastTouchTime; // for the automatic hide
 @property (nonatomic) CGPoint menuTouchLast;
 @property (nonatomic) BOOL menuTouchMoved;
+@property (nonatomic) BOOL menuTwoFinger;
+@property (nonatomic) CGPoint menuCursorRemainder;
+@property (nonatomic) BOOL sprinting;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -191,6 +195,11 @@ extern void IOSTouch_SkipCinematic( void );
 		{ "CROUCH", 'c',       1, 1 },
 		{ "RELOAD", 'r',       2, 0 },
 		{ "NEXT",   ']',       2, 1 },
+		// Kick is worth a button of its own: it opens doors, breaks crates and
+		// finishes people without spending ammunition, and it had no place in
+		// the touch layout at all.
+		{ "KICK",   'g',       3, 0 },
+		{ "LEAN",   'q',       3, 1 },
 	};
 
 	// Escape, where it can be found. A three-finger tap does the same and still
@@ -346,6 +355,16 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	if ( [self menuActive] ) {
 		UITouch *touch = touches.anyObject;
 
+		// Two fingers press whatever the cursor is already on, without moving
+		// it. That is the one thing the other two gestures cannot do: a slide
+		// aims and a tap jumps, so a carefully aimed cursor had no way to be
+		// clicked without being moved first.
+		if ( count == 2 ) {
+			self.menuTwoFinger = YES;
+			self.menuTouch = nil;
+			return;
+		}
+
 		if ( touch && !self.menuTouch ) {
 			// Two gestures, because neither alone is enough on a screen this
 			// size. A slide nudges the cursor, the way a trackpad does, which is
@@ -355,6 +374,7 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 			self.menuTouch = touch;
 			self.menuTouchLast = [touch locationInView:self];
 			self.menuTouchMoved = NO;
+			self.menuCursorRemainder = CGPointZero;
 		}
 		return;
 	}
@@ -395,6 +415,9 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	self.lastTouchTime = CACurrentMediaTime();
 
 	if ( [self menuActive] ) {
+		CGFloat w = self.bounds.size.width;
+		CGFloat h = self.bounds.size.height;
+
 		for ( UITouch *touch in touches ) {
 			CGPoint p;
 			CGFloat dx, dy;
@@ -412,8 +435,30 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 				self.menuTouchMoved = YES;
 			}
 
-			IOSTouch_QueueMouse( (int)lround( dx * MENU_TOUCH_SCALE ),
-								 (int)lround( dy * MENU_TOUCH_SCALE ) );
+			// Exactly the ratio between the screen and the 640x480 the menus are
+			// laid out in, per axis. A round number here is what made the cursor
+			// outrun the finger: 0.70 against the 0.465 this screen actually
+			// needs is half again too fast, and the gap grows with the stroke,
+			// which reads as the cursor being scaled rather than dragged.
+			if ( w > 0.0f && h > 0.0f ) {
+				self.menuCursorRemainder = CGPointMake(
+					self.menuCursorRemainder.x + dx * ( 640.0f / w ),
+					self.menuCursorRemainder.y + dy * ( 480.0f / h ) );
+
+				int qx = (int)( self.menuCursorRemainder.x );
+				int qy = (int)( self.menuCursorRemainder.y );
+
+				if ( qx || qy ) {
+					// The engine's cursor is whole units, so keep the fraction
+					// rather than throwing it away on every small movement --
+					// otherwise a slow drag never moves the cursor at all.
+					self.menuCursorRemainder = CGPointMake(
+						self.menuCursorRemainder.x - qx,
+						self.menuCursorRemainder.y - qy );
+					IOSTouch_QueueMouse( qx, qy );
+					menuCursor = CGPointMake( menuCursor.x + qx, menuCursor.y + qy );
+				}
+			}
 		}
 		return;
 	}
@@ -444,6 +489,15 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 			IOSTouch_QueueAxis( IOSTouch_MovementAxis( 0 ), (int)( nx * 32767 ) );
 			IOSTouch_QueueAxis( IOSTouch_MovementAxis( 1 ), (int)( ny * 32767 ) );
+
+			// Sprint on a full push, rather than another button.
+			//
+			// Stamina is part of how RTCW plays and there was no way to spend it
+			// by touch. A thumb already tells the difference between walking the
+			// stick over and shoving it to the edge, so the gesture is free --
+			// and it cannot be held by accident, because holding the edge is
+			// exactly what running is.
+			[self setSprint:( sqrt( nx * nx + ny * ny ) > SPRINT_THRESHOLD )];
 			continue;
 		}
 
@@ -453,6 +507,16 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 			self.lookLast = p;
 		}
 	}
+}
+
+- (void)setSprint:(BOOL)on
+{
+	if ( on == self.sprinting ) {
+		return;
+	}
+
+	self.sprinting = on;
+	IOSTouch_QueueCommand( on ? "+sprint" : "-sprint", K_PAD0_LEFTSTICK_CLICK );
 }
 
 - (void)releaseTouch:(UITouch *)touch
@@ -473,6 +537,7 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		[self.stick setNeedsDisplay];
 		IOSTouch_QueueAxis( IOSTouch_MovementAxis( 0 ), 0 );
 		IOSTouch_QueueAxis( IOSTouch_MovementAxis( 1 ), 0 );
+		[self setSprint:NO];
 	}
 
 	if ( touch == self.lookTouch ) {
@@ -482,6 +547,14 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	if ( self.menuTwoFinger && event.allTouches.count <= touches.count ) {
+		// The last of the two came up: press where the cursor is.
+		self.menuTwoFinger = NO;
+		IOSTouch_QueueKey( K_MOUSE1, 1 );
+		IOSTouch_QueueKey( K_MOUSE1, 0 );
+		return;
+	}
+
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
 			BOOL tapped = !self.menuTouchMoved;
@@ -598,6 +671,7 @@ void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 	// The readout lives in the same window: it is already above the game and
 	// already knows about the safe area.
 	Sys_IOS_PerfInit( (__bridge void *)touchOverlay );
+	Sys_IOS_GyroInit();
 
 	Sys_IOS_TouchOverlayUpdate();
 }

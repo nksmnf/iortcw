@@ -192,6 +192,7 @@ if(IORTCW_IOS)
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_perf.m"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_gyro.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.c"
     )
 endif()
