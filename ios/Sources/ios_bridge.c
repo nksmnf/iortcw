@@ -26,8 +26,113 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../../SP/code/sys/sys_local.h"
 #include "ios_bridge.h"
 
+#include "../../SP/code/zlib-1.2.11/unzip.h"
+
 #include <stdio.h>
 #include <unistd.h>
+
+/*
+==============
+IOSBridge_ScanData
+
+What the player actually has, read from the pk3 central directories.
+
+"All five files are present" is a weak thing to tell someone who has just spent
+ten minutes copying 637MB: it does not distinguish the real data from five
+files of the right names. Counting the maps does, and it is nearly free -- a zip
+directory is a few hundred kilobytes at the end of the file, so this never
+touches the 300MB of content in front of it.
+==============
+*/
+static qboolean dataScanned;
+static int      dataMaps;
+static int      dataFiles;
+static double   dataMegabytes;
+
+static void IOSBridge_ScanPak( const char *path )
+{
+	unzFile uf = unzOpen( path );
+	unz_global_info gi;
+	int i;
+
+	if ( !uf ) {
+		return;
+	}
+
+	if ( unzGetGlobalInfo( uf, &gi ) != UNZ_OK ) {
+		unzClose( uf );
+		return;
+	}
+
+	for ( i = 0; i < (int)gi.number_entry; i++ ) {
+		char name[256];   // MAX_ZPATH, which files.c keeps to itself
+		unz_file_info info;
+
+		if ( unzGetCurrentFileInfo( uf, &info, name, sizeof( name ),
+				NULL, 0, NULL, 0 ) != UNZ_OK ) {
+			break;
+		}
+
+		dataFiles++;
+		dataMegabytes += (double)info.uncompressed_size / ( 1024.0 * 1024.0 );
+
+		if ( !Q_stricmpn( name, "maps/", 5 ) ) {
+			const char *ext = strrchr( name, '.' );
+
+			if ( ext && !Q_stricmp( ext, ".bsp" ) ) {
+				dataMaps++;
+			}
+		}
+
+		if ( unzGoToNextFile( uf ) != UNZ_OK ) {
+			break;
+		}
+	}
+
+	unzClose( uf );
+}
+
+bool IOSBridge_ScanData( bool rescan )
+{
+	static const char *paks[] = {
+		"pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3", "sp_pak3.pk3", "sp_pak4.pk3"
+	};
+	const char *dir;
+	size_t i;
+
+	if ( dataScanned && !rescan ) {
+		return dataMaps > 0;
+	}
+
+	dataScanned = qtrue;
+	dataMaps = 0;
+	dataFiles = 0;
+	dataMegabytes = 0.0;
+
+	dir = Sys_IOS_DataPath();
+
+	if ( !dir || !*dir ) {
+		return false;
+	}
+
+	for ( i = 0; i < ARRAY_LEN( paks ); i++ ) {
+		char path[MAX_OSPATH];
+
+		Com_sprintf( path, sizeof( path ), "%s/main/%s", dir, paks[i] );
+		IOSBridge_ScanPak( path );
+	}
+
+	return dataMaps > 0;
+}
+
+int    IOSBridge_DataMaps( void )      { return dataMaps; }
+int    IOSBridge_DataFiles( void )     { return dataFiles; }
+double IOSBridge_DataMegabytes( void ) { return dataMegabytes; }
+
+const char *IOSBridge_EngineVersion( void )
+{
+	return Q3_VERSION " " PLATFORM_STRING "-" ARCH_STRING;
+}
 
 #define MAX_LAUNCHER_SETTINGS 64
 #define MAX_LAUNCHER_BINDS    64

@@ -86,6 +86,22 @@ void IOSBridge_SetStartupCommand( const char *command );
 // read.
 const char *IOSBridge_BuildCommandLine( void );
 
+// --- what is in the game data ----------------------------------------------
+
+// Reads the pk3 directories -- not their contents -- and reports what is there.
+// Cached, so the launcher's once-a-second refresh is free after the first call;
+// pass true to force a rescan after files have been added.
+//
+// Returns false if nothing could be read yet.
+bool IOSBridge_ScanData( bool rescan );
+
+int    IOSBridge_DataMaps( void );      // maps/*.bsp across every pak
+int    IOSBridge_DataFiles( void );     // entries in total
+double IOSBridge_DataMegabytes( void ); // uncompressed size of the lot
+
+// "iortcw 1.51d-SP ios-arm64", the same string the engine prints on startup.
+const char *IOSBridge_EngineVersion( void );
+
 // --- launcher lifecycle ----------------------------------------------------
 
 // Set by the Swift side when the user presses Play; the C side spins the

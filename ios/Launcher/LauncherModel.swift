@@ -233,7 +233,7 @@ final class LauncherModel: ObservableObject {
     @Published var rumble: Double = 100
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
-    @Published var touchControls: Int = 1   // shown always; the pad does not replace touch
+    @Published var touchControls: Int = 0   // automatic: follows the hand, see ios_touch.m
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
@@ -242,6 +242,35 @@ final class LauncherModel: ObservableObject {
     @Published var bindings: [String: String] = [:]
 
     @Published var controllerName: String? = nil
+
+    // What is actually in the pk3s, read from their directories rather than
+    // taken on faith from five filenames being present.
+    @Published var dataMaps: Int = 0
+    @Published var dataFiles: Int = 0
+    @Published var dataMegabytes: Double = 0
+
+    /// "0.2.0 (20260910)" -- the port's version, not the engine's.
+    var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
+    }
+
+    /// When this binary was built, taken from the executable itself so it can
+    /// never disagree with what is actually running.
+    var buildTime: String {
+        guard let url = Bundle.main.executableURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let date = attrs[.modificationDate] as? Date else { return "—" }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yyyy HH:mm"
+        return formatter.string(from: date)
+    }
+
+    /// "iortcw 1.51d-SP ios-arm64", the engine's own version string.
+    var engineVersion: String { String(cString: IOSBridge_EngineVersion()) }
 
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -283,7 +312,19 @@ final class LauncherModel: ObservableObject {
             importedCount += moved
         }
 
+        let previous = dataMask
         dataMask = Int(IOSBridge_GameDataMask())
+
+        // Only when the set of files changed, and only once it is complete:
+        // reading five zip directories is cheap but not free, and this runs
+        // every second while the launcher is open.
+        if hasAllData && (dataMaps == 0 || dataMask != previous) {
+            if IOSBridge_ScanData(dataMask != previous) {
+                dataMaps = Int(IOSBridge_DataMaps())
+                dataFiles = Int(IOSBridge_DataFiles())
+                dataMegabytes = IOSBridge_DataMegabytes()
+            }
+        }
     }
 
     private func observeControllers() {

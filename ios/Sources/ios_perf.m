@@ -49,6 +49,41 @@ static double    perfCpuPercent;
 static fileHandle_t perfLogFile;
 static qboolean     perfLogOpen;
 
+// The display's actual cadence, measured rather than assumed.
+static CADisplayLink *perfDisplayLink = nil;
+static double         perfRefreshHz;
+
+/*
+==============
+IORTCWDisplayLinkTarget
+
+A running display link that asks for 120Hz and reports what it actually gets.
+Two jobs in one object because they are the same fact from either side.
+
+The asking matters: ProMotion is adaptive, and with nothing declaring a
+preferred range CoreAnimation is free to settle the panel at 80Hz, which is
+exactly what a 12.6ms frame at 30% CPU turns out to be -- the game waiting on a
+slower display, not the game running out of time.
+==============
+*/
+@interface IORTCWDisplayLinkTarget : NSObject
+@end
+
+@implementation IORTCWDisplayLinkTarget
+
+- (void)tick:(CADisplayLink *)link
+{
+	double period = link.targetTimestamp - link.timestamp;
+
+	if ( period > 0.0 ) {
+		perfRefreshHz = 1.0 / period;
+	}
+}
+
+@end
+
+static IORTCWDisplayLinkTarget *perfLinkTarget = nil;
+
 /*
 ==============
 IOSPerf_CPUSeconds
@@ -120,8 +155,12 @@ void Sys_IOS_PerfInit( void *parentView )
 	r_perfLog = Cvar_Get( "r_perfLog", "0", CVAR_ARCHIVE );
 
 	perfLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-	perfLabel.font = [UIFont monospacedDigitSystemFontOfSize:13
-													  weight:UIFontWeightMedium];
+	// Fully monospaced, not just the digits: the fields are padded to a fixed
+	// width, and padding only holds the line still if the space is a digit's
+	// width too. Otherwise the strip shifts every time the frame time crosses
+	// ten and gains a character.
+	perfLabel.font = [UIFont monospacedSystemFontOfSize:12
+												 weight:UIFontWeightMedium];
 	perfLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.75];
 	perfLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
 	perfLabel.textAlignment = NSTextAlignmentCenter;
@@ -132,6 +171,19 @@ void Sys_IOS_PerfInit( void *parentView )
 	perfLabel.text = @"";
 
 	[parent addSubview:perfLabel];
+
+	perfLinkTarget = [[IORTCWDisplayLinkTarget alloc] init];
+	perfDisplayLink = [CADisplayLink displayLinkWithTarget:perfLinkTarget
+												  selector:@selector(tick:)];
+
+	if ( @available( iOS 15.0, * ) ) {
+		// Ask for the panel's full rate. Without this the system is entitled to
+		// pick something slower and usually does.
+		perfDisplayLink.preferredFrameRateRange =
+			CAFrameRateRangeMake( 80.0f, 120.0f, 120.0f );
+	}
+
+	[perfDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 
 	perfWindowStart = CACurrentMediaTime();
 	perfCpuLast = IOSPerf_CPUSeconds();
@@ -173,13 +225,14 @@ static void IOSPerf_WriteRow( double fps, double avg, double worst, double swap,
 		}
 
 		perfLogOpen = qtrue;
-		Q_strncpyz( line, "time,fps,frame_ms,worst_ms,swap_ms,cpu_pct,mem_mb,ents,map\n",
+		Q_strncpyz( line, "time,fps,frame_ms,worst_ms,swap_ms,cpu_pct,mem_mb,ents,refresh_hz,maxfps,map\n",
 			sizeof( line ) );
 		FS_Write( line, strlen( line ), perfLogFile );
 	}
 
-	Com_sprintf( line, sizeof( line ), "%.1f,%.1f,%.2f,%.2f,%.2f,%.0f,%.1f,%d,%s\n",
+	Com_sprintf( line, sizeof( line ), "%.1f,%.1f,%.2f,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%d,%s\n",
 		(double)Sys_Milliseconds() / 1000.0, fps, avg, worst, swap, cpu, mem, ents,
+		perfRefreshHz, Cvar_VariableIntegerValue( "com_maxfps" ),
 		cl.mapname[0] ? cl.mapname : "-" );
 
 	FS_Write( line, strlen( line ), perfLogFile );
@@ -244,11 +297,11 @@ void Sys_IOS_PerfFrame( void )
 		if ( r_perfHud && r_perfHud->integer ) {
 			UIView *parent = perfLabel.superview;
 			CGFloat top = parent ? parent.safeAreaInsets.top : 0.0;
-			CGFloat width = 420.0;
+			CGFloat width = 460.0;
 
 			perfLabel.text = [NSString stringWithFormat:
-				@"%.0f FPS   %.1f/%.1f ms   swap %.1f   cpu %.0f%%   %.0f MB   ent %d",
-				fps, avg, worst, swap, perfCpuPercent, mem, ents];
+				@"%3.0f FPS  %5.1f/%5.1f ms  %3.0f Hz  cpu %3.0f%%  %4.0f MB  ent %3d",
+				fps, avg, worst, perfRefreshHz, perfCpuPercent, mem, ents];
 
 			// Under the safe area rather than at the very edge: on this iPad the
 			// top inset is where the rounded corners eat into the screen.

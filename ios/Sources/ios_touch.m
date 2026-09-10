@@ -347,10 +347,11 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		UITouch *touch = touches.anyObject;
 
 		if ( touch && !self.menuTouch ) {
-			// The cursor moves with the finger rather than jumping to it, so a
-			// target out of comfortable reach can be walked to over several
-			// strokes -- the same way a trackpad works. A tap that did not
-			// travel is the click.
+			// Two gestures, because neither alone is enough on a screen this
+			// size. A slide nudges the cursor, the way a trackpad does, which is
+			// how you land on something small. A tap puts the cursor where the
+			// finger is and presses, which is how you reach the other side of
+			// the screen without three strokes to get there.
 			self.menuTouch = touch;
 			self.menuTouchLast = [touch locationInView:self];
 			self.menuTouchMoved = NO;
@@ -484,11 +485,12 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
 			BOOL tapped = !self.menuTouchMoved;
+			CGPoint p = [touch locationInView:self];
 
 			self.menuTouch = nil;
 
-			// A tap clicks wherever the cursor ended up; a drag was the aiming.
 			if ( tapped ) {
+				[self moveMenuCursorTo:[self virtualPointFor:p]];
 				IOSTouch_QueueKey( K_MOUSE1, 1 );
 				IOSTouch_QueueKey( K_MOUSE1, 0 );
 			}

@@ -69,6 +69,14 @@ function(iortcw_abs out_var)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# The port's own version, separate from the engine's. The engine is iortcw
+# 1.51d-SP wherever it runs; this number is about the iPadOS build.
+set(IORTCW_PORT_VERSION "0.2.0")
+
+# Build number: the day it was built. Enough to tell two builds apart, which is
+# all it is for, and it does not need a counter kept anywhere.
+string(TIMESTAMP IORTCW_BUILD_NUMBER "%Y%m%d" UTC)
+
 # Version string, mirroring the Makefile's PRODUCT_VERSION
 # ---------------------------------------------------------------------------
 file(STRINGS "${SP_DIR}/Makefile" _ver_line REGEX "^VERSION=")
@@ -281,8 +289,8 @@ if(IORTCW_IOS)
         MACOSX_BUNDLE_EXECUTABLE_NAME "${APP_NAME}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${IORTCW_BUNDLE_ID}"
         MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.51"
-        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${IORTCW_PORT_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${IORTCW_BUILD_NUMBER}"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${IORTCW_BUNDLE_ID}"
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "2"   # iPad
         XCODE_ATTRIBUTE_ENABLE_BITCODE NO

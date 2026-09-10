@@ -1063,19 +1063,28 @@ static void IN_DigitalMove( float x, float y )
 	}
 
 	for ( i = 0; i < 4; i++ ) {
-		if ( want[i] == held[i] ) {
+		if ( !want[i] && !held[i] ) {
 			continue;
 		}
 
 		// Sent as console commands rather than key events because these are not
 		// bindable keys -- the stick is the stick, and routing it through a
 		// binding is what put turn on the left stick in the first place.
+		//
+		// A held direction is re-sent every frame rather than only when it
+		// changes. IN_KeyDown treats a repeat of the same key as a no-op, so
+		// this costs nothing, and it heals the one thing that kept breaking:
+		// Key_ClearStates, which the UI calls whenever a menu closes, wipes the
+		// engine's idea of what is held while this function still believes it is
+		// pressed -- after which the direction stayed dead until the stick was
+		// centred and pushed again.
 		Cbuf_AddText( va( "%c%s %d\n", want[i] ? '+' : '-', commands[i] + 1, keys[i] ) );
-		held[i] = want[i];
 
-		if ( in_debugPad && in_debugPad->integer ) {
+		if ( in_debugPad && in_debugPad->integer && want[i] != held[i] ) {
 			Com_Printf( "pad: stick %c%s\n", want[i] ? '+' : '-', commands[i] + 1 );
 		}
+
+		held[i] = want[i];
 	}
 }
 
@@ -1201,6 +1210,20 @@ static void IN_GamepadSticks( void )
 				(int)( rx * yawScale ), 0, NULL );
 			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
 				(int)( ry * pitchScale ), 0, NULL );
+
+			if ( in_debugPad && in_debugPad->integer ) {
+				static int nextAxisLog;
+
+				if ( Sys_Milliseconds() >= nextAxisLog ) {
+					nextAxisLog = Sys_Milliseconds() + 250;
+					Com_Printf( "pad: axes side[%d]=%d fwd[%d]=%d yaw[%d]=%d pitch[%d]=%d touchOwns=%d\n",
+						j_side_axis->integer, cl.joystickAxis[j_side_axis->integer],
+						j_forward_axis->integer, cl.joystickAxis[j_forward_axis->integer],
+						j_yaw_axis->integer, (int)( rx * yawScale ),
+						j_pitch_axis->integer, (int)( ry * pitchScale ),
+						IN_TouchOwnsMovement() );
+				}
+			}
 		}
 		return;
 	}

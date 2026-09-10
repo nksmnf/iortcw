@@ -106,6 +106,15 @@ private struct DataView: View {
                     Label("Все игровые файлы найдены.", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                         .font(.headline)
+
+                    if model.dataMaps > 0 {
+                        // Counted from the pk3 directories. Five files of the
+                        // right names prove nothing; 35 maps do.
+                        Text("\(model.dataMaps) карт · \(model.dataFiles) файлов · "
+                             + String(format: "%.0f МБ распакованных данных", model.dataMegabytes))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Скопируйте данные Return to Castle Wolfenstein")
@@ -157,6 +166,19 @@ private struct DataView: View {
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Сборка").font(.caption).foregroundStyle(.secondary)
+                    Text("iORTCW для iPadOS " + model.appVersion)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("собрана " + model.buildTime)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(model.engineVersion)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(24)
