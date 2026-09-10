@@ -252,6 +252,13 @@ final class LauncherModel: ObservableObject {
     @Published var stickDeadzone: Double = 0.12
     @Published var gyroMode: Int = 0
     @Published var gyroSens: Double = 1.0
+    // Whether a sensor hands its axes over the way the documentation says is
+    // not something any code here can find out: a driver that has one mirrored
+    // looks exactly like one that does not until somebody turns and watches the
+    // view go the other way. So the player decides. One switch covers both the
+    // controller's sensor and the iPad's -- they are read through the same path.
+    @Published var gyroInvertYaw: Bool = false
+    @Published var gyroInvertPitch: Bool = false
     @Published var rumble: Double = 100
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
@@ -396,8 +403,13 @@ final class LauncherModel: ObservableObject {
             "PAD0_X":                 "+reload",     // Square -- reload
             "PAD0_Y":                 "+activate",   // Triangle -- use/open
 
-            "PAD0_LEFTSTICK_CLICK":   "+sprint",
-            "PAD0_RIGHTSTICK_CLICK":  "+kick",
+            // Sprint is held down for as long as the player is running, and
+            // clicking the stick that is being shoved into a corner at the same
+            // time is both awkward and easy to set off by accident. So it sits
+            // on the aiming stick, and the kick -- one deliberate tap, never
+            // held -- takes the movement stick.
+            "PAD0_LEFTSTICK_CLICK":   "+kick",
+            "PAD0_RIGHTSTICK_CLICK":  "+sprint",
 
             "PAD0_START":             "togglemenu",
             "PAD0_BACK":              "notebook",
@@ -423,27 +435,58 @@ final class LauncherModel: ObservableObject {
         ]
     }
 
-    /// Bumped when the shipped control feel changes. A settings file written by
-    /// an older build is ignored once, so a retune actually reaches the player
-    /// instead of being overwritten by their stored copy of the old numbers.
-    private static let tuningVersion = 2
+    /// Bumped when a shipped default changes in a way that has to reach players
+    /// who already have a config. Their stored value wins over a default, as it
+    /// should -- so without this a retune would only ever be seen on a fresh
+    /// install.
+    ///
+    /// It used to work by ignoring a stale config wholesale. That cost the
+    /// player every unrelated setting they had -- brightness, volume, field of
+    /// view, difficulty -- for the sake of one retuned number, and because
+    /// `in_tuningVersion` could not be read back before the engine was up it
+    /// fired on every single launch instead of once. Each bump now names the
+    /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
+    private static let tuningVersion = 3
+
+    /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
+    /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
+    /// the ten shipped shapes this is the only one that is a cross with a centre
+    /// dot; the alternatives are either a solid plus that hides what is behind
+    /// it, or a faint disc that covers a good part of the screen once
+    /// cg_crosshairSize is turned up for a tablet.
+    private static let defaultCrosshair = 8
+
+    /// Whether the crosshair shape still has to be handed to the player. See
+    /// `migrate(from:)` for why it is written once rather than every launch.
+    private var seedsCrosshair = false
 
     private func loadDefaults() {
         applyDefaultBindings()
 
+        let stored = Int(cvar("in_tuningVersion") ?? "") ?? 0
+
         // Anything already set (a previous run) overrides the defaults.
+        //
+        // From version 3 the config lists every button the launcher knows,
+        // cleared ones included as an empty bind, so an empty value means the
+        // player took that button off -- moved its action elsewhere, most
+        // likely -- and the default must not walk back in behind them. An older
+        // config only lists what was bound, and there an empty value is
+        // genuinely "no idea", so the default is the better answer.
         for pad in PadButton.all {
             let current = String(cString: IOSBridge_GetBinding(pad.id))
             if !current.isEmpty {
                 bindings[pad.id] = current
+            } else if stored >= 3 {
+                bindings.removeValue(forKey: pad.id)
             }
         }
 
         // Settings used to be write-only: every launch wrote these defaults over
         // whatever the player had chosen, so nothing they changed here survived.
-        let stored = Int(cvar("in_tuningVersion") ?? "") ?? 0
-        guard stored >= LauncherModel.tuningVersion else { return }
-
+        // They are read back from the config the engine is about to exec, which
+        // ios_bridge.c now parses when the engine is not up yet -- before that
+        // every value below came back empty and fell through to its default.
         sensitivity      = cvarValue("sensitivity", sensitivity)
         lookYawSpeed     = cvarValue("in_lookYawSpeed", lookYawSpeed)
         lookPitchSpeed   = cvarValue("in_lookPitchSpeed", lookPitchSpeed)
@@ -475,9 +518,46 @@ final class LauncherModel: ObservableObject {
         padLog           = cvarValue("in_debugPad", padLog ? 1 : 0) != 0
 
         invertLook       = cvarValue("in_invertLook", invertLook ? 1 : 0) != 0
+        gyroInvertYaw    = cvarValue("in_gyroInvertYaw", gyroInvertYaw ? 1 : 0) != 0
+        gyroInvertPitch  = cvarValue("in_gyroInvertPitch", gyroInvertPitch ? 1 : 0) != 0
         moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
         adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
         hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
+
+        migrate(from: stored)
+    }
+
+    /// One-off fixes for a config written by an older build, applied on the
+    /// launch that first sees it.
+    ///
+    /// Deliberately surgical. A migration overrides a stored value only when
+    /// that value is the default the older build shipped: if the player has
+    /// chosen something of their own it stays, because a change of mind on our
+    /// side is not a reason to overrule them. Nothing here may write a default
+    /// over a setting it does not name.
+    private func migrate(from stored: Int) {
+        // 3: kick and sprint changed places on the stick clicks. Anyone who has
+        // played before is carrying the old pair, and a stored binding wins over
+        // a default, so without this the new layout would never arrive.
+        if stored < 3,
+           bindings["PAD0_LEFTSTICK_CLICK"] == "+sprint",
+           bindings["PAD0_RIGHTSTICK_CLICK"] == "+kick" {
+            bindings["PAD0_LEFTSTICK_CLICK"] = "+kick"
+            bindings["PAD0_RIGHTSTICK_CLICK"] = "+sprint"
+        }
+
+        // The crosshair shape is seeded, not owned. There is no crosshair
+        // control in the launcher, so leaving cg_drawCrosshair in the generated
+        // config would re-apply it after wolfconfig.cfg on every launch and
+        // quietly undo anything the player picked in the game's own options --
+        // the very thing this pass exists to stop. It is written on the launch
+        // that migrates the config, and dropped from the set afterwards: the
+        // engine archives it within the frame (Com_Frame calls
+        // Com_WriteConfiguration) and it is the player's from then on.
+        seedsCrosshair = stored < LauncherModel.tuningVersion
+        if !seedsCrosshair {
+            IOSBridge_ForgetCvar("cg_drawCrosshair")
+        }
     }
 
     private func cvar(_ name: String) -> String? {
@@ -508,7 +588,7 @@ final class LauncherModel: ObservableObject {
     }
 
     /// Push everything to the engine and write the config it will exec.
-    func commit() {
+    func commit(missionLoadout: Int = 0) {
         for (name, value) in preset.cvars {
             IOSBridge_SetCvar(name, value)
         }
@@ -549,6 +629,11 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("cg_bobroll", viewBob ? "0.002" : "0")
         IOSBridge_SetCvar("cg_crosshairSize", String(format: "%.0f", crosshairSize))
 
+        // Shape, once, and only when it is still owed. See migrate(from:).
+        if seedsCrosshair {
+            IOSBridge_SetCvar("cg_drawCrosshair", "\(LauncherModel.defaultCrosshair)")
+        }
+
         IOSBridge_SetCvar("r_perfHud", perfHud ? "1" : "0")
         IOSBridge_SetCvar("r_perfLog", perfLog ? "1" : "0")
         IOSBridge_SetCvar("in_debugPad", padLog ? "1" : "0")
@@ -556,6 +641,8 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")
         IOSBridge_SetCvar("in_gyroSens", String(format: "%.2f", gyroSens))
+        IOSBridge_SetCvar("in_gyroInvertYaw", gyroInvertYaw ? "1" : "0")
+        IOSBridge_SetCvar("in_gyroInvertPitch", gyroInvertPitch ? "1" : "0")
         IOSBridge_SetCvar("in_rumble", String(format: "%.0f", rumble))
         IOSBridge_SetCvar("in_adaptiveTriggers", adaptiveTriggers ? "1" : "0")
         IOSBridge_SetCvar("in_triggerHard", String(format: "%.2f", triggerHard))
@@ -579,9 +666,28 @@ final class LauncherModel: ObservableObject {
         // campaign maps and an iPad has plenty.
         IOSBridge_SetCvar("com_hunkMegs", "512")
 
-        for (key, action) in bindings {
-            IOSBridge_SetBinding(key, action)
+        // Every button the launcher knows, not only the bound ones. A button the
+        // player has cleared has to be written as an empty bind: leave it out
+        // and the config says nothing about it, so the next launch fills it back
+        // in from the defaults -- and whatever wolfconfig.cfg still has on that
+        // key survives, which is exactly what this file is exec'd last to stop.
+        for pad in PadButton.all {
+            IOSBridge_SetBinding(pad.id, bindings[pad.id] ?? "")
         }
+
+        // Difficulty and the mission loadout have to reach the table before the
+        // config is written. On a cold start the launcher runs before Com_Init,
+        // so IOSBridge_SetCvar can only stash the pair -- there is no engine to
+        // set it on -- and anything stashed after WriteConfig lands in neither
+        // the file nor the engine and is simply lost. Both of these were set
+        // after the write, so the difficulty chosen here never took effect and a
+        // mission started from the launcher was played with no loadout at all.
+        //
+        // The loadout is written on every commit, zero unless a mission is being
+        // started, so a chapter left in the file by a previous session cannot
+        // hand the player the wrong weapons on the next cold start.
+        IOSBridge_SetCvar("g_gameskill", "\(skill)")
+        IOSBridge_SetCvar("g_missionLoadout", "\(missionLoadout)")
 
         IOSBridge_WriteConfig()
     }
@@ -594,9 +700,7 @@ final class LauncherModel: ObservableObject {
 
     /// Start a mission directly, skipping the game's own menus.
     func startMission(_ mission: CampaignMission) {
-        commit()
-        IOSBridge_SetCvar("g_gameskill", "\(skill)")
-        IOSBridge_SetCvar("g_missionLoadout", "\(mission.chapter)")
+        commit(missionLoadout: mission.chapter)
         IOSBridge_SetStartupCommand("spmap \(mission.id)")
         IOSBridge_LauncherFinished()
     }

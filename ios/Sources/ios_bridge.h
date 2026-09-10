@@ -65,9 +65,20 @@ int IOSBridge_ImportLooseData( void );
 // after default.cfg and wolfconfig.cfg -- so these always win. Values that are
 // CVAR_INIT or are read before the configs run (com_hunkMegs, fs_*) go through
 // the command line instead; see IOSBridge_BuildCommandLine.
+//
+// The getters answer from that file when the engine is not up yet, which is the
+// usual case: the launcher runs before Com_Init. So what a cold start reads
+// back is what the player last chose, not a set of empty strings that the
+// launcher would mistake for a first run.
 
 void IOSBridge_SetCvar( const char *name, const char *value );
 const char *IOSBridge_GetCvar( const char *name );
+
+// Stop writing a setting, leaving its value to the engine and to the player.
+// For defaults the launcher seeds once and then offers no control for: left in
+// the generated config they would be re-applied over the player's own choice on
+// every launch, which is not what a default is.
+void IOSBridge_ForgetCvar( const char *name );
 
 // Replace one binding. action is a console command such as "+attack".
 void IOSBridge_SetBinding( const char *keyName, const char *action );

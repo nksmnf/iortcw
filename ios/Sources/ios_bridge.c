@@ -136,7 +136,12 @@ const char *IOSBridge_EngineVersion( void )
 	return Q3_VERSION " " PLATFORM_STRING;
 }
 
-#define MAX_LAUNCHER_SETTINGS 64
+// Starting a mission from the launcher writes 68 settings -- 25 from the
+// graphics preset and 43 of the launcher's own -- so 64 was already short, and
+// what fell off the end was dropped with a message that goes to a log file
+// nobody reads. It was g_missionLoadout, the last one set and the one that
+// decides whether the player arrives at that mission carrying anything.
+#define MAX_LAUNCHER_SETTINGS 128
 #define MAX_LAUNCHER_BINDS    64
 
 typedef struct {
@@ -151,6 +156,7 @@ static launcherPair_t launcherBinds[MAX_LAUNCHER_BINDS];
 static int            numLauncherBinds;
 
 static qboolean launcherDone;
+static qboolean launcherConfigRead;
 static char     launcherCommandLine[1024];
 static char     launcherStartupCommand[256];
 static char     bridgeScratch[MAX_OSPATH];
@@ -217,6 +223,130 @@ int IOSBridge_ImportLooseData( void )
 
 /*
 ==============
+IOSBridge_ReadConfig
+
+Load Documents/main/ios_launcher.cfg back into the tables above.
+
+The launcher runs from main() before Com_Init, so there is no cvar system to ask
+yet and IOSBridge_GetCvar had nothing to answer with: every setting came back
+empty. The launcher read that as "never configured", showed its built-in
+defaults, and then -- because pressing Play writes the whole set out again --
+committed those defaults over what the player had actually chosen. Settings did
+not merely fail to appear on a cold start, they were destroyed by it.
+
+Reading our own generated config back fixes that at the source: it is the same
+data the engine is about to exec, so the launcher opens on the state the game is
+about to start in, and rewriting it is a no-op instead of a reset.
+
+Only our own file is read. wolfconfig.cfg holds several hundred archived cvars
+and is exec'd first, so everything it says about a setting the launcher owns is
+overridden a moment later by this file -- showing its values would mean showing
+the player something the engine is about to discard.
+
+stdio and COM_ParseExt rather than the filesystem layer, for the same reason
+IOSBridge_WriteConfig uses stdio: FS_Startup has not run. The tokeniser is pure
+code and safe this early.
+==============
+*/
+static void IOSBridge_ReadConfig( void )
+{
+	char path[MAX_OSPATH];
+	FILE *f;
+	long length;
+	char *buffer, *text;
+
+	if ( launcherConfigRead ) {
+		return;
+	}
+
+	// Set before parsing, not after: the loop below goes through
+	// IOSBridge_SetCvar, which calls straight back in here.
+	launcherConfigRead = qtrue;
+
+	// With the engine up, its own cvars are the fresher source and the tables
+	// have already been filled by the cold start that preceded it.
+	if ( com_fullyInitialized ) {
+		return;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/main/ios_launcher.cfg",
+		Sys_IOS_DataPath() );
+
+	f = fopen( path, "rb" );
+	if ( !f ) {
+		return;		// first run: nothing to restore, defaults are correct
+	}
+
+	fseek( f, 0, SEEK_END );
+	length = ftell( f );
+	fseek( f, 0, SEEK_SET );
+
+	// A config this size is not one of ours, and reading it would only find
+	// nonsense to feed to the launcher.
+	if ( length <= 0 || length > 256 * 1024 ) {
+		fclose( f );
+		return;
+	}
+
+	buffer = malloc( length + 2 );
+	if ( !buffer ) {
+		fclose( f );
+		return;
+	}
+
+	length = (long)fread( buffer, 1, length, f );
+	fclose( f );
+
+	// SkipRestOfLine walks past the terminator when the last line has no
+	// newline of its own, and the next COM_ParseExt then reads off the end of
+	// the buffer. One appended newline is cheaper than not trusting it.
+	buffer[length] = '\n';
+	buffer[length + 1] = '\0';
+
+	COM_BeginParseSession( "ios_launcher.cfg" );
+	text = buffer;
+
+	while ( text ) {
+		char name[64];
+		char *token = COM_ParseExt( &text, qtrue );
+		qboolean isBind;
+
+		if ( !token[0] ) {
+			break;		// end of file
+		}
+
+		isBind = !Q_stricmp( token, "bind" );
+
+		// Anything else on a line is skipped rather than guessed at: the file
+		// is generated, but it sits in Documents where anyone can edit it.
+		if ( isBind || !Q_stricmp( token, "seta" ) ) {
+			// COM_ParseExt hands back a pointer to its own buffer, so the name
+			// has to be copied before the value is parsed over the top of it.
+			Q_strncpyz( name, COM_ParseExt( &text, qfalse ), sizeof( name ) );
+			token = COM_ParseExt( &text, qfalse );
+
+			if ( name[0] ) {
+				if ( isBind ) {
+					IOSBridge_SetBinding( name, token );
+				} else {
+					IOSBridge_SetCvar( name, token );
+				}
+			}
+		}
+
+		if ( text ) {
+			SkipRestOfLine( &text );
+		}
+	}
+
+	free( buffer );
+
+	Com_Printf( "Launcher: restored %d settings and %d binds from ios_launcher.cfg\n",
+		numLauncherSettings, numLauncherBinds );
+}
+
+/*
+==============
 IOSBridge_SetCvar
 
 Recorded for the generated config, and applied live too when the engine is
@@ -226,6 +356,8 @@ already up (the launcher can be reopened mid-game).
 void IOSBridge_SetCvar( const char *name, const char *value )
 {
 	int i;
+
+	IOSBridge_ReadConfig();
 
 	if ( !name || !value ) {
 		return;
@@ -255,12 +387,53 @@ void IOSBridge_SetCvar( const char *name, const char *value )
 
 /*
 ==============
+IOSBridge_ForgetCvar
+
+Stop writing a setting, leaving whatever value it has to the engine.
+
+This is what makes a default a default rather than an order. The launcher seeds
+a handful of settings it has no control for -- the crosshair shape is one -- and
+anything left in the generated config is re-applied on every single launch,
+after wolfconfig.cfg, so it would silently undo the player's choice every time
+they picked something else in the game's own menus. Dropping the setting once it
+has been seeded hands it back: the engine archives it like any other cvar and
+the launcher never mentions it again.
+==============
+*/
+void IOSBridge_ForgetCvar( const char *name )
+{
+	int i;
+
+	IOSBridge_ReadConfig();
+
+	if ( !name ) {
+		return;
+	}
+
+	for ( i = 0; i < numLauncherSettings; i++ ) {
+		if ( !Q_stricmp( launcherSettings[i].name, name ) ) {
+			// Closing the gap rather than swapping the last entry into it keeps
+			// the generated config in a stable order, which matters only to
+			// whoever ends up reading it in Files.app -- but that is the point
+			// of a text config.
+			memmove( &launcherSettings[i], &launcherSettings[i + 1],
+				( numLauncherSettings - i - 1 ) * sizeof( launcherSettings[0] ) );
+			numLauncherSettings--;
+			return;
+		}
+	}
+}
+
+/*
+==============
 IOSBridge_GetCvar
 ==============
 */
 const char *IOSBridge_GetCvar( const char *name )
 {
 	int i;
+
+	IOSBridge_ReadConfig();
 
 	if ( !name ) {
 		return "";
@@ -290,6 +463,8 @@ IOSBridge_SetBinding
 void IOSBridge_SetBinding( const char *keyName, const char *action )
 {
 	int i;
+
+	IOSBridge_ReadConfig();
 
 	if ( !keyName || !action ) {
 		return;
@@ -330,6 +505,8 @@ const char *IOSBridge_GetBinding( const char *keyName )
 {
 	int i;
 
+	IOSBridge_ReadConfig();
+
 	if ( !keyName ) {
 		return "";
 	}
@@ -368,6 +545,10 @@ void IOSBridge_WriteConfig( void )
 	char path[MAX_OSPATH];
 	FILE *f;
 	int i;
+
+	// Never overwrite the stored config with a set that has not been seeded
+	// from it: everything it does not mention is lost the moment this runs.
+	IOSBridge_ReadConfig();
 
 	Com_sprintf( path, sizeof( path ), "%s/main/ios_launcher.cfg",
 		Sys_IOS_DataPath() );

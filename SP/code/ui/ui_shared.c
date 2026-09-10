@@ -399,6 +399,25 @@ void String_Init( void ) {
 	menuCount = 0;
 	openMenuCount = 0;
 	UI_InitMemory();
+
+	// Every itemDef_t the module holds comes out of the memory pool UI_InitMemory
+	// has just rewound, so the four places that keep one across frames are now
+	// pointing at bytes the next menu parse will hand out again. Nothing used to
+	// clear them because nothing had to: a bytecode or freshly loaded module
+	// starts each UI_INIT with them zeroed, and these were reset by the next key
+	// event anyway. Linked into the engine the module keeps them across a level
+	// change, and Menu_PaintAll calls captureFunc( captureData ) before the first
+	// key of the new map arrives -- so a drag or an edit still open when the map
+	// changed writes through whatever the reparsed menus put in its place.
+	captureFunc = 0;
+	captureData = NULL;
+	itemCapture = NULL;
+	memset( &scrollInfo, 0, sizeof( scrollInfo ) );
+	g_editingField = qfalse;
+	g_editItem = NULL;
+	g_waitingForKey = qfalse;
+	g_bindItem = NULL;
+
 	Item_SetupKeywordHash();
 	Menu_SetupKeywordHash();
 	if ( DC && DC->getBindingBuf ) {

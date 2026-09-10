@@ -243,6 +243,27 @@ static void CG_PrevTeamMember_f( void ) {
 #define MAX_CAMERAS 64  // matches define in splines.cpp
 qboolean cameraInuse[MAX_CAMERAS];
 
+/*
+===============
+CG_ClearCameras
+
+Nothing calls CG_FreeCamera, so a slot claimed by a spline-following entity is
+claimed for as long as the table lives. That used to be one map, the table being
+a plain global in a module the engine reloaded; linked into the engine the module
+is loaded once for the whole process, so the claims of every map so far are still
+standing and CG_LoadCamera works its way up the table until it runs out and
+starts answering -1. The searchlights that ask for a spline then stop following
+it, some way into a campaign, for no reason visible in that map.
+
+Handing a slot back out is safe: loadCamera clears the slot before it loads into
+it, and the handles cgame kept live in cg_entities, which CG_Init clears in the
+same breath as it calls this. Slot 0 is the cutscene camera and never in here.
+===============
+*/
+void CG_ClearCameras( void ) {
+	memset( cameraInuse, 0, sizeof( cameraInuse ) );
+}
+
 int CG_LoadCamera( const char *name ) {
 	int i;
 	for ( i = 1; i < MAX_CAMERAS; i++ ) {    // start at '1' since '0' is always taken by the cutscene camera

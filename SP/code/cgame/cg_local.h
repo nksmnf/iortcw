@@ -982,6 +982,13 @@ typedef struct {
 	qboolean portalFogInited;
 	// Duffy end
 
+	// Another function-local static moved here for the same reason. It throttles
+	// blood marks to one every 100ms, and the test only lets one through once
+	// cg.time has passed it -- but cg.time starts again at zero with each map,
+	// so a value carried over from the last one sits far in the future and stops
+	// every blood mark until the level has run as long as the previous one did.
+	int lastBloodMarkTime;
+
 	unsigned int cld;
 	qboolean limboMenu;
 
@@ -2464,6 +2471,7 @@ void        CG_StopCamera( void );
 int         CG_LoadCamera( const char *name );
 void        CG_FreeCamera( int camNum );
 //----(SA)	end
+void        CG_ClearCameras( void );
 
 void CG_StartShakeCamera( float p, int duration, vec3_t src, float radius );
 

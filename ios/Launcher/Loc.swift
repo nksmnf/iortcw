@@ -113,6 +113,10 @@ enum Loc {
         "Адаптивные триггеры": "Adaptive triggers",
         "Чувствительность гироскопа": "Gyro sensitivity",
         "Гироскоп": "Gyro",
+        "Инверсия гироскопа по горизонтали": "Invert gyro horizontally",
+        "Инверсия гироскопа по вертикали": "Invert gyro vertically",
+        "Действует и на гироскоп контроллера, и на гироскоп планшета.":
+            "Applies to the controller's gyro and the iPad's alike.",
         "Выкл": "Off",
         "Всегда": "Always",
         "В прицеле": "While aiming",
@@ -141,6 +145,13 @@ enum Loc {
         "Сбросить к стандартной": "Reset to default",
         "Кнопки контроллера": "Controller buttons",
         "Не назначено": "Unassigned",
+
+        // Pad navigation. The button names are the ones printed on a DualSense,
+        // so they stay as they are in both languages.
+        "D-pad — выбор, Cross — подтвердить, Circle — назад, L1/R1 — вкладки":
+            "D-pad moves, Cross confirms, Circle goes back, L1/R1 switch tabs",
+        "Options — начать игру": "Options starts the game",
+        "Держите Circle, чтобы закрыть": "Hold Circle to close",
 
         // Actions
         "Огонь": "Fire",
@@ -317,15 +328,15 @@ enum Loc {
             ru: """
                 По умолчанию: R2 — огонь, L2 — прицел, R1/L1 — смена оружия, \
                 Квадрат — перезарядка, Треугольник — использовать, Крест — \
-                прыжок, Круг — присесть, L3 — спринт, R3 — удар ногой. \
+                прыжок, Круг — присесть, L3 — удар ногой, R3 — спринт. \
                 Крестовина ходит, как стрелки на клавиатуре. Свайпы по тачпаду: \
                 вверх-вниз — кратность прицела, влево-вправо — оружие, тап — \
                 предмет.
                 """,
             en: """
                 By default: R2 fire, L2 aim, R1/L1 change weapon, Square \
-                reload, Triangle use, Cross jump, Circle crouch, L3 sprint, R3 \
-                kick. The D-pad walks, like the arrow keys. Touchpad swipes: up \
+                reload, Triangle use, Cross jump, Circle crouch, L3 kick, R3 \
+                sprint. The D-pad walks, like the arrow keys. Touchpad swipes: up \
                 and down change scope magnification, left and right change \
                 weapon, a tap selects the next item.
                 """),

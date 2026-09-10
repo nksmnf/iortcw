@@ -436,6 +436,16 @@ void CL_JoystickEvent( int axis, int value, int time ) {
 CL_JoystickMove
 =================
 */
+
+// What the gyro axes are measured in: degrees of view per second, multiplied by
+// this so an integer axis still has room for a slow drift correction. +-32767
+// then covers +-1024 degrees a second in steps of a thirty-second of a degree,
+// which is finer than any deadzone the input side applies.
+//
+// IN_GamepadGyro in sdl_input.c and Sys_IOS_GyroFrame in ios_gyro.m produce
+// these values and must use the same number.
+#define GYRO_AXIS_SCALE 32.0f
+
 void CL_JoystickMove( usercmd_t *cmd ) {
 	float anglespeed;
 
@@ -476,11 +486,23 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	// stick makes the large turns and the gyro does the fine correction, which
 	// is how gyro aim is normally played.
 	//
-	// The same anglespeed scaling applies, and here it is not a compromise --
-	// the gyro reports an angular rate, so angle = rate * dt is exactly right.
+	// These axes deliberately do not go through j_yaw and j_pitch. Those carry
+	// the stick's direction in their sign and they are signed opposite to one
+	// another -- j_yaw is negative, j_pitch positive -- so multiplying the gyro
+	// by them sent the view one way horizontally and the other way vertically,
+	// and any edit to either cvar silently retuned the gyro as well as the
+	// stick. The input backend now hands over a turn rate it has already worked
+	// out, in the mouse's convention: positive yaw is to the right, positive
+	// pitch is downwards.
+	//
+	// cls.frametime is taken raw rather than through anglespeed, which folds in
+	// cl_anglespeedkey. Speeding a keyboard turn up while walk is held is the
+	// point of that cvar; multiplying a measured wrist movement by it is not.
 	if ( cl.joystickAxis[AXIS_GYRO_PITCH] || cl.joystickAxis[AXIS_GYRO_YAW] ) {
-		cl.viewangles[YAW]   += anglespeed * j_yaw->value   * cl.joystickAxis[AXIS_GYRO_YAW];
-		cl.viewangles[PITCH] += anglespeed * j_pitch->value * cl.joystickAxis[AXIS_GYRO_PITCH];
+		float gyrospeed = 0.001 * cls.frametime / GYRO_AXIS_SCALE;
+
+		cl.viewangles[YAW]   -= gyrospeed * cl.joystickAxis[AXIS_GYRO_YAW];
+		cl.viewangles[PITCH] += gyrospeed * cl.joystickAxis[AXIS_GYRO_PITCH];
 	}
 }
 

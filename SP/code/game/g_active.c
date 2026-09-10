@@ -862,6 +862,16 @@ void ClientThink_real( gentity_t *ent ) {
 		static int  granted[MAX_CLIENTS];
 		static int  wallStart;
 
+		// The game module is linked into the app rather than reloaded per map,
+		// so these keep last map's values while level.time starts over. Left
+		// alone, the window would begin in the future and the report would stay
+		// silent until the clock caught up with the map before it.
+		if ( level.time < wallStart || level.time < lastReport ) {
+			memset( granted, 0, sizeof( granted ) );
+			wallStart = 0;
+			lastReport = level.time;
+		}
+
 		granted[ent->s.number] += msec;
 
 		if ( !wallStart ) {

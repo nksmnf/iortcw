@@ -7,6 +7,13 @@
 //  conflict with: we put up our own window, spin the runloop until the user
 //  presses Play, and hand back.
 //
+//  The price of running that early is that there are no cvars yet, so the
+//  launcher cannot ask the engine what the player chose last time. It asks the
+//  stored config instead -- ios_bridge.c reads ios_launcher.cfg back when
+//  com_fullyInitialized is false. Anything here that builds a LauncherModel
+//  depends on that: without it the model comes up on its defaults and writes
+//  them over the player's settings.
+//
 //  Entry points are @_cdecl so C can call them without a generated -Swift.h,
 //  which keeps the build's header ordering simple.
 
@@ -73,8 +80,11 @@ public func IOSLauncher_RunModal() {
 
     MainActor.assumeIsolated {
         if LauncherHost.shared.isSkipping {
-            // Still write the config, so the engine starts with the settings the
-            // user chose last time rather than with none at all.
+            // Still build the model and commit. Loading it reads the stored
+            // config back, so this rewrites the player's own settings rather
+            // than a set of defaults -- and it is the only place a player who
+            // skips the launcher ever picks up a migration (see
+            // LauncherModel.migrate(from:)).
             let model = LauncherModel()
             model.commit()
             IOSBridge_LauncherFinished()

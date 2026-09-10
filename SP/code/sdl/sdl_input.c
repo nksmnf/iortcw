@@ -65,7 +65,9 @@ static cvar_t *in_joystickUseAnalog = NULL;
 // DualSense (and any other controller that exposes the same features).
 static cvar_t *in_gyro              = NULL;  // 0 off, 1 always on, 2 only while aiming
 static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt
-static cvar_t *in_gyroDeadzone      = NULL;  // rad/s below which tilt is ignored
+static cvar_t *in_gyroDeadzone      = NULL;  // rad/s taken off the tilt before it counts
+static cvar_t *in_gyroInvertYaw     = NULL;  // for a sensor that does not match SDL's frame
+static cvar_t *in_gyroInvertPitch   = NULL;
 static cvar_t *in_touchpad          = NULL;  // 0 off, 1 gestures, 2 gestures + drag-to-look
 static cvar_t *in_touchpadSens      = NULL;
 static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts as pressed
@@ -599,10 +601,41 @@ enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD, ROUTE_SKIP };
 // below anything a hand does on purpose, above what a still controller reports.
 #define GYRO_REST_RATE  0.035f
 
+// How long the readings have to stay that small before they are believed, in
+// milliseconds. Long enough that a slow deliberate pan is never mistaken for
+// rest and learned as bias.
+#define GYRO_REST_SETTLE  250
+
+// Time constant of the bias estimate, in seconds. Expressed as a time rather
+// than as a per-frame fraction so it converges at the same speed at 60Hz and
+// at 120Hz.
+#define GYRO_BIAS_TAU  0.4f
+
+// Degrees of view per second for each rad/s of real rotation, at in_gyroSens
+// 1.0. This is exactly what the old chain -- 32767/4 into the axis and then
+// j_pitch's 0.022 in CL_JoystickMove -- worked out to, and it is kept to the
+// decimal so that a sensitivity someone has already settled on still means the
+// same thing after the rest of this was rewritten.
+#define GYRO_VIEW_DEGREES_PER_RAD  180.2185f
+
+// Units the gyro axes are carried in. Must match GYRO_AXIS_SCALE in
+// cl_input.c, which reads them, and in ios_gyro.m, which writes the same two
+// axes from the iPad's own sensor.
+#define GYRO_AXIS_SCALE  32.0f
+
+// Resting bias of the controller's gyro, and the last values put on the axes.
+// At file scope rather than inside IN_GamepadGyro because both have to be
+// thrown away when the controller changes -- see IN_GyroReset.
+static float gyroBias[3];
+static int   gyroRestSince;
+static int   gyroSampleTime;
+static int   gyroAxis[2];      // [0] pitch, [1] yaw
+
 static qboolean IN_TouchOwnsMovement( void );
 static void IN_GamepadTriggers( void );
 static void IN_GamepadTouchpad( void );
 static void IN_GamepadGyro( void );
+static void IN_GyroReset( void );
 
 
 /*
@@ -626,6 +659,11 @@ static void IN_InitJoystick( void )
 	gamepad = NULL;
 	gamepadUsed = qfalse;
 	memset(&stick_state, '\0', sizeof (stick_state));
+
+	// Before any of the early returns below: the controller list has changed,
+	// so whatever the gyro had learned or last sent belongs to a pad that may
+	// no longer be there.
+	IN_GyroReset();
 
 	// SDL 2.0.4 requires SDL_INIT_JOYSTICK to be initialized separately from
 	// SDL_INIT_GAMECONTROLLER for SDL_JoystickOpen() to work correctly,
@@ -1740,6 +1778,93 @@ static void IN_GamepadTouchpad( void )
 
 /*
 ===============
+IN_GyroSetAxes
+
+Puts the gyro's contribution on the two joystick axes, but only when it has
+changed.
+
+CL_JoystickEvent latches -- cl.joystickAxis keeps whatever was last written to
+it until something writes again. That is right for a stick, which reports a
+position and reports it every frame, and wrong for anything that can decide it
+has nothing to say: the old code returned early once both axes fell inside the
+deadzone, which left the last non-zero reading latched and the view turning at
+that rate for good. Going quiet has to be sent, exactly once.
+===============
+*/
+static void IN_GyroSetAxes( int pitch, int yaw )
+{
+	if ( pitch != gyroAxis[0] ) {
+		gyroAxis[0] = pitch;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH, pitch, 0, NULL );
+	}
+
+	if ( yaw != gyroAxis[1] ) {
+		gyroAxis[1] = yaw;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW, yaw, 0, NULL );
+	}
+}
+
+/*
+===============
+IN_GyroReset
+
+Throws away the resting-bias estimate and puts both axes back to zero.
+
+Called whenever the controller list changes. The estimate describes one physical
+sensor, so carrying it across to the pad that just arrived starts that one off
+with a deliberate error; and a pad unplugged mid-turn has to have its last
+reading cleared, or nothing will ever clear it -- IN_GamepadGyro is only reached
+while a gamepad is open.
+===============
+*/
+static void IN_GyroReset( void )
+{
+	Com_Memset( gyroBias, 0, sizeof( gyroBias ) );
+	gyroRestSince = 0;
+	gyroSampleTime = 0;
+
+	// Not through IN_GyroSetAxes: the axes may well be holding a value this
+	// side never sent, so the zeros go out unconditionally.
+	gyroAxis[0] = 0;
+	gyroAxis[1] = 0;
+
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH, 0, 0, NULL );
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW,   0, 0, NULL );
+}
+
+/*
+===============
+IN_GyroDeadzone
+
+Takes the deadzone off a rate rather than cutting at it.
+
+A threshold that passes the whole reading once it is exceeded still passes the
+whole of whatever bias is left in that reading, which is why the drift got
+quieter but never went away. Subtracting leaves nothing at the threshold and
+grows smoothly from there, so an offset just outside the deadzone contributes
+almost nothing instead of a full deadzone's worth.
+
+Per axis, unlike the sticks' radial deadzone in IN_ApplyStickCurve: a bias sits
+on one axis and has to come off there whatever the other axis is doing.
+===============
+*/
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+static float IN_GyroDeadzone( float rate, float deadzone )
+{
+	if ( rate > deadzone ) {
+		return rate - deadzone;
+	}
+
+	if ( rate < -deadzone ) {
+		return rate + deadzone;
+	}
+
+	return 0.0f;
+}
+#endif
+
+/*
+===============
 IN_GamepadGyro
 
 Gyro aiming. SDL reports angular velocity in rad/s as
@@ -1755,21 +1880,24 @@ static void IN_GamepadGyro( void )
 {
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
 	float data[3];
-	float pitch, yaw, scale, deadzone;
+	float pitch, yaw, scale, deadzone, magnitude;
+	int   now, elapsed, i;
 
 	if ( !in_gyro || !in_gyro->integer || !gamepadCaps.hasGyro )
-		return;
-
-	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
 	{
-		// "only while aiming". RTCW has no explicit ADS flag, but cgame scales
-		// cgameSensitivity down whenever the view is zoomed (scope, binoculars,
-		// snooper), which is exactly the state we want gyro for.
+		IN_GyroSetAxes( 0, 0 );
 		return;
 	}
 
 	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
+	{
+		IN_GyroSetAxes( 0, 0 );
 		return;
+	}
+
+	now = Sys_Milliseconds();
+	elapsed = gyroSampleTime ? now - gyroSampleTime : 0;
+	gyroSampleTime = now;
 
 	// Take the resting bias out before anything else.
 	//
@@ -1779,51 +1907,103 @@ static void IN_GamepadGyro( void )
 	// while the controller sits on a table. So the offset is measured instead:
 	// whenever the readings have been small for a moment the estimate is pulled
 	// gently towards them, and it is subtracted from every sample.
+	//
+	// Roll is estimated too although nothing reads it, because it is the third
+	// axis of the same test for "is this controller moving at all", and a pad
+	// being rolled is a pad in someone's hands.
+	magnitude = 0.0f;
+
+	for ( i = 0; i < 3; i++ ) {
+		data[i] -= gyroBias[i];
+		magnitude += data[i] * data[i];
+	}
+
+	if ( magnitude < GYRO_REST_RATE * GYRO_REST_RATE ) {
+		if ( !gyroRestSince ) {
+			gyroRestSince = now;
+		}
+
+		if ( now - gyroRestSince > GYRO_REST_SETTLE ) {
+			float rate = elapsed * 0.001f / GYRO_BIAS_TAU;
+
+			// A long frame -- a level load, the app coming back from the
+			// background -- must not let one sample become the whole estimate.
+			if ( rate > 1.0f ) {
+				rate = 1.0f;
+			}
+
+			for ( i = 0; i < 3; i++ ) {
+				gyroBias[i] += data[i] * rate;
+			}
+		}
+	} else {
+		gyroRestSince = 0;
+	}
+
+	// The bias is learned above this test on purpose. "Only while aiming" is
+	// the mode where a stale estimate hurts most: the scope comes up, the gyro
+	// starts being read, and it has to be right at that instant rather than
+	// after a quarter of a second of settling that the player spends drifting
+	// off target.
+	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
 	{
-		static float bias[3];
-		static int   restSince;
-		int i;
-		float magnitude = 0.0f;
-
-		for ( i = 0; i < 3; i++ ) {
-			data[i] -= bias[i];
-			magnitude += data[i] * data[i];
-		}
-
-		if ( magnitude < GYRO_REST_RATE * GYRO_REST_RATE ) {
-			if ( !restSince ) {
-				restSince = Sys_Milliseconds();
-			}
-
-			// Only after it has been still for a moment, so a slow deliberate
-			// pan is never mistaken for rest and learned as bias.
-			if ( Sys_Milliseconds() - restSince > 250 ) {
-				for ( i = 0; i < 3; i++ ) {
-					bias[i] += data[i] * 0.02f;
-				}
-			}
-		} else {
-			restSince = 0;
-		}
+		// RTCW has no explicit ADS flag, but cgame scales cgameSensitivity down
+		// whenever the view is zoomed (scope, binoculars, snooper), which is
+		// exactly the state we want gyro for.
+		IN_GyroSetAxes( 0, 0 );
+		return;
 	}
 
 	deadzone = in_gyroDeadzone->value;
 
-	// data[0] is pitch (tilting the pad up/down), data[1] is yaw (turning it).
-	pitch = ( fabs( data[0] ) > deadzone ) ? -data[0] : 0.0f;
-	yaw   = ( fabs( data[1] ) > deadzone ) ? -data[1] : 0.0f;
+	// data[0] is pitch (tipping the pad's nose up and down), data[1] is yaw
+	// (swinging it left and right).
+	pitch = IN_GyroDeadzone( data[0], deadzone );
+	yaw   = IN_GyroDeadzone( data[1], deadzone );
 
-	if ( pitch == 0.0f && yaw == 0.0f )
-		return;
+	// Direction, decided here rather than left to the signs of j_yaw and
+	// j_pitch. Negating both axes and then multiplying by two cvars of opposite
+	// sign did come out right with the defaults, but only by cancellation: the
+	// vertical was one edit to j_pitch away from running backwards, and nothing
+	// in either file said so.
+	//
+	// SDL's frame, with the pad held in front of you: +x points right, +y up,
+	// +z towards you, and rotation is counter-clockwise seen from the positive
+	// end of each axis. So a positive data[0] lifts the nose and a positive
+	// data[1] swings it to the left; following the pad one for one means the
+	// view goes up and to the left. The axes are in the mouse's convention --
+	// positive yaw right, positive pitch down -- so both are negated once.
+	pitch = -pitch;
+	yaw   = -yaw;
 
-	// rad/s -> the +-32767 range the joystick axis path expects, with
-	// in_gyroSens as the user-facing multiplier.
-	scale = in_gyroSens->value * 32767.0f / 4.0f;
+	// Inverted look has to reach the gyro as well. It only flipped the stick
+	// before, so switching it on left the two halves of the same aim pulling
+	// against each other: the thumb turned one way, the wrist the other. Pitch
+	// only, exactly as in IN_GamepadSticks.
+	if ( in_invertLook->integer ) {
+		pitch = -pitch;
+	}
 
-	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH,
-		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * scale ), 0, NULL );
-	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW,
-		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * scale ), 0, NULL );
+	// Last resort for a sensor that does not report in the frame SDL documents.
+	// There is no way to tell from here which way a given pad measures, and no
+	// way for the player to find out except by trying it.
+	if ( in_gyroInvertPitch->integer ) {
+		pitch = -pitch;
+	}
+	if ( in_gyroInvertYaw->integer ) {
+		yaw = -yaw;
+	}
+
+	// rad/s -> view degrees per second -> axis units. in_gyroSens is the only
+	// thing in here that a player sets, it multiplies both axes by the same
+	// number, and nothing else in the chain scales them again.
+	scale = in_gyroSens->value * GYRO_VIEW_DEGREES_PER_RAD * GYRO_AXIS_SCALE;
+
+	IN_GyroSetAxes(
+		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * scale ),
+		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * scale ) );
+#else
+	IN_GyroSetAxes( 0, 0 );
 #endif
 }
 
@@ -2635,6 +2815,15 @@ void IN_Init( void *windowData )
 	in_gyro         = Cvar_Get( "in_gyro",         "0",    CVAR_ARCHIVE );
 	in_gyroSens     = Cvar_Get( "in_gyroSens",     "1.0",  CVAR_ARCHIVE );
 	in_gyroDeadzone = Cvar_Get( "in_gyroDeadzone", "0.02", CVAR_ARCHIVE );
+
+	// Off by default because SDL documents which way a controller's gyro
+	// reports and the iPad's own sensor is worked out from gravity, so both
+	// should already be the right way round. These exist because a sensor that
+	// disagrees cannot be detected from here, only felt by the player, and the
+	// alternative to a toggle is a rebuild. Read by ios_gyro.m as well, so the
+	// two gyros always agree with each other.
+	in_gyroInvertYaw   = Cvar_Get( "in_gyroInvertYaw",   "0", CVAR_ARCHIVE );
+	in_gyroInvertPitch = Cvar_Get( "in_gyroInvertPitch", "0", CVAR_ARCHIVE );
 	in_touchpad     = Cvar_Get( "in_touchpad",     "1",    CVAR_ARCHIVE );
 	in_touchpadSens = Cvar_Get( "in_touchpadSens", "600",  CVAR_ARCHIVE );
 	in_triggerSoft  = Cvar_Get( "in_triggerSoft",  "0.12", CVAR_ARCHIVE );

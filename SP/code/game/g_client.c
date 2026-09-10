@@ -173,6 +173,11 @@ gentity_t *SelectRandomDeathmatchSpawnPoint( void ) {
 		if ( SpotWouldTelefrag( spot ) ) {
 			continue;
 		}
+		// spots[] is on the stack and the loop walks every spawn point in the
+		// map, so a map carrying more than the array holds would write past it
+		if ( count == MAX_SPAWN_POINTS ) {
+			break;
+		}
 		spots[ count ] = spot;
 		count++;
 	}
@@ -1578,9 +1583,27 @@ mission, it would be skipping it.
 ==============
 */
 static void G_GiveLoadoutWeapon( gclient_t *client, int weapon, int clips, int spare ) {
+	int clipIndex = BG_FindClipForWeapon( weapon );
+	int ammoIndex = BG_FindAmmoForWeapon( weapon );
+
 	COM_BitSet( client->ps.weapons, weapon );
-	client->ps.ammoclip[BG_FindClipForWeapon( weapon )] += clips;
-	client->ps.ammo[BG_FindAmmoForWeapon( weapon )] += spare;
+
+	client->ps.ammoclip[clipIndex] += clips;
+	client->ps.ammo[ammoIndex] += spare;
+
+	// Weapons share pools -- the sniper rifle draws from the mauser's clip, the
+	// MP40 and the sten from the luger's reserve -- so two lines of a set below
+	// can fill the same clip twice. Everything downstream takes the table's
+	// limits as given: a clip fuller than maxclip cannot be reloaded until it
+	// has drained back under, and the HUD reads it out as "20/10". Add_Ammo caps
+	// both whenever the campaign hands ammo over, so cap them the same way here.
+	if ( client->ps.ammoclip[clipIndex] > ammoTable[weapon].maxclip ) {
+		client->ps.ammoclip[clipIndex] = ammoTable[weapon].maxclip;
+	}
+
+	if ( client->ps.ammo[ammoIndex] > ammoTable[ammoIndex].maxammo ) {
+		client->ps.ammo[ammoIndex] = ammoTable[ammoIndex].maxammo;
+	}
 }
 
 void G_GiveMissionLoadout( gentity_t *ent, int chapter ) {
@@ -1606,6 +1629,14 @@ void G_GiveMissionLoadout( gentity_t *ent, int chapter ) {
 
 	if ( chapter >= 3 ) {
 		G_GiveLoadoutWeapon( client, WP_FG42, 20, 60 );
+
+		// The scope is the FG42's alt fire rather than a pickup of its own, and
+		// the alt switch refuses a weapon the player does not hold. Picking the
+		// rifle up off the ground sets both halves for that reason (see
+		// Pickup_Weapon); handing it over has to do the same, or the loadout
+		// quietly gives a scoped rifle that cannot be scoped.
+		COM_BitSet( client->ps.weapons, WP_FG42SCOPE );
+
 		G_GiveLoadoutWeapon( client, WP_MAUSER, 10, 30 );
 		G_GiveLoadoutWeapon( client, WP_PANZERFAUST, 1, 3 );
 	}

@@ -2385,6 +2385,20 @@ void CG_Init( int serverMessageNum, int serverCommandSequence ) {
 
 	CG_InitMarkPolys();
 
+	// Every other per-map pool is emptied during load -- local entities and mark
+	// polys just above, particles in CG_RegisterGraphics, flame chunks in
+	// CG_InitFlameChunks -- and CG_MapRestart clears all five together. The
+	// trails were the one left to the "if ( !initTrails )" guard in CG_AddTrails,
+	// which fires once per module load rather than once per map. A cgame linked
+	// into the engine is loaded once for the whole process, so from the second
+	// map on that guard never fires again: the level starts with the previous
+	// map's junctions still on the active list, drawn through shader handles
+	// that died with the old renderer, and with those junctions missing from the
+	// free list.
+	CG_ClearTrails();
+
+	CG_ClearCameras();
+
 	// RF, init ZombieFX
 	trap_RB_ZombieFXAddNewHit( -1, NULL, NULL );
 

@@ -48,7 +48,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern void IOSTouch_QueueKey( int key, int down );
 extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
-extern void IOSTouch_QueueMouseTo( int x, int y );
 extern void IOSTouch_QueueCommand( const char *command, int key );
 extern float IOSTouch_LookSensitivity( void );
 extern int  IOSTouch_ControllerConnected( void );
@@ -56,6 +55,11 @@ extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
 extern int  IOSTouch_CinematicActive( void );
 extern void IOSTouch_SkipCinematic( void );
+
+// Implemented in cl_keys.c. Which module owns the keyboard also decides where a
+// mouse delta ends up, and the cursor work below has to know: CL_MouseEvent only
+// gives one to the UI while KEYCATCH_UI is set.
+extern int  Key_GetCatcher( void );
 
 #define STICK_RADIUS      110.0f
 #define STICK_DEADZONE    0.15f
@@ -72,6 +76,13 @@ extern void IOSTouch_SkipCinematic( void );
 // controller is also in use. Long enough to cross the screen and press
 // something, short enough that they are gone by the time it matters.
 #define TOUCH_IDLE_HIDE   5.0
+
+// How far a finger may travel in a menu and still be a tap rather than a slide,
+// in points. Measured from where the finger went down rather than between
+// events, because the two answer different questions: a careful slide moves a
+// point or two per event and was being called a tap when it ended, which threw
+// away the aim it had just been used to build.
+#define MENU_TAP_SLOP     6.0f
 
 
 // A button on the overlay: a circle with a label, bound to one key.
@@ -149,6 +160,7 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic, strong) UITouch *menuTouch;   // the finger acting as the mouse
 @property (nonatomic) CFTimeInterval lastTouchTime; // for the automatic hide
 @property (nonatomic) CGPoint menuTouchLast;
+@property (nonatomic) CGPoint menuTouchOrigin; // where the finger went down
 @property (nonatomic) BOOL menuTouchMoved;
 @property (nonatomic) BOOL menuTwoFinger;
 @property (nonatomic) CGPoint menuCursorRemainder;
@@ -284,14 +296,34 @@ extern void IOSTouch_SkipCinematic( void );
  * The engine's cursor lives in the virtual 640x480 space its menus are laid out
  * in, which is why the touch position is scaled into that rather than used in
  * screen pixels.
+ *
+ * It starts on the origin because that is where the UI leaves its own cursor
+ * when it starts -- _UI_Init sets it there and CL_InitUI tells the input layer
+ * so. This used to start in the middle of the screen, which was a claim about a
+ * position nothing had ever put the cursor in.
  */
-static CGPoint menuCursor = { 320.0f, 240.0f };
+static CGPoint menuCursor = { 0.0f, 0.0f };
 
 - (BOOL)menuActive
 {
 	// Includes the loading screen and the pregame briefing, neither of which is
 	// gameplay even though only one of them sets the key catcher.
 	return CL_UIActive() ? YES : NO;
+}
+
+/*
+ * Whether the UI will actually accept a cursor, which is narrower than
+ * -menuActive above.
+ *
+ * A loading screen, the pregame briefing and the console all count as the UI
+ * owning the screen, but CL_MouseEvent only hands a delta to the UI while
+ * KEYCATCH_UI is set; at any of those it falls through to the branch that adds
+ * the delta to the player's view angles instead. Driving a cursor there moves
+ * nothing that can be seen and quietly turns the player's head.
+ */
+- (BOOL)menuTakesCursor
+{
+	return ( Key_GetCatcher() & KEYCATCH_UI ) ? YES : NO;
 }
 
 - (CGPoint)virtualPointFor:(CGPoint)p
@@ -314,15 +346,55 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	return CGPointMake( ( p.x / w ) * 640.0f, ( p.y / h ) * 480.0f );
 }
 
+/*
+ * Put the cursor on a point exactly, whatever state anything else has left it
+ * in. This is what a tap in a menu comes down to, and it is where taps were
+ * landing somewhere other than the finger.
+ *
+ * The obvious route was to ask the engine for the difference between the point
+ * and where the cursor already is, which IOSTouch_QueueMouseTo does against the
+ * shadow position IN_QueueMouseDelta keeps. That shadow is not the UI's cursor
+ * and cannot be: IN_QueueMouseDelta sees every mouse delta the game produces,
+ * while the UI's cursor only moves when KEYCATCH_UI is set. Looking around by
+ * touch pushes hundreds of deltas through that same function during play -- one
+ * swipe is enough to drive the shadow into a corner, where it clamps -- so by
+ * the time the menu is opened the two have drifted apart and the difference the
+ * engine reports is wrong by exactly that drift. It is the same drift wherever
+ * the finger lands, which is why it reads as the cursor sitting a fixed distance
+ * from the touch rather than as the screen being scaled wrongly, and why it gets
+ * reported against one menu entry: a constant offset simply presses the item
+ * next to the one that was aimed at, and it is the item you meant to press that
+ * you remember.
+ *
+ * So the difference is not asked for; it is made irrelevant. Both the shadow and
+ * the UI's cursor clamp to the same 640x480 box, so one deliberately impossible
+ * move puts both of them on the origin no matter where either of them was, and
+ * the second move then travels from a position the two sides agree on.
+ *
+ * IN_MenuCursorTo rather than the queue, for two reasons. The queue folds
+ * consecutive mouse events into one by adding them together, which would turn
+ * the pair below back into a single relative move and undo the whole point of
+ * it. And the click follows immediately: moving the cursor now means the queued
+ * mouse button is read against the item under the finger rather than against
+ * whatever the cursor was on before.
+ */
 - (void)moveMenuCursorTo:(CGPoint)target
 {
 	menuCursor = target;
-	IOSTouch_QueueMouseTo( (int)lround( target.x ), (int)lround( target.y ) );
+
+	if ( [self menuTakesCursor] ) {
+		IN_MenuCursorTo( -SCREEN_WIDTH * 2, -SCREEN_HEIGHT * 2 );
+		IN_MenuCursorTo( (int)lround( target.x ), (int)lround( target.y ) );
+	}
 
 	if ( IOSTouch_DebugEnabled() ) {
-		Com_Printf( "touch: menu cursor -> %.0f,%.0f (view %.0fx%.0f)\n",
+		// The catcher is here because it decides whether the two lines above ran
+		// at all: a tap that reports a cursor and does not move one is a tap that
+		// arrived while something other than a menu owned the screen.
+		Com_Printf( "touch: menu cursor -> %.0f,%.0f (view %.0fx%.0f, catcher %d)\n",
 			target.x, target.y,
-			self.bounds.size.width, self.bounds.size.height );
+			self.bounds.size.width, self.bounds.size.height,
+			Key_GetCatcher() );
 	}
 }
 
@@ -382,6 +454,7 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 			// the screen without three strokes to get there.
 			self.menuTouch = touch;
 			self.menuTouchLast = [touch locationInView:self];
+			self.menuTouchOrigin = self.menuTouchLast;
 			self.menuTouchMoved = NO;
 			self.menuCursorRemainder = CGPointZero;
 		}
@@ -440,7 +513,12 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 			dy = p.y - self.menuTouchLast.y;
 			self.menuTouchLast = p;
 
-			if ( fabs( dx ) > 2.0f || fabs( dy ) > 2.0f ) {
+			// Against where the finger went down, not against the last event.
+			// Judging each event on its own called a slow slide a tap, and a tap
+			// throws the cursor to the finger -- so the gesture meant for fine
+			// aim was the one gesture guaranteed to lose it.
+			if ( fabs( p.x - self.menuTouchOrigin.x ) > MENU_TAP_SLOP ||
+				 fabs( p.y - self.menuTouchOrigin.y ) > MENU_TAP_SLOP ) {
 				self.menuTouchMoved = YES;
 			}
 
@@ -454,18 +532,35 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 					self.menuCursorRemainder.x + dx * ( 640.0f / w ),
 					self.menuCursorRemainder.y + dy * ( 480.0f / h ) );
 
-				int qx = (int)( self.menuCursorRemainder.x );
-				int qy = (int)( self.menuCursorRemainder.y );
+				// Nothing is sent until the gesture is known to be a slide.
+				// A finger rolls a point or two on its way up, and that wobble
+				// would be queued while the placement a tap ends with is
+				// immediate -- so the wobble would be applied after the
+				// placement and drag the cursor back off the item it had just
+				// been put on. The fraction keeps accumulating either way, so a
+				// slide loses nothing by starting late.
+				if ( self.menuTouchMoved && [self menuTakesCursor] ) {
+					int qx = (int)( self.menuCursorRemainder.x );
+					int qy = (int)( self.menuCursorRemainder.y );
 
-				if ( qx || qy ) {
-					// The engine's cursor is whole units, so keep the fraction
-					// rather than throwing it away on every small movement --
-					// otherwise a slow drag never moves the cursor at all.
-					self.menuCursorRemainder = CGPointMake(
-						self.menuCursorRemainder.x - qx,
-						self.menuCursorRemainder.y - qy );
-					IOSTouch_QueueMouse( qx, qy );
-					menuCursor = CGPointMake( menuCursor.x + qx, menuCursor.y + qy );
+					if ( qx || qy ) {
+						// The engine's cursor is whole units, so keep the
+						// fraction rather than throwing it away on every small
+						// movement -- otherwise a slow drag never moves the
+						// cursor at all.
+						self.menuCursorRemainder = CGPointMake(
+							self.menuCursorRemainder.x - qx,
+							self.menuCursorRemainder.y - qy );
+						IOSTouch_QueueMouse( qx, qy );
+
+						// Clamped the way _UI_MouseEvent clamps, or a slide that
+						// runs off the edge of the screen would leave this copy
+						// claiming a position outside the box the real cursor is
+						// held inside.
+						menuCursor = CGPointMake(
+							Com_Clamp( 0.0f, SCREEN_WIDTH, menuCursor.x + qx ),
+							Com_Clamp( 0.0f, SCREEN_HEIGHT, menuCursor.y + qy ) );
+					}
 				}
 			}
 		}
