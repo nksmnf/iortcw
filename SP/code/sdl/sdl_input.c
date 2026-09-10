@@ -75,6 +75,7 @@ static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player hea
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
 static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
 static cvar_t *in_debugPad          = NULL;  // log gamepad buttons and sticks
+static cvar_t *in_touchLookSens     = NULL;  // how fast a finger turns the view
 static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
 static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
 static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
@@ -2451,6 +2452,15 @@ void IOSTouch_QueueCommand( const char *command, int key )
 	Cbuf_AddText( va( "%s %d\n", command, key ) );
 }
 
+float IOSTouch_LookSensitivity( void )
+{
+	if ( !in_touchLookSens || in_touchLookSens->value <= 0.0f ) {
+		return 1.0f;
+	}
+
+	return in_touchLookSens->value;
+}
+
 int IOSTouch_MovementAxis( int forward )
 {
 	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
@@ -2623,6 +2633,7 @@ void IN_Init( void *windowData )
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
 	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
 	in_debugPad        = Cvar_Get( "in_debugPad",        "0",  CVAR_ARCHIVE );
+	in_touchLookSens   = Cvar_Get( "in_touchLookSens",   "1.0", CVAR_ARCHIVE );
 	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.35",  CVAR_ARCHIVE );
 	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
 	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );

@@ -102,7 +102,7 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .maximum:
-            return "Полное разрешение, анизотропная фильтрация, динамический свет и тени. M5 тянет это с запасом."
+            return "Полное разрешение, анизотропная фильтрация, динамический свет и тени."
         case .balanced:
             return "То же, но без стенсильных теней — самой дорогой настройки на таком разрешении."
         case .battery:
@@ -255,6 +255,24 @@ final class LauncherModel: ObservableObject {
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
     @Published var touchControls: Int = 0   // automatic: follows the hand, see ios_touch.m
+    @Published var touchLookSens: Double = 1.0
+    @Published var touchGyro: Bool = false
+    @Published var touchGyroSens: Double = 1.0
+    @Published var moveExpo: Double = 0.15
+
+    // Sound
+    @Published var volume: Double = 0.8
+    @Published var musicVolume: Double = 0.5
+
+    // Game
+    @Published var autoSwitch: Bool = true
+    @Published var viewBob: Bool = true
+    @Published var crosshairSize: Double = 48
+
+    // Diagnostics
+    @Published var perfHud: Bool = false
+    @Published var perfLog: Bool = false
+    @Published var padLog: Bool = false
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
@@ -441,6 +459,20 @@ final class LauncherModel: ObservableObject {
         maxFPS           = Int(cvarValue("com_maxfps", Double(maxFPS)))
         skill            = Int(cvarValue("g_gameskill", Double(skill)))
 
+        touchLookSens    = cvarValue("in_touchLookSens", touchLookSens)
+        touchGyroSens    = cvarValue("in_touchGyroSens", touchGyroSens)
+        moveExpo         = cvarValue("in_moveExpo", moveExpo)
+        volume           = cvarValue("s_volume", volume)
+        musicVolume      = cvarValue("s_musicvolume", musicVolume)
+        crosshairSize    = cvarValue("cg_crosshairSize", crosshairSize)
+
+        touchGyro        = cvarValue("in_touchGyro", touchGyro ? 1 : 0) != 0
+        autoSwitch       = cvarValue("cg_autoswitch", autoSwitch ? 1 : 0) != 0
+        viewBob          = cvarValue("cg_bobup", viewBob ? 1 : 0) != 0
+        perfHud          = cvarValue("r_perfHud", perfHud ? 1 : 0) != 0
+        perfLog          = cvarValue("r_perfLog", perfLog ? 1 : 0) != 0
+        padLog           = cvarValue("in_debugPad", padLog ? 1 : 0) != 0
+
         invertLook       = cvarValue("in_invertLook", invertLook ? 1 : 0) != 0
         moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
         adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
@@ -502,7 +534,23 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_lookYawSpeed", String(format: "%.0f", lookYawSpeed))
         IOSBridge_SetCvar("in_lookPitchSpeed", String(format: "%.0f", lookPitchSpeed))
         IOSBridge_SetCvar("in_stickExpo", String(format: "%.2f", stickExpo))
-        IOSBridge_SetCvar("in_moveExpo", "0.15")
+        IOSBridge_SetCvar("in_moveExpo", String(format: "%.2f", moveExpo))
+        IOSBridge_SetCvar("in_touchLookSens", String(format: "%.2f", touchLookSens))
+        IOSBridge_SetCvar("in_touchGyro", touchGyro ? "1" : "0")
+        IOSBridge_SetCvar("in_touchGyroSens", String(format: "%.2f", touchGyroSens))
+
+        IOSBridge_SetCvar("s_volume", String(format: "%.2f", volume))
+        IOSBridge_SetCvar("s_musicvolume", String(format: "%.2f", musicVolume))
+
+        IOSBridge_SetCvar("cg_autoswitch", autoSwitch ? "1" : "0")
+        IOSBridge_SetCvar("cg_bobup", viewBob ? "0.005" : "0")
+        IOSBridge_SetCvar("cg_bobpitch", viewBob ? "0.002" : "0")
+        IOSBridge_SetCvar("cg_bobroll", viewBob ? "0.002" : "0")
+        IOSBridge_SetCvar("cg_crosshairSize", String(format: "%.0f", crosshairSize))
+
+        IOSBridge_SetCvar("r_perfHud", perfHud ? "1" : "0")
+        IOSBridge_SetCvar("r_perfLog", perfLog ? "1" : "0")
+        IOSBridge_SetCvar("in_debugPad", padLog ? "1" : "0")
         IOSBridge_SetCvar("joy_threshold", String(format: "%.2f", stickDeadzone))
         IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")

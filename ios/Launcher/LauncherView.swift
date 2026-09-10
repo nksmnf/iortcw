@@ -45,15 +45,25 @@ struct LauncherView: View {
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 14) {
+            // The same eagle as the app icon, so the launcher and the home
+            // screen are recognisably one thing.
+            Image("WolfLogo")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 54, height: 54)
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text("RETURN TO CASTLE")
-                    .font(.system(size: 13, weight: .heavy))
-                    .tracking(4)
-                    .foregroundStyle(.orange.opacity(0.85))
-                Text("Wolfenstein")
-                    .font(.system(size: 30, weight: .black, design: .serif))
-                    .foregroundStyle(.orange)
+                    .font(.system(size: 12, weight: .heavy))
+                    .fontWidth(.condensed)
+                    .tracking(5)
+                    .foregroundStyle(Theme.emblem)
+                Text("WOLFENSTEIN")
+                    .font(.system(size: 32, weight: .black))
+                    .fontWidth(.condensed)
+                    .tracking(1)
+                    .foregroundStyle(Theme.wordmark)
             }
             Spacer()
             if let name = model.controllerName {
@@ -95,6 +105,18 @@ struct LauncherView: View {
 }
 
 // MARK: - Данные
+
+/// The two reds, named once.
+///
+/// The wordmark is deliberately a shade brighter than the emblem: on black the
+/// emblem's red goes muddy at text sizes, and the pair reads as one family
+/// rather than a mismatch.
+enum Theme {
+    /// What the app icon is drawn in.
+    static let emblem = Color(red: 0.70, green: 0.07, blue: 0.11)
+    /// The wordmark, a step brighter so it holds up as type.
+    static let wordmark = Color(red: 0.88, green: 0.17, blue: 0.14)
+}
 
 private struct DataView: View {
     @ObservedObject var model: LauncherModel
@@ -170,10 +192,7 @@ private struct DataView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Сборка").font(.caption).foregroundStyle(.secondary)
-                    Text("iORTCW для iPadOS " + model.appVersion)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Text("собрана " + model.buildTime)
+                    Text("iORTCW для iPadOS " + model.appVersion + " · " + model.buildTime)
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Text(model.engineVersion)
@@ -194,11 +213,12 @@ private struct CampaignView: View {
     var body: some View {
         Form {
             Section("Сложность") {
+                // Three, and these three values: the game's own play.menu sets
+                // g_gameskill to 1, 2 or 3 and offers nothing else.
                 Picker("Сложность", selection: $model.skill) {
                     Text("Не делай мне больно").tag(1)
                     Text("Не так уж и плохо").tag(2)
-                    Text("Схватка").tag(3)
-                    Text("Смерть во плоти").tag(4)
+                    Text("Смерть во плоти").tag(3)
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
@@ -224,9 +244,12 @@ private struct CampaignView: View {
 
             Section {
                 Text("""
-                     Запуск отсюда идёт мимо меню игры. Меню RTCW рассчитано на                      мышь, и на планшете попасть в его пункты неудобно — так что                      это самый прямой путь к игре.
+                     Запуск отсюда идёт мимо меню игры: меню RTCW рассчитано на \
+                     мышь, и попадать в его пункты пальцем неудобно.
 
-                     Сохранения работают как обычно: быстрое сохранение и                      загрузка есть в раскладке контроллера.
+                     Миссия начинается с набором снаряжения, который к этому \
+                     месту кампании уже был бы у игрока — иначе выход был бы \
+                     с пустыми руками.
                      """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -346,6 +369,14 @@ private struct ControlsView: View {
                     .foregroundStyle(.secondary)
 
                 Toggle("Адаптивные триггеры", isOn: $model.adaptiveTriggers)
+                if model.gyroMode != 0 {
+                    HStack {
+                        Text("Чувствительность гироскопа")
+                        Slider(value: $model.gyroSens, in: 0.2...3.0, step: 0.1)
+                        Text(String(format: "%.1f", model.gyroSens))
+                            .monospacedDigit().frame(width: 46)
+                    }
+                }
                 Picker("Гироскоп", selection: $model.gyroMode) {
                     Text("Выкл").tag(0)
                     Text("Всегда").tag(1)
@@ -355,15 +386,85 @@ private struct ControlsView: View {
 
             Section("Экранные кнопки") {
                 Picker("Показывать", selection: $model.touchControls) {
-                    Text("Без контроллера").tag(0)
+                    Text("Автоматически").tag(0)
                     Text("Всегда").tag(1)
                     Text("Никогда").tag(2)
                 }
+                Text("""
+                     Автоматически: показаны, пока не используется контроллер; \
+                     возвращаются при касании экрана и уходят через пять секунд \
+                     без него.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Чувствительность обзора")
+                    Slider(value: $model.touchLookSens, in: 0.3...3.0, step: 0.1)
+                    Text(String(format: "%.1f", model.touchLookSens))
+                        .monospacedDigit().frame(width: 46)
+                }
+                Text("Насколько поворачивается вид за движение пальца по правой половине экрана.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Гироскоп планшета", isOn: $model.touchGyro)
+                if model.touchGyro {
+                    HStack {
+                        Text("Чувствительность гироскопа")
+                        Slider(value: $model.touchGyroSens, in: 0.2...3.0, step: 0.1)
+                        Text(String(format: "%.1f", model.touchGyroSens))
+                            .monospacedDigit().frame(width: 46)
+                    }
+                }
+                Text("""
+                     Доводка прицела наклоном планшета, поверх пальца. Работает \
+                     только без контроллера — при подключённом используется его \
+                     гироскоп.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("""
                      Кнопка MENU в углу открывает меню игры — там сохранение, \
                      загрузка и выход. Три пальца делают то же самое, четыре — \
                      консоль; и то и другое работает всегда. Тап пропускает \
                      заставку.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Звук") {
+                HStack {
+                    Text("Громкость")
+                    Slider(value: $model.volume, in: 0...1, step: 0.05)
+                    Text("\(Int(model.volume * 100))%").monospacedDigit().frame(width: 54)
+                }
+                HStack {
+                    Text("Музыка")
+                    Slider(value: $model.musicVolume, in: 0...1, step: 0.05)
+                    Text("\(Int(model.musicVolume * 100))%").monospacedDigit().frame(width: 54)
+                }
+            }
+
+            Section("Игра") {
+                Toggle("Переключаться на подобранное оружие", isOn: $model.autoSwitch)
+                Toggle("Покачивание камеры при ходьбе", isOn: $model.viewBob)
+                HStack {
+                    Text("Размер прицела")
+                    Slider(value: $model.crosshairSize, in: 16...96, step: 4)
+                    Text("\(Int(model.crosshairSize))").monospacedDigit().frame(width: 46)
+                }
+            }
+
+            Section("Диагностика") {
+                Toggle("Панель производительности", isOn: $model.perfHud)
+                Toggle("Запись производительности в perf.csv", isOn: $model.perfLog)
+                Toggle("Запись событий контроллера в лог", isOn: $model.padLog)
+                Text("""
+                     Файлы лежат в папке main и доступны через приложение Файлы. \
+                     Запись стоит включать только когда нужно разобраться с \
+                     проблемой — она идёт постоянно.
                      """)
                     .font(.caption)
                     .foregroundStyle(.secondary)

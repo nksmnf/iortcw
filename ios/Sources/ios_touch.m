@@ -50,6 +50,7 @@ extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
 extern void IOSTouch_QueueMouseTo( int x, int y );
 extern void IOSTouch_QueueCommand( const char *command, int key );
+extern float IOSTouch_LookSensitivity( void );
 extern int  IOSTouch_ControllerConnected( void );
 extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
@@ -152,6 +153,7 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic) BOOL menuTwoFinger;
 @property (nonatomic) CGPoint menuCursorRemainder;
 @property (nonatomic) BOOL sprinting;
+@property (nonatomic) CGPoint lookRemainder;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -502,8 +504,24 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		}
 
 		if ( touch == self.lookTouch ) {
-			IOSTouch_QueueMouse( (int)( p.x - self.lookLast.x ),
-								 (int)( p.y - self.lookLast.y ) );
+			// Carry the fraction, or a slow drag is rounded away to nothing and
+			// fine aim by touch becomes impossible.
+			float sens = IOSTouch_LookSensitivity();
+			int dx, dy;
+
+			self.lookRemainder = CGPointMake(
+				self.lookRemainder.x + ( p.x - self.lookLast.x ) * sens,
+				self.lookRemainder.y + ( p.y - self.lookLast.y ) * sens );
+
+			dx = (int)self.lookRemainder.x;
+			dy = (int)self.lookRemainder.y;
+
+			if ( dx || dy ) {
+				self.lookRemainder = CGPointMake( self.lookRemainder.x - dx,
+												  self.lookRemainder.y - dy );
+				IOSTouch_QueueMouse( dx, dy );
+			}
+
 			self.lookLast = p;
 		}
 	}

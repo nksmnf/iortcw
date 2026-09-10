@@ -131,7 +131,9 @@ double IOSBridge_DataMegabytes( void ) { return dataMegabytes; }
 
 const char *IOSBridge_EngineVersion( void )
 {
-	return Q3_VERSION " " PLATFORM_STRING "-" ARCH_STRING;
+	// PLATFORM_STRING is already OS_STRING "-" ARCH_STRING, so adding the
+	// architecture again produced "ios-arm64-arm64".
+	return Q3_VERSION " " PLATFORM_STRING;
 }
 
 #define MAX_LAUNCHER_SETTINGS 64
