@@ -154,6 +154,7 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic) CGPoint menuCursorRemainder;
 @property (nonatomic) BOOL sprinting;
 @property (nonatomic) CGPoint lookRemainder;
+- (void)releaseTouch:(UITouch *)touch;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -191,17 +192,23 @@ extern void IOSTouch_SkipCinematic( void );
 
 	// Right-hand cluster: the things needed to actually play a level.
 	struct { const char *label; int key; int col; int row; } layout[] = {
+		// The keys are the game's own: these go through the normal bindings, so
+		// they follow whatever the player has set in the Controls menu.
 		{ "FIRE",   K_MOUSE1,  0, 0 },
 		{ "JUMP",   K_SPACE,   1, 0 },
+		{ "RELOAD", 'r',       2, 0 },
+
+		// Kick earns a button: it opens doors, breaks crates and finishes
+		// people without spending ammunition, and touch had no way to do it.
+		{ "KICK",   'g',       3, 0 },
+
 		{ "USE",    'f',       0, 1 },
 		{ "CROUCH", 'c',       1, 1 },
-		{ "RELOAD", 'r',       2, 0 },
-		{ "NEXT",   ']',       2, 1 },
-		// Kick is worth a button of its own: it opens doors, breaks crates and
-		// finishes people without spending ammunition, and it had no place in
-		// the touch layout at all.
-		{ "KICK",   'g',       3, 0 },
-		{ "LEAN",   'q',       3, 1 },
+
+		// '[' is weapnext and ']' is weapprev in default.cfg. The single button
+		// here was labelled NEXT and bound to ']', so it cycled backwards.
+		{ "NEXT",   '[',       2, 1 },
+		{ "PREV",   ']',       3, 1 },
 	};
 
 	// Escape, where it can be found. A three-finger tap does the same and still
@@ -742,6 +749,15 @@ void Sys_IOS_TouchOverlayUpdate( void )
 	// for these to do, and a cutscene is watched, not played.
 	if ( CL_UIActive() || IOSTouch_CinematicActive() ) {
 		visible = NO;
+	}
+
+	// A touch that never reported its end would leave the stick held, and with
+	// it the pad locked out of the movement axes. UIKit keeps the object alive
+	// and its phase truthful, so this is cheap insurance against a lost event.
+	if ( touchOverlay.stickTouch &&
+		 ( touchOverlay.stickTouch.phase == UITouchPhaseEnded ||
+		   touchOverlay.stickTouch.phase == UITouchPhaseCancelled ) ) {
+		[touchOverlay releaseTouch:touchOverlay.stickTouch];
 	}
 
 	// Keep the window over the whole screen. Nothing should move it, but a zero

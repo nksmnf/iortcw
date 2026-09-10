@@ -71,7 +71,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # The port's own version, separate from the engine's. The engine is iortcw
 # 1.51d-SP wherever it runs; this number is about the iPadOS build.
-set(IORTCW_PORT_VERSION "0.2.0")
+set(IORTCW_PORT_VERSION "0.3.0")
 
 # Build number: the day it was built. Enough to tell two builds apart, which is
 # all it is for, and it does not need a counter kept anywhere.

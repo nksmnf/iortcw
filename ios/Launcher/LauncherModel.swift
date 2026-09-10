@@ -23,6 +23,7 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "weapnext",   title: "Следующее оружие",   group: "Бой"),
         GameAction(id: "weapprev",   title: "Предыдущее оружие",  group: "Бой"),
         GameAction(id: "+quickgren", title: "Быстрая граната",    group: "Бой"),
+        GameAction(id: "weapalt",    title: "Режим оружия",       group: "Бой"),
         GameAction(id: "+moveup",    title: "Прыжок",             group: "Движение"),
         GameAction(id: "+movedown",  title: "Присесть",           group: "Движение"),
         GameAction(id: "+sprint",    title: "Спринт",             group: "Движение"),

@@ -11,16 +11,17 @@ import SwiftUI
 struct LauncherView: View {
     @ObservedObject var model: LauncherModel
     @State private var tab = 0
+    @State private var language = Loc.current
 
     var body: some View {
         VStack(spacing: 0) {
             header
 
             Picker("", selection: $tab) {
-                Text("Данные").tag(0)
-                Text("Кампания").tag(1)
-                Text("Графика").tag(2)
-                Text("Управление").tag(3)
+                Text(L("Данные")).tag(0)
+                Text(L("Кампания")).tag(1)
+                Text(L("Графика")).tag(2)
+                Text(L("Управление")).tag(3)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 24)
@@ -71,7 +72,7 @@ struct LauncherView: View {
                     .font(.callout)
                     .foregroundStyle(.green)
             } else {
-                Label("Нет контроллера", systemImage: "gamecontroller")
+                Label(L("Нет контроллера"), systemImage: "gamecontroller")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -82,14 +83,28 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack {
-            Text(model.canPlay ? "Готово" : "Нет игровых файлов")
+            Text(model.canPlay ? L("Готово") : L("Нет игровых файлов"))
                 .font(.callout)
                 .foregroundStyle(model.canPlay ? Color.green : Color.orange)
+
+            Spacer()
+
+            // Every string goes through L(), which reads Loc.current, so
+            // changing this redraws the whole launcher in the other language.
+            Picker("", selection: $language) {
+                ForEach(Loc.Language.allCases) { language in
+                    Text(language.title).tag(language)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 190)
+            .onChange(of: language) { chosen in Loc.select(chosen) }
+
             Spacer()
             Button {
                 model.play()
             } label: {
-                Text("ИГРАТЬ")
+                Text(L("ИГРАТЬ"))
                     .font(.system(size: 18, weight: .bold))
                     .tracking(2)
                     .padding(.horizontal, 44)
@@ -125,7 +140,7 @@ private struct DataView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if model.hasAllData {
-                    Label("Все игровые файлы найдены.", systemImage: "checkmark.seal.fill")
+                    Label(L("Все игровые файлы найдены."), systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                         .font(.headline)
 
@@ -139,24 +154,9 @@ private struct DataView: View {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Скопируйте данные Return to Castle Wolfenstein")
+                        Text(L("Скопируйте данные Return to Castle Wolfenstein"))
                             .font(.headline)
-                        Text("""
-                             Нужны файлы .pk3 из вашей копии игры — они лежат в \
-                             папке Main установленной RTCW (GOG или Steam).
-
-                             С Mac: подключите iPad, откройте его в Finder, \
-                             вкладка «Файлы», и перетащите файлы .pk3 (или всю \
-                             папку Main) на iORTCW. Finder кладёт их только в \
-                             корень — это нормально, приложение само перенесёт \
-                             их в main/.
-
-                             На самом iPad: Файлы → На iPad → iORTCW.
-
-                             Список обновляется по мере копирования. Большие \
-                             файлы появляются только когда докопируются, так что \
-                             пауза на pak0.pk3 — это нормально.
-                             """)
+                        Text(L("note.data"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -172,7 +172,7 @@ private struct DataView: View {
                                 .font(.system(.callout, design: .monospaced))
                             Spacer()
                             if idx == 0 && !present {
-                                Text("обязателен")
+                                Text(L("обязателен"))
                                     .font(.caption)
                                     .foregroundStyle(.orange)
                             }
@@ -183,7 +183,7 @@ private struct DataView: View {
                 .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Папка").font(.caption).foregroundStyle(.secondary)
+                    Text(L("Папка")).font(.caption).foregroundStyle(.secondary)
                     Text(model.dataPath + "/main")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -191,7 +191,7 @@ private struct DataView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Сборка").font(.caption).foregroundStyle(.secondary)
+                    Text(L("Сборка")).font(.caption).foregroundStyle(.secondary)
                     Text("iORTCW для iPadOS " + model.appVersion + " · " + model.buildTime)
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -212,25 +212,25 @@ private struct CampaignView: View {
 
     var body: some View {
         Form {
-            Section("Сложность") {
+            Section(L("Сложность")) {
                 // Three, and these three values: the game's own play.menu sets
                 // g_gameskill to 1, 2 or 3 and offers nothing else.
-                Picker("Сложность", selection: $model.skill) {
-                    Text("Не делай мне больно").tag(1)
-                    Text("Не так уж и плохо").tag(2)
-                    Text("Смерть во плоти").tag(3)
+                Picker(L("Сложность"), selection: $model.skill) {
+                    Text(L("Не делай мне больно")).tag(1)
+                    Text(L("Не так уж и плохо")).tag(2)
+                    Text(L("Смерть во плоти")).tag(3)
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
             }
 
-            Section("Миссии") {
+            Section(L("Миссии")) {
                 ForEach(CampaignMission.all) { mission in
                     Button {
                         model.startMission(mission)
                     } label: {
                         HStack {
-                            Text(mission.title)
+                            Text(L(mission.title))
                                 .foregroundStyle(model.canPlay ? Color.primary : Color.secondary)
                             Spacer()
                             Image(systemName: "play.fill")
@@ -243,14 +243,7 @@ private struct CampaignView: View {
             }
 
             Section {
-                Text("""
-                     Запуск отсюда идёт мимо меню игры: меню RTCW рассчитано на \
-                     мышь, и попадать в его пункты пальцем неудобно.
-
-                     Миссия начинается с набором снаряжения, который к этому \
-                     месту кампании уже был бы у игрока — иначе выход был бы \
-                     с пустыми руками.
-                     """)
+                Text(L("note.campaign"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -266,26 +259,26 @@ private struct GraphicsView: View {
 
     var body: some View {
         Form {
-            Section("Качество") {
-                Picker("Пресет", selection: $model.preset) {
+            Section(L("Качество")) {
+                Picker(L("Пресет"), selection: $model.preset) {
                     ForEach(GraphicsPreset.allCases) { p in
-                        Text(p.title).tag(p)
+                        Text(L(p.title)).tag(p)
                     }
                 }
                 .pickerStyle(.segmented)
-                Text(model.preset.detail)
+                Text(L(model.preset.detail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Экран") {
-                Picker("Кадры/с", selection: $model.maxFPS) {
+            Section(L("Экран")) {
+                Picker(L("Кадры/с"), selection: $model.maxFPS) {
                     Text("60").tag(60)
                     Text("90").tag(90)
                     Text("120").tag(120)
                 }
                 .pickerStyle(.segmented)
-                Toggle("Полное разрешение", isOn: $model.hiDPI)
+                Toggle(L("Полное разрешение"), isOn: $model.hiDPI)
                 Text(model.hiDPI
                      ? "Рендер в родных 2752×2064."
                      : "Половинное разрешение: мягче картинка, дольше батарея.")
@@ -293,19 +286,19 @@ private struct GraphicsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Изображение") {
+            Section(L("Изображение")) {
                 HStack {
-                    Text("Поле зрения")
+                    Text(L("Поле зрения"))
                     Slider(value: $model.fov, in: 70...110, step: 5)
                     Text("\(Int(model.fov))°").monospacedDigit().frame(width: 46)
                 }
                 HStack {
-                    Text("Яркость")
+                    Text(L("Яркость"))
                     Slider(value: $model.brightness, in: 1.0...2.5, step: 0.1)
                     Text(String(format: "%.1f", model.brightness))
                         .monospacedDigit().frame(width: 46)
                 }
-                Text("Аппаратной гаммы на iOS нет, поэтому яркость запекается в текстуры и применяется при следующем запуске.")
+                Text(L("Аппаратной гаммы на iOS нет, поэтому яркость запекается в текстуры и применяется при следующем запуске."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -323,8 +316,8 @@ private struct ControlsView: View {
 
     var body: some View {
         Form {
-            Section("Стики") {
-                Toggle("Движение по 8 направлениям", isOn: $model.moveDigital)
+            Section(L("Стики")) {
+                Toggle(L("Движение по 8 направлениям"), isOn: $model.moveDigital)
                 Text(model.moveDigital
                      ? "Левый стик работает как WASD: северо-восток — это вперёд и вправо. Предсказуемо и без сноса."
                      : "Плавное аналоговое движение.")
@@ -332,158 +325,128 @@ private struct ControlsView: View {
                     .foregroundStyle(.secondary)
 
                 HStack {
-                    Text("Скорость поворота")
+                    Text(L("Скорость поворота"))
                     Slider(value: $model.lookYawSpeed, in: 60...400, step: 10)
                     Text("\(Int(model.lookYawSpeed))°/с")
                         .monospacedDigit().frame(width: 64)
                 }
                 HStack {
-                    Text("Вертикаль")
+                    Text(L("Вертикаль"))
                     Slider(value: $model.lookPitchSpeed, in: 40...300, step: 10)
                     Text("\(Int(model.lookPitchSpeed))°/с")
                         .monospacedDigit().frame(width: 64)
                 }
                 HStack {
-                    Text("Мёртвая зона")
+                    Text(L("Мёртвая зона"))
                     Slider(value: $model.stickDeadzone, in: 0.02...0.35, step: 0.01)
                     Text(String(format: "%.0f%%", model.stickDeadzone * 100))
                         .monospacedDigit().frame(width: 64)
                 }
-                Toggle("Инверсия вертикали", isOn: $model.invertLook)
+                Toggle(L("Инверсия вертикали"), isOn: $model.invertLook)
             }
 
             Section("DualSense") {
                 HStack {
-                    Text("Вибрация")
+                    Text(L("Вибрация"))
                     Slider(value: $model.rumble, in: 0...100, step: 5)
                     Text("\(Int(model.rumble))%").monospacedDigit().frame(width: 54)
                 }
-                Text("""
-                     Вибрация только при получении урона, и её длительность \
-                     показывает, сколько сняли: царапина — короткий тик, \
-                     тяжёлое попадание тянется заметно дольше. При стрельбе \
-                     контроллер молчит — иначе он гудит постоянно и не сообщает \
-                     ничего нового.
-                     """)
+                Text(L("note.haptics"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Адаптивные триггеры", isOn: $model.adaptiveTriggers)
+                Toggle(L("Адаптивные триггеры"), isOn: $model.adaptiveTriggers)
                 if model.gyroMode != 0 {
                     HStack {
-                        Text("Чувствительность гироскопа")
+                        Text(L("Чувствительность гироскопа"))
                         Slider(value: $model.gyroSens, in: 0.2...3.0, step: 0.1)
                         Text(String(format: "%.1f", model.gyroSens))
                             .monospacedDigit().frame(width: 46)
                     }
                 }
-                Picker("Гироскоп", selection: $model.gyroMode) {
-                    Text("Выкл").tag(0)
-                    Text("Всегда").tag(1)
-                    Text("В прицеле").tag(2)
+                Picker(L("Гироскоп"), selection: $model.gyroMode) {
+                    Text(L("Выкл")).tag(0)
+                    Text(L("Всегда")).tag(1)
+                    Text(L("В прицеле")).tag(2)
                 }
             }
 
-            Section("Экранные кнопки") {
-                Picker("Показывать", selection: $model.touchControls) {
-                    Text("Автоматически").tag(0)
-                    Text("Всегда").tag(1)
-                    Text("Никогда").tag(2)
+            Section(L("Экранные кнопки")) {
+                Picker(L("Показывать"), selection: $model.touchControls) {
+                    Text(L("Автоматически")).tag(0)
+                    Text(L("Всегда")).tag(1)
+                    Text(L("Никогда")).tag(2)
                 }
-                Text("""
-                     Автоматически: показаны, пока не используется контроллер; \
-                     возвращаются при касании экрана и уходят через пять секунд \
-                     без него.
-                     """)
+                Text(L("note.touch"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 HStack {
-                    Text("Чувствительность обзора")
+                    Text(L("Чувствительность обзора"))
                     Slider(value: $model.touchLookSens, in: 0.3...3.0, step: 0.1)
                     Text(String(format: "%.1f", model.touchLookSens))
                         .monospacedDigit().frame(width: 46)
                 }
-                Text("Насколько поворачивается вид за движение пальца по правой половине экрана.")
+                Text(L("Насколько поворачивается вид за движение пальца по правой половине экрана."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Гироскоп планшета", isOn: $model.touchGyro)
+                Toggle(L("Гироскоп планшета"), isOn: $model.touchGyro)
                 if model.touchGyro {
                     HStack {
-                        Text("Чувствительность гироскопа")
+                        Text(L("Чувствительность гироскопа"))
                         Slider(value: $model.touchGyroSens, in: 0.2...3.0, step: 0.1)
                         Text(String(format: "%.1f", model.touchGyroSens))
                             .monospacedDigit().frame(width: 46)
                     }
                 }
-                Text("""
-                     Доводка прицела наклоном планшета, поверх пальца. Работает \
-                     только без контроллера — при подключённом используется его \
-                     гироскоп.
-                     """)
+                Text(L("note.gyro"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("""
-                     Кнопка MENU в углу открывает меню игры — там сохранение, \
-                     загрузка и выход. Три пальца делают то же самое, четыре — \
-                     консоль; и то и другое работает всегда. Тап пропускает \
-                     заставку.
-                     """)
+                Text(L("note.menu"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Звук") {
+            Section(L("Звук")) {
                 HStack {
-                    Text("Громкость")
+                    Text(L("Громкость"))
                     Slider(value: $model.volume, in: 0...1, step: 0.05)
                     Text("\(Int(model.volume * 100))%").monospacedDigit().frame(width: 54)
                 }
                 HStack {
-                    Text("Музыка")
+                    Text(L("Музыка"))
                     Slider(value: $model.musicVolume, in: 0...1, step: 0.05)
                     Text("\(Int(model.musicVolume * 100))%").monospacedDigit().frame(width: 54)
                 }
             }
 
-            Section("Игра") {
-                Toggle("Переключаться на подобранное оружие", isOn: $model.autoSwitch)
-                Toggle("Покачивание камеры при ходьбе", isOn: $model.viewBob)
+            Section(L("Игра")) {
+                Toggle(L("Переключаться на подобранное оружие"), isOn: $model.autoSwitch)
+                Toggle(L("Покачивание камеры при ходьбе"), isOn: $model.viewBob)
                 HStack {
-                    Text("Размер прицела")
+                    Text(L("Размер прицела"))
                     Slider(value: $model.crosshairSize, in: 16...96, step: 4)
                     Text("\(Int(model.crosshairSize))").monospacedDigit().frame(width: 46)
                 }
             }
 
-            Section("Диагностика") {
-                Toggle("Панель производительности", isOn: $model.perfHud)
-                Toggle("Запись производительности в perf.csv", isOn: $model.perfLog)
-                Toggle("Запись событий контроллера в лог", isOn: $model.padLog)
-                Text("""
-                     Файлы лежат в папке main и доступны через приложение Файлы. \
-                     Запись стоит включать только когда нужно разобраться с \
-                     проблемой — она идёт постоянно.
-                     """)
+            Section(L("Диагностика")) {
+                Toggle(L("Панель производительности"), isOn: $model.perfHud)
+                Toggle(L("Запись производительности в perf.csv"), isOn: $model.perfLog)
+                Toggle(L("Запись событий контроллера в лог"), isOn: $model.padLog)
+                Text(L("note.diag"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Раскладка") {
-                Button("Проверка контроллера…") { showTest = true }
-                Button("Настроить кнопки…") { showBinds = true }
-                Button("Сбросить к стандартной", role: .destructive) {
+            Section(L("Раскладка")) {
+                Button(L("Проверка контроллера…")) { showTest = true }
+                Button(L("Настроить кнопки…")) { showBinds = true }
+                Button(L("Сбросить к стандартной"), role: .destructive) {
                     model.applyDefaultBindings()
                 }
-                Text("""
-                     По умолчанию: R2 — огонь, L2 — прицел, R1/L1 — смена оружия, \
-                     Квадрат — перезарядка, Треугольник — использовать, Крест — \
-                     прыжок, Круг — присесть, L3 — спринт, R3 — удар ногой. \
-                     Крестовина ходит, как стрелки на клавиатуре. Свайпы по \
-                     тачпаду: вверх-вниз — кратность прицела, влево-вправо — \
-                     оружие, тап — предмет.
-                     """)
+                Text(L("note.layout"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -508,18 +471,18 @@ private struct BindingsView: View {
                         HStack {
                             Text(pad.title)
                             Spacer()
-                            Text(model.binding(for: pad)?.title ?? "—")
+                            Text(model.binding(for: pad).map { L($0.title) } ?? "—")
                                 .foregroundStyle(model.binding(for: pad) == nil
                                                  ? Color.secondary : Color.orange)
                         }
                     }
                 }
             }
-            .navigationTitle("Кнопки контроллера")
+            .navigationTitle(L("Кнопки контроллера"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Готово") { dismiss() }
+                    Button(L("Готово")) { dismiss() }
                 }
             }
         }
@@ -535,20 +498,20 @@ private struct ActionPicker: View {
     var body: some View {
         List {
             Section {
-                Button("Не назначено", role: .destructive) {
+                Button(L("Не назначено"), role: .destructive) {
                     model.assign(nil, to: pad)
                     dismiss()
                 }
             }
             ForEach(GameAction.groups, id: \.self) { group in
-                Section(group) {
+                Section(L(group)) {
                     ForEach(GameAction.all.filter { $0.group == group }, id: \.id) { action in
                         Button {
                             model.assign(action, to: pad)
                             dismiss()
                         } label: {
                             HStack {
-                                Text(action.title).foregroundStyle(.primary)
+                                Text(L(action.title)).foregroundStyle(.primary)
                                 Spacer()
                                 if model.bindings[pad.id] == action.id {
                                     Image(systemName: "checkmark").foregroundStyle(.orange)

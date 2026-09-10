@@ -1399,6 +1399,18 @@ static void IN_GamepadMove( void )
 	// are translated instead of being sent as PAD0_* keys that no menu binds --
 	// otherwise there is no way to pick a difficulty and start a mission
 	// without putting the iPad down and using the touchscreen.
+	// The sticks are read directly, always, on this platform.
+	//
+	// The alternative is to synthesise a key per stick direction and let the
+	// bindings map it back to an axis -- and default.cfg inside pak0 binds the
+	// left stick's horizontal to turn, so the character walks in circles and
+	// both sticks appear to do the same thing. That is not a layout anyone
+	// would choose, so the cvar is not allowed to select it here; it stays for
+	// the desktop builds, where a player might have a reason.
+#if TARGET_OS_IPHONE
+	Cvar_Set( "in_gamepadDirect", "1" );
+#endif
+
 	menuMode = ( in_gamepadDirect->integer && CL_UIActive() ) ? qtrue : qfalse;
 
 	// check buttons

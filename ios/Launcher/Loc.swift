@@ -1,0 +1,336 @@
+import Foundation
+import SwiftUI
+
+/// Russian and English for the launcher.
+///
+/// The Russian text is the key, so a string that has no translation yet still
+/// shows something sensible rather than a placeholder, and adding a string
+/// costs nothing until someone gets round to translating it.
+///
+/// The choice is the player's, not the system's: someone running an English
+/// iPad may still want the Russian, and the other way round.
+enum Loc {
+    private static let key = "IORTCWLanguage"
+
+    enum Language: String, CaseIterable, Identifiable {
+        case russian = "ru"
+        case english = "en"
+
+        var id: String { rawValue }
+        var title: String { self == .russian ? "Русский" : "English" }
+    }
+
+    static var current: Language = {
+        if let stored = UserDefaults.standard.string(forKey: key),
+           let language = Language(rawValue: stored) {
+            return stored == "en" ? .english : .russian
+        }
+
+        // Follow the device the first time, then remember what was chosen.
+        let preferred = Locale.preferredLanguages.first ?? "en"
+        return preferred.hasPrefix("ru") ? .russian : .english
+    }()
+
+    static func select(_ language: Language) {
+        current = language
+        UserDefaults.standard.set(language.rawValue, forKey: key)
+    }
+
+    /// Takes either the Russian text itself -- which is the key for short
+    /// labels -- or one of the note.* keys used for the longer paragraphs,
+    /// where a key in the layout reads better than a paragraph would.
+    static func s(_ key: String) -> String {
+        if let note = notes[key] {
+            return current == .english ? note.en : note.ru
+        }
+
+        guard current == .english else { return key }
+        return table[key] ?? key
+    }
+
+    private static let table: [String: String] = [
+        // Tabs and chrome
+        "Данные": "Data",
+        "Кампания": "Campaign",
+        "Графика": "Graphics",
+        "Управление": "Controls",
+        "Нет контроллера": "No controller",
+        "Готово": "Ready",
+        "Нет игровых файлов": "Game data missing",
+        "ИГРАТЬ": "PLAY",
+        "Язык": "Language",
+
+        // Data
+        "Все игровые файлы найдены.": "All game files found.",
+        "Скопируйте данные Return to Castle Wolfenstein":
+            "Copy in your Return to Castle Wolfenstein data",
+        "обязателен": "required",
+        "Папка": "Folder",
+        "Сборка": "Build",
+
+        // Campaign
+        "Сложность": "Difficulty",
+        "Не делай мне больно": "Don't hurt me",
+        "Не так уж и плохо": "Bring 'em on",
+        "Смерть во плоти": "Death incarnate",
+        "Миссии": "Missions",
+
+        // Graphics
+        "Качество": "Quality",
+        "Пресет": "Preset",
+        "Экран": "Display",
+        "Кадры/с": "Frame rate",
+        "Полное разрешение": "Full resolution",
+        "Рендер в родных 2752×2064.": "Rendered at the panel's own 2752×2064.",
+        "Половинное разрешение: мягче картинка, дольше батарея.":
+            "Half resolution: softer image, longer battery.",
+        "Изображение": "Image",
+        "Поле зрения": "Field of view",
+        "Яркость": "Brightness",
+        "Аппаратной гаммы на iOS нет, поэтому яркость запекается в текстуры и применяется при следующем запуске.":
+            "iOS has no hardware gamma, so brightness is baked into the textures and takes effect on the next start.",
+        "Максимум": "Maximum",
+        "Баланс": "Balanced",
+        "Экономия": "Battery",
+        "Полное разрешение, анизотропная фильтрация, динамический свет и тени.":
+            "Full resolution, anisotropic filtering, dynamic lights and shadows.",
+        "То же, но без стенсильных теней — самой дорогой настройки на таком разрешении.":
+            "The same without stencil shadows, which cost the most at this resolution.",
+        "Половинное разрешение и упрощённые эффекты. Заметно дольше от батареи.":
+            "Half resolution and simpler effects. Noticeably longer on battery.",
+
+        // Controls
+        "Стики": "Sticks",
+        "Движение по 8 направлениям": "Eight-way movement",
+        "Левый стик работает как WASD: северо-восток — это вперёд и вправо. Предсказуемо и без сноса.":
+            "The left stick behaves like WASD: north-east is forward and right. Predictable, and it does not drift.",
+        "Плавное аналоговое движение.": "Smooth analogue movement.",
+        "Скорость поворота": "Turn speed",
+        "Вертикаль": "Vertical",
+        "Мёртвая зона": "Dead zone",
+        "Инверсия вертикали": "Invert vertical",
+        "Вибрация": "Vibration",
+        "Адаптивные триггеры": "Adaptive triggers",
+        "Чувствительность гироскопа": "Gyro sensitivity",
+        "Гироскоп": "Gyro",
+        "Выкл": "Off",
+        "Всегда": "Always",
+        "В прицеле": "While aiming",
+        "Экранные кнопки": "On-screen controls",
+        "Показывать": "Show",
+        "Автоматически": "Automatic",
+        "Никогда": "Never",
+        "Чувствительность обзора": "Look sensitivity",
+        "Насколько поворачивается вид за движение пальца по правой половине экрана.":
+            "How far the view turns for a given finger movement on the right half of the screen.",
+        "Гироскоп планшета": "iPad gyro",
+        "Звук": "Sound",
+        "Громкость": "Volume",
+        "Музыка": "Music",
+        "Игра": "Game",
+        "Переключаться на подобранное оружие": "Switch to picked-up weapons",
+        "Покачивание камеры при ходьбе": "View bob while walking",
+        "Размер прицела": "Crosshair size",
+        "Диагностика": "Diagnostics",
+        "Панель производительности": "Performance readout",
+        "Запись производительности в perf.csv": "Log performance to perf.csv",
+        "Запись событий контроллера в лог": "Log controller events",
+        "Раскладка": "Layout",
+        "Проверка контроллера…": "Controller test…",
+        "Настроить кнопки…": "Assign buttons…",
+        "Сбросить к стандартной": "Reset to default",
+        "Кнопки контроллера": "Controller buttons",
+        "Не назначено": "Unassigned",
+
+        // Actions
+        "Огонь": "Fire",
+        "Бой": "Combat",
+        "Альт. огонь": "Alt fire",
+        "Прицел": "Aim",
+        "Кратность +": "Zoom in",
+        "Кратность −": "Zoom out",
+        "Перезарядка": "Reload",
+        "Следующее оружие": "Next weapon",
+        "Предыдущее оружие": "Previous weapon",
+        "Быстрая граната": "Quick grenade",
+        "Режим оружия": "Weapon mode",
+        "Прыжок": "Jump",
+        "Движение": "Movement",
+        "Присесть": "Crouch",
+        "Спринт": "Sprint",
+        "Шагом": "Walk",
+        "Наклон влево": "Lean left",
+        "Наклон вправо": "Lean right",
+        "Использовать": "Use",
+        "Действия": "Actions",
+        "Применить предмет": "Use item",
+        "Следующий предмет": "Next item",
+        "Удар ногой": "Kick",
+        "Журнал": "Notebook",
+        "Быстрое сохранение": "Quick save",
+        "Система": "System",
+        "Быстрая загрузка": "Quick load",
+        "Меню": "Menu",
+
+        // Missions
+        "1. Побег": "1. Escape",
+        "2. Замок Вольфенштайн": "2. Castle Wolfenstein",
+        "3. Фуникулёр": "3. Tram",
+        "4. Деревня": "4. Village",
+        "5. Склеп": "5. Crypt",
+        "6. Гробница": "6. Tomb",
+        "7. Церковь": "7. Church",
+        "8. Хайнрих": "8. Heinrich",
+        "9. Лес": "9. Forest",
+        "10. Плотина": "10. Dam",
+        "11. Деревня II": "11. Village II",
+        "12. Шато": "12. Chateau",
+        "13. Тёмная база": "13. Dark base",
+        "14. Депо": "14. Trainyard",
+        "15. Секретный завод": "15. Secret facility",
+        "16. Завод": "16. Factory",
+        "17. Оружейный цех": "17. Weapons plant",
+        "18. Штурм": "18. Assault",
+        "19. X-Лаборатории": "19. X-Labs",
+        "20. Раскопки": "20. Dig",
+        "21. Норвегия": "21. Norway",
+        "22. Ракетная база": "22. Rocket base",
+        "23. Побег с базы": "23. Base escape",
+        "24. Замок": "24. Castle",
+        "25. Пробуждение": "25. Awakening",
+        "26. Финал": "26. End",
+
+    ]
+
+    /// The paragraphs, both languages together.
+    private static let notes: [String: (ru: String, en: String)] = [
+        "note.data": (
+            ru: """
+                Нужны файлы .pk3 из вашей копии игры — они лежат в папке Main \
+                установленной RTCW (GOG или Steam).
+
+                С Mac: подключите iPad, откройте его в Finder, вкладка «Файлы», \
+                и перетащите файлы .pk3 (или всю папку Main) на iORTCW. Finder \
+                кладёт их только в корень — это нормально, приложение само \
+                перенесёт их в main/.
+
+                На самом iPad: Файлы → На iPad → iORTCW.
+
+                Список обновляется по мере копирования. Большие файлы идут \
+                несколько минут.
+                """,
+            en: """
+                The .pk3 files from your own copy of the game, out of the Main \
+                folder of an installed RTCW (GOG or Steam).
+
+                From a Mac: connect the iPad, open it in Finder, go to Files \
+                and drag the .pk3 files (or the whole Main folder) onto iORTCW. \
+                Finder will only drop them at the top level, which is fine -- \
+                the app moves them into main/ itself.
+
+                On the iPad: Files -> On My iPad -> iORTCW.
+
+                The list updates as they copy. The large ones take a few minutes.
+                """),
+
+        "note.campaign": (
+            ru: """
+                Запуск отсюда идёт мимо меню игры: оно рассчитано на мышь, и \
+                попадать в его пункты пальцем неудобно.
+
+                Миссия начинается с набором снаряжения, который к этому месту \
+                кампании уже был бы у игрока — иначе выход был бы с пустыми \
+                руками.
+                """,
+            en: """
+                Starting here goes past the game's own menus: they were built \
+                for a mouse, and hitting their entries with a finger is awkward.
+
+                The mission begins with the kit the player would already have \
+                by that point in the campaign -- otherwise they would arrive \
+                empty handed.
+                """),
+
+        "note.touch": (
+            ru: """
+                Автоматически: показаны, пока не используется контроллер; \
+                возвращаются при касании экрана и уходят через пять секунд без \
+                него.
+                """,
+            en: """
+                Automatic: shown until a controller is in use; back on a touch, \
+                and gone again five seconds after the screen is left alone.
+                """),
+
+        "note.gyro": (
+            ru: """
+                Доводка прицела наклоном планшета, поверх пальца. Работает \
+                только без контроллера — при подключённом используется его \
+                гироскоп.
+                """,
+            en: """
+                Fine aim by tilting the iPad, on top of the finger. Only \
+                without a controller -- with one connected its own gyro is used \
+                instead.
+                """),
+
+        "note.diag": (
+            ru: """
+                Файлы лежат в папке main и доступны через приложение Файлы. \
+                Запись стоит включать только когда нужно разобраться с \
+                проблемой — она идёт постоянно.
+                """,
+            en: """
+                The files live in the main folder and are reachable through \
+                Files. Worth turning on only to look into a problem: it writes \
+                constantly.
+                """),
+
+        "note.haptics": (
+            ru: """
+                Вибрация только при получении урона, и её длительность \
+                показывает, сколько сняли: царапина — короткий тик, тяжёлое \
+                попадание тянется заметно дольше. При стрельбе контроллер \
+                молчит — иначе он гудит постоянно и не сообщает ничего нового.
+                """,
+            en: """
+                The controller vibrates only when you are hit, and the length \
+                says how hard: a graze is a short tick, a heavy hit lasts \
+                noticeably longer. It stays quiet while firing -- otherwise it \
+                hums continuously and tells you nothing new.
+                """),
+
+        "note.menu": (
+            ru: """
+                Кнопка MENU в углу открывает меню игры — там сохранение, \
+                загрузка и выход. Три пальца делают то же самое, четыре — \
+                консоль; и то и другое работает всегда. Тап пропускает заставку.
+                """,
+            en: """
+                The MENU button in the corner opens the game's menu, where \
+                saving, loading and quitting are. Three fingers do the same and \
+                four open the console; both work at any time. A tap skips a \
+                cutscene.
+                """),
+
+        "note.layout": (
+            ru: """
+                По умолчанию: R2 — огонь, L2 — прицел, R1/L1 — смена оружия, \
+                Квадрат — перезарядка, Треугольник — использовать, Крест — \
+                прыжок, Круг — присесть, L3 — спринт, R3 — удар ногой. \
+                Крестовина ходит, как стрелки на клавиатуре. Свайпы по тачпаду: \
+                вверх-вниз — кратность прицела, влево-вправо — оружие, тап — \
+                предмет.
+                """,
+            en: """
+                By default: R2 fire, L2 aim, R1/L1 change weapon, Square \
+                reload, Triangle use, Cross jump, Circle crouch, L3 sprint, R3 \
+                kick. The D-pad walks, like the arrow keys. Touchpad swipes: up \
+                and down change scope magnification, left and right change \
+                weapon, a tap selects the next item.
+                """),
+    ]
+}
+
+/// Short name, because it appears on nearly every line of the interface.
+func L(_ key: String) -> String { Loc.s(key) }
