@@ -24,6 +24,25 @@ controller's gyro in IN_GamepadGyro -- view degrees per second times
 GYRO_AXIS_SCALE, positive yaw to the right and positive pitch downwards -- so a
 player who puts the pad down mid-mission does not find the aim answering
 differently to the same movement.
+
+Sharing that convention is not the same as sharing the sensor, and two things
+follow from it:
+
+  in_touchGyro decides whether this one runs at all, and at 2 it runs alongside
+  the controller's gyro rather than instead of it. The two contributions are
+  added, which is why neither side writes the joystick axes directly any more:
+  both hand their numbers to IN_GyroContribute in sdl_input.c and the total goes
+  out once a frame. The comment there explains why writing them cannot work.
+
+  The inversion toggles are this sensor's own -- in_touchGyroInvertYaw and
+  in_touchGyroInvertPitch -- and no longer the controller's in_gyroInvert*. One
+  pair for both looked like it kept the two gyros in agreement, but there is
+  nothing here for them to agree about: the controller reports in the frame SDL
+  documents for its own body, this builds its axes out of the gravity vector,
+  and whether either comes out backwards on a given device is settled
+  separately. Sharing the toggle only meant that a player who flipped the
+  horizontal to suit the pad flipped the tablet's the wrong way in the same
+  breath.
 ===========================================================================
 */
 
@@ -34,21 +53,37 @@ differently to the same movement.
 #include "../../SP/code/qcommon/qcommon.h"
 #include "../../SP/code/client/client.h"
 
-extern void IOSTouch_QueueAxis( int axis, int value );
+extern void IOSTouch_SetTabletGyro( int pitch, int yaw );
 extern int  IOSTouch_ControllerConnected( void );
 
 static CMMotionManager *motionManager = nil;
 static cvar_t *in_touchGyro = NULL;
 static cvar_t *in_touchGyroSens = NULL;
-static cvar_t *in_gyroInvertYaw = NULL;
-static cvar_t *in_gyroInvertPitch = NULL;
+static cvar_t *in_touchGyroYawSens = NULL;
+static cvar_t *in_touchGyroPitchSens = NULL;
+static cvar_t *in_touchGyroInvertYaw = NULL;
+static cvar_t *in_touchGyroInvertPitch = NULL;
 
 // Same treatment as the controller's gyro: the resting reading is not zero, so
 // it is measured and taken out rather than hidden behind a deadzone.
 static double gyroBias[3];
 static int    gyroRestSince;
 static int    gyroSampleTime;
-static int    gyroAxis[2];      // [0] pitch, [1] yaw, as last put on the axes
+
+// What in_touchGyro selects. It is a switch with an extra notch rather than a
+// number, and the notch in the middle is what this cvar has always done, left
+// where it was so that a config already carrying in_touchGyro 1 plays exactly
+// as it did before any of this was written.
+//
+// Standing aside for a controller is a deliberate default rather than a
+// leftover of the old wiring: a player who has picked up a pad is aiming with
+// the pad, and an iPad propped on a table or shifting about in a case has no
+// business adding its own movements to that. ALWAYS is for the player who has
+// both in his hands at once and wants the tablet's wrist trim on top of the
+// pad's gyro -- the two are added, not chosen between.
+#define TOUCH_GYRO_OFF     0   // never
+#define TOUCH_GYRO_NO_PAD  1   // only while no controller is in use
+#define TOUCH_GYRO_ALWAYS  2   // always, added to the controller's gyro
 
 #define TOUCH_GYRO_REST_RATE  0.030   // rad/s; below anything done on purpose
 #define TOUCH_GYRO_DEADZONE   0.012   // rad/s; what is left after the bias
@@ -67,26 +102,40 @@ static int    gyroAxis[2];      // [0] pitch, [1] yaw, as last put on the axes
 ==============
 Sys_IOS_GyroSetAxes
 
-Puts the gyro's contribution on the two joystick axes, but only when it has
-changed.
+Hands this sensor's contribution to the input side, which adds it to the
+controller's and writes the axes once a frame.
 
-cl.joystickAxis latches -- it keeps whatever was last written until something
-writes again -- so falling inside the deadzone and simply returning left the
-last reading in place and the view turning at that rate for good. Going quiet
-has to be sent, exactly once.
+Both the sending-only-on-change and the writing itself used to live here. They
+had to move: cl.joystickAxis latches -- it keeps whatever was last written until
+something writes again -- and with two gyros writing the same pair of axes the
+one that happened to speak second simply erased the other. The rule that made
+the latch safe still holds and is now IN_GyroContribute's to keep: going quiet
+has to be said, which is why the early exits below all pass through here with
+zeroes rather than just returning.
 ==============
 */
 static void Sys_IOS_GyroSetAxes( int pitch, int yaw )
 {
-	if ( pitch != gyroAxis[0] ) {
-		gyroAxis[0] = pitch;
-		IOSTouch_QueueAxis( AXIS_GYRO_PITCH, pitch );
+	IOSTouch_SetTabletGyro( pitch, yaw );
+}
+
+/*
+==============
+Sys_IOS_GyroAxisSens
+
+Picks between a sensitivity set for this axis and the one set for both. The
+twin of IN_AxisSens in sdl_input.c, which carries the long version of why zero
+means "nothing set here" rather than "do not move": it is what lets a config
+that already has a tuned in_touchGyroSens in it go on playing exactly as it did.
+==============
+*/
+static double Sys_IOS_GyroAxisSens( const cvar_t *axis )
+{
+	if ( axis && axis->value > 0.0f ) {
+		return axis->value;
 	}
 
-	if ( yaw != gyroAxis[1] ) {
-		gyroAxis[1] = yaw;
-		IOSTouch_QueueAxis( AXIS_GYRO_YAW, yaw );
-	}
+	return in_touchGyroSens->value;
 }
 
 /*
@@ -126,11 +175,31 @@ void Sys_IOS_GyroInit( void )
 	in_touchGyro = Cvar_Get( "in_touchGyro", "0", CVAR_ARCHIVE );
 	in_touchGyroSens = Cvar_Get( "in_touchGyroSens", "1.0", CVAR_ARCHIVE );
 
-	// Shared with the controller's gyro, registered there too with the same
-	// defaults. Whichever of the two comes up first creates them, and a player
-	// who has had to flip an axis has flipped it for both.
-	in_gyroInvertYaw = Cvar_Get( "in_gyroInvertYaw", "0", CVAR_ARCHIVE );
-	in_gyroInvertPitch = Cvar_Get( "in_gyroInvertPitch", "0", CVAR_ARCHIVE );
+	// Horizontal and vertical separately, zero meaning "leave this axis to
+	// in_touchGyroSens". Both start at zero so that a config already carrying a
+	// sensitivity somebody sat down and tuned is untouched by this being added.
+	in_touchGyroYawSens = Cvar_Get( "in_touchGyroYawSens", "0", CVAR_ARCHIVE );
+	in_touchGyroPitchSens = Cvar_Get( "in_touchGyroPitchSens", "0", CVAR_ARCHIVE );
+
+	Cvar_CheckRange( in_touchGyroYawSens, 0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_touchGyroPitchSens, 0.0f, 10.0f, qfalse );
+
+	// in_touchGyro is read as one of three named states rather than as a number,
+	// so it is clamped rather than trusted: a hand-edited config carrying a 3
+	// would match none of them and the sensor would go quiet with no way to see
+	// why. The default stays 0 -- this has never been on unless asked for.
+	Cvar_CheckRange( in_touchGyro, TOUCH_GYRO_OFF, TOUCH_GYRO_ALWAYS, qtrue );
+
+	// This sensor's own, not the controller's in_gyroInvert*. Off by default
+	// because the axes above are built from gravity and should already come out
+	// the right way round; they are here because if they do not, there is no way
+	// to tell from in here and no way for the player to find out but to try it.
+	//
+	// Separate from the controller's pair because the two sensors do not share a
+	// frame of reference -- see the block at the top of this file -- so the signs
+	// that are right for one say nothing about the other.
+	in_touchGyroInvertYaw = Cvar_Get( "in_touchGyroInvertYaw", "0", CVAR_ARCHIVE );
+	in_touchGyroInvertPitch = Cvar_Get( "in_touchGyroInvertPitch", "0", CVAR_ARCHIVE );
 
 	motionManager = [[CMMotionManager alloc] init];
 
@@ -157,22 +226,31 @@ void Sys_IOS_GyroFrame( void )
 {
 	CMDeviceMotion *motion;
 	double rate[3], gravity[3], horizontal[3];
-	double magnitude, length, yaw, pitch, scale;
+	double magnitude, length, yaw, pitch, yawScale, pitchScale;
 	int now, elapsed, i;
 
 	if ( !motionManager || !in_touchGyro ) {
+		// No sensor on this device, or too early to have a cvar to read. Nothing
+		// is ever going to come out of here, so say so rather than leave whatever
+		// was last handed over standing in the sum.
+		Sys_IOS_GyroSetAxes( 0, 0 );
 		return;
 	}
 
-	// Off, or the controller's own gyro is doing this job.
-	if ( !in_touchGyro->integer || IOSTouch_ControllerConnected() ) {
+	// Off, or set to stand aside while the controller's own gyro does this job.
+	// At TOUCH_GYRO_ALWAYS neither of those applies and the sensor keeps running
+	// with a pad connected, which is the whole of the difference: what comes out
+	// of here is added to the controller's contribution rather than replacing it.
+	if ( in_touchGyro->integer == TOUCH_GYRO_OFF ||
+		( in_touchGyro->integer == TOUCH_GYRO_NO_PAD && IOSTouch_ControllerConnected() ) ) {
 		if ( motionManager.deviceMotionActive ) {
 			[motionManager stopDeviceMotionUpdates];
 		}
 
-		// The axes have to be released as well as the sensor. They latch, so a
-		// controller arriving mid-turn would otherwise leave this side's last
-		// reading on them for the controller's gyro to add to.
+		// The contribution has to be released as well as the sensor. It is held
+		// until replaced, so a controller arriving mid-turn would otherwise leave
+		// this side's last reading in the sum for the controller's gyro to be
+		// added to for the rest of the session.
 		Sys_IOS_GyroSetAxes( 0, 0 );
 		gyroSampleTime = 0;
 		return;
@@ -280,23 +358,36 @@ void Sys_IOS_GyroFrame( void )
 	// Honouring it on one half of tablet aiming and not the other is the exact
 	// fault being fixed on the controller side.
 
-	// The two shared last resorts, for a device that turns out to measure the
-	// other way round. Whichever gyro is in use, the same toggle fixes it.
-	if ( in_gyroInvertYaw && in_gyroInvertYaw->integer ) {
+	// The two last resorts, for a device that turns out to measure the other way
+	// round. This sensor's own toggles: the controller's in_gyroInvert* pair used
+	// to be read here as well, and a horizontal flipped to suit a DualSense was
+	// flipping this one too, in the opposite direction to what the hands were
+	// asking for. The frames of reference are unrelated, so the signs are.
+	if ( in_touchGyroInvertYaw && in_touchGyroInvertYaw->integer ) {
 		yaw = -yaw;
 	}
-	if ( in_gyroInvertPitch && in_gyroInvertPitch->integer ) {
+	if ( in_touchGyroInvertPitch && in_touchGyroInvertPitch->integer ) {
 		pitch = -pitch;
 	}
 
 	// rad/s -> view degrees per second -> axis units. CL_JoystickMove scales by
 	// frametime, which is exactly right for a rate.
-	scale = in_touchGyroSens->value * TOUCH_GYRO_VIEW_DEGREES_PER_RAD *
-		TOUCH_GYRO_AXIS_SCALE;
+	//
+	// A scale each. Turning the iPad about gravity is a movement of the whole
+	// forearm and tipping its far edge is a movement of the wrist alone, so the
+	// horizontal and the vertical never wanted the same number; in_touchGyroSens
+	// still sets both until one of the per-axis keys is given a value of its own.
+	yawScale = Sys_IOS_GyroAxisSens( in_touchGyroYawSens ) *
+		TOUCH_GYRO_VIEW_DEGREES_PER_RAD * TOUCH_GYRO_AXIS_SCALE;
+	pitchScale = Sys_IOS_GyroAxisSens( in_touchGyroPitchSens ) *
+		TOUCH_GYRO_VIEW_DEGREES_PER_RAD * TOUCH_GYRO_AXIS_SCALE;
 
+	// Scaled before the contribution is handed over, not after the two gyros are
+	// added: this sensor's sensitivity has to mean how much this sensor moves the
+	// view, whatever the controller happens to be doing at the same moment.
 	Sys_IOS_GyroSetAxes(
-		(int)Com_Clamp( -32767.0f, 32767.0f, (float)( pitch * scale ) ),
-		(int)Com_Clamp( -32767.0f, 32767.0f, (float)( yaw * scale ) ) );
+		(int)Com_Clamp( -32767.0f, 32767.0f, (float)( pitch * pitchScale ) ),
+		(int)Com_Clamp( -32767.0f, 32767.0f, (float)( yaw * yawScale ) ) );
 }
 
 /*
@@ -311,8 +402,9 @@ void Sys_IOS_GyroShutdown( void )
 		motionManager = nil;
 	}
 
-	// The axes keep their last value, so leaving without clearing them would
-	// leave the view turning at whatever rate the sensor last reported.
+	// The contribution is held until replaced, so leaving without clearing it
+	// would leave the view turning at whatever rate the sensor last reported --
+	// and, with a controller also aiming, would go on being added to its gyro.
 	Sys_IOS_GyroSetAxes( 0, 0 );
 
 	Com_Memset( gyroBias, 0, sizeof( gyroBias ) );

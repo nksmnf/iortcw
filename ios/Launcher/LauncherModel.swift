@@ -308,11 +308,18 @@ final class LauncherModel: ObservableObject {
     @Published var stickDeadzone: Double = 0.12
     @Published var gyroMode: Int = 0
     @Published var gyroSens: Double = 1.0
+    // Per-axis overrides for the figure above. Zero is not a sensitivity here,
+    // it is the absence of one: the engine reads it as "this axis has nothing
+    // of its own, use the common number" (IN_AxisSens). So zero must never be
+    // something a slider can be dragged to -- see `gyroSplitAxes`.
+    @Published var gyroYawSens: Double = 0
+    @Published var gyroPitchSens: Double = 0
     // Whether a sensor hands its axes over the way the documentation says is
     // not something any code here can find out: a driver that has one mirrored
     // looks exactly like one that does not until somebody turns and watches the
-    // view go the other way. So the player decides. One switch covers both the
-    // controller's sensor and the iPad's -- they are read through the same path.
+    // view go the other way. So the player decides. These two are the
+    // controller's alone now: the iPad's sensor is read through a different
+    // path and carries its own pair, `touchGyroInvert*`.
     @Published var gyroInvertYaw: Bool = false
     @Published var gyroInvertPitch: Bool = false
     // Where the horizontal half of the gyro comes from: 0 the pad turning flat,
@@ -334,8 +341,20 @@ final class LauncherModel: ObservableObject {
     @Published var triggerHard: Double = 0.75
     @Published var touchControls: Int = 0   // automatic: follows the hand, see ios_touch.m
     @Published var touchLookSens: Double = 1.0
-    @Published var touchGyro: Bool = false
+    @Published var touchLookYawSens: Double = 0
+    @Published var touchLookPitchSens: Double = 0
+    // Three states, not two: 0 off, 1 only while no controller is connected --
+    // which is all it ever used to do, and what a config already carrying
+    // `in_touchGyro 1` still means -- and 2 always, adding to the controller's
+    // gyro instead of standing in for it. It was carried here as a Bool for a
+    // while after the engine grew the third state, and that quietly turned a
+    // player's 2 back into a 1 the first time the launcher saved anything.
+    @Published var touchGyro: Int = 0
     @Published var touchGyroSens: Double = 1.0
+    @Published var touchGyroYawSens: Double = 0
+    @Published var touchGyroPitchSens: Double = 0
+    @Published var touchGyroInvertYaw: Bool = false
+    @Published var touchGyroInvertPitch: Bool = false
     @Published var moveExpo: Double = 0.15
 
     // Sound
@@ -354,6 +373,67 @@ final class LauncherModel: ObservableObject {
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
+
+    // MARK: - Раздельные оси
+
+    /// Whether a group of sensitivities has its two axes set apart, and the
+    /// switch that sets them apart. Three groups have the pair: the
+    /// controller's gyro, the iPad's, and looking about with a finger.
+    ///
+    /// There is no engine key behind these and there must not be one. The
+    /// engine already answers the question -- a per-axis key holding zero means
+    /// that axis has nothing of its own and falls through to the common figure
+    /// (IN_AxisSens) -- so "are they apart" is exactly "is either of them
+    /// non-zero", and it reads back out of the config on the next launch
+    /// without anything having to be stored to say so. A key of our own would
+    /// be a second copy of that answer, free to drift out of step with it.
+    ///
+    /// Turning the switch on seeds both axes from the common figure rather than
+    /// from some default, so what changes at that moment is the screen and not
+    /// the way the game feels under the hands. Turning it off cannot do the
+    /// same in reverse -- two numbers do not collapse into one without throwing
+    /// one of them away -- so it clears the pair, and the common slider comes
+    /// back showing, as it always did, the figure that is now in force. Nothing
+    /// is hidden either way: whatever slider is on screen is what is applied.
+    var gyroSplitAxes: Bool {
+        get { splitAxes(gyroYawSens, gyroPitchSens) }
+        set { setSplitAxes(newValue, common: \.gyroSens,
+                           yaw: \.gyroYawSens, pitch: \.gyroPitchSens) }
+    }
+
+    var touchGyroSplitAxes: Bool {
+        get { splitAxes(touchGyroYawSens, touchGyroPitchSens) }
+        set { setSplitAxes(newValue, common: \.touchGyroSens,
+                           yaw: \.touchGyroYawSens, pitch: \.touchGyroPitchSens) }
+    }
+
+    var touchLookSplitAxes: Bool {
+        get { splitAxes(touchLookYawSens, touchLookPitchSens) }
+        set { setSplitAxes(newValue, common: \.touchLookSens,
+                           yaw: \.touchLookYawSens, pitch: \.touchLookPitchSens) }
+    }
+
+    private func splitAxes(_ yaw: Double, _ pitch: Double) -> Bool {
+        yaw > 0 || pitch > 0
+    }
+
+    private func setSplitAxes(_ on: Bool,
+                              common: ReferenceWritableKeyPath<LauncherModel, Double>,
+                              yaw: ReferenceWritableKeyPath<LauncherModel, Double>,
+                              pitch: ReferenceWritableKeyPath<LauncherModel, Double>) {
+        guard on else {
+            self[keyPath: yaw] = 0
+            self[keyPath: pitch] = 0
+            return
+        }
+
+        // Only an axis that has nothing of its own is seeded. Coming back to a
+        // group that was already split has to find the numbers that were left
+        // there, not the common figure written over them.
+        let seed = self[keyPath: common]
+        if self[keyPath: yaw] <= 0 { self[keyPath: yaw] = seed }
+        if self[keyPath: pitch] <= 0 { self[keyPath: pitch] = seed }
+    }
 
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
@@ -404,7 +484,17 @@ final class LauncherModel: ObservableObject {
     /// which files an engine build refuses to start without -- and each section
     /// of the Data tab asks its own set. What is left here is the one question
     /// the rest of the launcher asks: can the game be started at all.
-    var canPlay: Bool { IOSBridge_HasGameData() }
+    ///
+    /// The campaign set answers it, not IOSBridge_HasGameData(). That one only
+    /// opens main/pak0.pk3, which is enough for the engine to boot and not
+    /// enough for there to be a campaign -- FS_CheckSPPaks raises a fatal error
+    /// unless sp_pak1 through sp_pak4 are all there, so offering Play with pak0
+    /// alone offers a crash on startup. The Data tab already refuses to call
+    /// that set complete; the footer and the Play block now agree with it.
+    /// The fallback keeps the old answer for the moment before the first scan.
+    var canPlay: Bool {
+        dataSet(.campaign)?.isPlayable ?? IOSBridge_HasGameData()
+    }
 
     init() {
         dataPath = String(cString: IOSBridge_DataPath())
@@ -497,17 +587,26 @@ final class LauncherModel: ObservableObject {
             // player, and the face buttons change the weapon -- the opposite
             // way round from the usual console layout, and on purpose.
             //
-            // Crouching is what a player does while already shooting, so it
-            // belongs under the finger that is already on the trigger: R1 sits
-            // directly above R2, and ducking no longer costs the thumb its hold
-            // on the look stick. Jump takes L1 for the symmetry, over the aim
-            // trigger. Changing weapon is the opposite kind of act -- it
-            // happens between fights, not during one -- so it goes to the face
-            // buttons, where the thumb has time to leave the stick for it.
+            // Of the two shoulders R1 is the one under the stronger finger,
+            // the one already lying over the fire trigger, and it goes to jump.
+            // Jump is the timed action of the pair: it has to land on an exact
+            // moment -- a gap, a ledge, a grenade at the feet -- and a jump a
+            // beat late is a jump that did not happen. Crouch is held rather
+            // than aimed. It goes down before the shooting starts and stays
+            // down, which is what a finger resting on L1 does well, and the
+            // right hand is left free to keep firing while it is held. This is
+            // the way round it was played on the device; the first pass had the
+            // two swapped, on the reasoning that crouch belongs under the
+            // trigger finger, and that turned out to be the wrong half of the
+            // pair to spend the good finger on.
+            //
+            // Changing weapon is the opposite kind of act -- it happens between
+            // fights, not during one -- so it goes to the face buttons, where
+            // the thumb has time to leave the stick for it.
             "PAD0_RIGHTTRIGGER":      "+attack",
             "PAD0_LEFTTRIGGER":       "+zoom",
-            "PAD0_RIGHTSHOULDER":     "+movedown",   // R1 -- crouch, over the trigger
-            "PAD0_LEFTSHOULDER":      "+moveup",     // L1 -- jump, over the aim
+            "PAD0_RIGHTSHOULDER":     "+moveup",     // R1 -- jump, over the trigger
+            "PAD0_LEFTSHOULDER":      "+movedown",   // L1 -- crouch, over the aim
 
             "PAD0_A":                 "weapprev",    // Cross  -- previous weapon
             "PAD0_B":                 "weapnext",    // Circle -- next weapon
@@ -557,7 +656,7 @@ final class LauncherModel: ObservableObject {
     /// `in_tuningVersion` could not be read back before the engine was up it
     /// fired on every single launch instead of once. Each bump now names the
     /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
-    private static let tuningVersion = 4
+    private static let tuningVersion = 5
 
     /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
     /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
@@ -604,6 +703,8 @@ final class LauncherModel: ObservableObject {
         stickExpo        = cvarValue("in_stickExpo", stickExpo)
         stickDeadzone    = cvarValue("joy_threshold", stickDeadzone)
         gyroSens         = cvarValue("in_gyroSens", gyroSens)
+        gyroYawSens      = cvarValue("in_gyroYawSens", gyroYawSens)
+        gyroPitchSens    = cvarValue("in_gyroPitchSens", gyroPitchSens)
         rumble           = cvarValue("in_rumble", rumble)
         triggerHard      = cvarValue("in_triggerHard", triggerHard)
         fov              = cvarValue("cg_fov", fov)
@@ -612,17 +713,24 @@ final class LauncherModel: ObservableObject {
         gyroMode         = Int(cvarValue("in_gyro", Double(gyroMode)))
         gyroYawSource    = Int(cvarValue("in_gyroYawSource", Double(gyroYawSource)))
         touchControls    = Int(cvarValue("in_touchControls", Double(touchControls)))
+        // Three states since the iPad's gyro stopped standing down for the
+        // controller's. Read as a number, or a config saying 2 comes back as a
+        // 1 and the next save writes the player's choice away.
+        touchGyro        = Int(cvarValue("in_touchGyro", Double(touchGyro)))
         maxFPS           = Int(cvarValue("com_maxfps", Double(maxFPS)))
         skill            = Int(cvarValue("g_gameskill", Double(skill)))
 
         touchLookSens    = cvarValue("in_touchLookSens", touchLookSens)
+        touchLookYawSens = cvarValue("in_touchLookYawSens", touchLookYawSens)
+        touchLookPitchSens = cvarValue("in_touchLookPitchSens", touchLookPitchSens)
         touchGyroSens    = cvarValue("in_touchGyroSens", touchGyroSens)
+        touchGyroYawSens = cvarValue("in_touchGyroYawSens", touchGyroYawSens)
+        touchGyroPitchSens = cvarValue("in_touchGyroPitchSens", touchGyroPitchSens)
         moveExpo         = cvarValue("in_moveExpo", moveExpo)
         volume           = cvarValue("s_volume", volume)
         musicVolume      = cvarValue("s_musicvolume", musicVolume)
         crosshairSize    = cvarValue("cg_crosshairSize", crosshairSize)
 
-        touchGyro        = cvarValue("in_touchGyro", touchGyro ? 1 : 0) != 0
         autoSwitch       = cvarValue("cg_autoswitch", autoSwitch ? 1 : 0) != 0
         viewBob          = cvarValue("cg_bobup", viewBob ? 1 : 0) != 0
         perfHud          = cvarValue("r_perfHud", perfHud ? 1 : 0) != 0
@@ -632,6 +740,8 @@ final class LauncherModel: ObservableObject {
         invertLook       = cvarValue("in_invertLook", invertLook ? 1 : 0) != 0
         gyroInvertYaw    = cvarValue("in_gyroInvertYaw", gyroInvertYaw ? 1 : 0) != 0
         gyroInvertPitch  = cvarValue("in_gyroInvertPitch", gyroInvertPitch ? 1 : 0) != 0
+        touchGyroInvertYaw   = cvarValue("in_touchGyroInvertYaw", touchGyroInvertYaw ? 1 : 0) != 0
+        touchGyroInvertPitch = cvarValue("in_touchGyroInvertPitch", touchGyroInvertPitch ? 1 : 0) != 0
         moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
         adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
         rumbleImpact     = cvarValue("cg_rumbleImpact", rumbleImpact ? 1 : 0) != 0
@@ -676,6 +786,20 @@ final class LauncherModel: ObservableObject {
             bindings["PAD0_LEFTSHOULDER"] = "+moveup"
             bindings["PAD0_A"] = "weapprev"
             bindings["PAD0_B"] = "weapnext"
+        }
+
+        // 5: jump and crouch changed places on the shoulders, after the pair
+        // was played on the device the way version 4 shipped it. Only for a
+        // player carrying exactly that pair -- anyone who put something else on
+        // either shoulder chose it, and this is a change of our mind, not
+        // theirs. A config older than 4 takes the bump above first, which leaves
+        // it holding exactly the pair this one looks for, so it arrives at the
+        // same layout a fresh install would.
+        if stored < 5,
+           bindings["PAD0_RIGHTSHOULDER"] == "+movedown",
+           bindings["PAD0_LEFTSHOULDER"] == "+moveup" {
+            bindings["PAD0_RIGHTSHOULDER"] = "+moveup"
+            bindings["PAD0_LEFTSHOULDER"] = "+movedown"
         }
 
         // The crosshair shape is seeded, not owned. There is no crosshair
@@ -756,8 +880,14 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_stickExpo", String(format: "%.2f", stickExpo))
         IOSBridge_SetCvar("in_moveExpo", String(format: "%.2f", moveExpo))
         IOSBridge_SetCvar("in_touchLookSens", String(format: "%.2f", touchLookSens))
-        IOSBridge_SetCvar("in_touchGyro", touchGyro ? "1" : "0")
+        IOSBridge_SetCvar("in_touchLookYawSens", String(format: "%.2f", touchLookYawSens))
+        IOSBridge_SetCvar("in_touchLookPitchSens", String(format: "%.2f", touchLookPitchSens))
+        IOSBridge_SetCvar("in_touchGyro", "\(touchGyro)")
         IOSBridge_SetCvar("in_touchGyroSens", String(format: "%.2f", touchGyroSens))
+        IOSBridge_SetCvar("in_touchGyroYawSens", String(format: "%.2f", touchGyroYawSens))
+        IOSBridge_SetCvar("in_touchGyroPitchSens", String(format: "%.2f", touchGyroPitchSens))
+        IOSBridge_SetCvar("in_touchGyroInvertYaw", touchGyroInvertYaw ? "1" : "0")
+        IOSBridge_SetCvar("in_touchGyroInvertPitch", touchGyroInvertPitch ? "1" : "0")
 
         IOSBridge_SetCvar("s_volume", String(format: "%.2f", volume))
         IOSBridge_SetCvar("s_musicvolume", String(format: "%.2f", musicVolume))
@@ -780,6 +910,8 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")
         IOSBridge_SetCvar("in_gyroSens", String(format: "%.2f", gyroSens))
+        IOSBridge_SetCvar("in_gyroYawSens", String(format: "%.2f", gyroYawSens))
+        IOSBridge_SetCvar("in_gyroPitchSens", String(format: "%.2f", gyroPitchSens))
         IOSBridge_SetCvar("in_gyroYawSource", "\(gyroYawSource)")
         IOSBridge_SetCvar("in_gyroInvertYaw", gyroInvertYaw ? "1" : "0")
         IOSBridge_SetCvar("in_gyroInvertPitch", gyroInvertPitch ? "1" : "0")

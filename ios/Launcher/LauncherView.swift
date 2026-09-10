@@ -20,7 +20,7 @@ struct LauncherView: View {
     @ObservedObject var model: LauncherModel
     @StateObject private var pad = PadInput()
     @State private var scope = PadScope()
-    @State private var tab = 0
+    @State private var tab: Int
     @State private var language = Loc.current
 
     /// The footer is a screen of its own as far as the pad is concerned. It
@@ -29,7 +29,31 @@ struct LauncherView: View {
     /// instead of moving its own cursor to the same strokes.
     @State private var footerScope = PadScope()
 
+    /// How far the footer's fill runs on past the row of content it holds --
+    /// the home indicator's inset, read once the window exists. See `footer`.
+    @State private var bottomInset: CGFloat = 0
+
     private static let tabCount = 4
+
+    /// The tab the launcher opens on is decided here rather than being a
+    /// constant on `tab`, because the model is built before the view is and by
+    /// this point it has already scanned the folder: the answer is known, and a
+    /// starting value chosen without it would be a guess corrected a frame later.
+    ///
+    /// The campaign set decides, not `canPlay`. `canPlay` asks only whether
+    /// pak0.pk3 is there, which is enough for the engine to start and not enough
+    /// for there to be a campaign to start -- with pak0 alone the Campaign tab
+    /// is twenty-six missions whose maps do not exist. `isPlayable` on the
+    /// campaign set asks the question the tab is actually about, so a player
+    /// whose copy is half finished still lands on Data, where the checklist
+    /// tells them which files are still missing.
+    init(model: LauncherModel) {
+        self.model = model
+
+        let campaignReady = model.dataSet(.campaign)?.isPlayable ?? false
+        // The Picker's tags, in the order the tabs are written below.
+        _tab = State(initialValue: campaignReady ? 1 : 0)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,7 +101,10 @@ struct LauncherView: View {
         // The poll runs only while the launcher is up. It is put over the game
         // and taken down again, and a timer left behind would go on reading the
         // pad that is by then being used to play with.
-        .onAppear { pad.start() }
+        .onAppear {
+            pad.start()
+            bottomInset = LauncherView.safeAreaBottom()
+        }
         .onDisappear { pad.stop() }
         .onReceive(pad.strokes) { key in
             if pad.isActive(footerScope) {
@@ -221,12 +248,48 @@ struct LauncherView: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, Space.xl)
-        .padding(.vertical, Space.m)
+        // Not the same number top and bottom, so that what is seen is.
+        //
+        // The launcher lays out inside the safe area, but the bar's fill runs on
+        // under the home indicator to the edge of the glass -- without that it
+        // would end on a strip of background and stop being the edge of the
+        // screen. So the panel the eye measures is taller at the bottom than the
+        // row the content sits in, by exactly the inset, and content centred in
+        // the row sits above the middle of the panel by half of it. Twelve above
+        // and thirty-seven below is what that came to, and it is what was being
+        // seen as the elements standing high in the bar.
+        //
+        // Here the lower gap is counted as it is drawn -- padding plus the strip
+        // the fill spends under the indicator -- and the upper one is made equal
+        // to it. The bar keeps its height to within a point: the twelve that
+        // came off the bottom went to the top.
+        .padding(.top, footerGap)
+        .padding(.bottom, footerGap - bottomInset)
         .background(alignment: .top) {
             Theme.card
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(Divider(), alignment: .top)
         }
+    }
+
+    /// The gap over the footer's content, and the gap under it once the strip
+    /// the fill spends under the home indicator is counted in. The floor is
+    /// there for a screen with no inset to give away -- an iPad with a button,
+    /// the simulator's older models -- where the bar falls back to the padding
+    /// it always had, top and bottom.
+    private var footerGap: CGFloat { max(Space.m, bottomInset) }
+
+    /// The safe area at the bottom, taken from the window because it can no
+    /// longer be seen from inside the launcher: the stack is laid out within the
+    /// safe area already, so a GeometryReader anywhere in it reports zero. Read
+    /// on appear rather than at every redraw -- the window exists by then, and
+    /// the number does not move while the launcher is up.
+    private static func safeAreaBottom() -> CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
     }
 
     /// Two words, rather than the segmented control that was here.
@@ -318,14 +381,22 @@ struct LauncherView: View {
     // the player is reading while they copy files in. Shortening alone would
     // have flattened it towards a bar -- 168x56 is three to one -- so the width
     // came down with the height and the proportion held: 2.4 to 1 against the
-    // old 2.2, against the four to one of the capsule this replaced. The radius
-    // is a fifth of the short side, which is enough to take the hardness off a
-    // corner and not enough to start rounding the block back into a lozenge.
-    // Twenty points of height went back to the list, and another sixteen came
-    // from moving the pad hint out from under the button.
+    // old 2.2, against the four to one of the capsule this replaced. Twenty
+    // points of height went back to the list, and another sixteen came from
+    // moving the pad hint out from under the button.
+    //
+    // The radius went from a fifth of the short side to a fourteenth. Ten
+    // rounded the corner far enough that the block read as a rounded rectangle
+    // -- which is what every card, row and panel on this screen already is --
+    // and the one thing here that is not a panel should not be cut like one.
+    // Four takes the raw point off the corner and no more: near enough to
+    // square that the shape reads as a block, and not so square that a fill
+    // this size looks like a crop out of something larger. The pad's focus ring
+    // is drawn from the same number, six points out, so the cursor keeps the
+    // button's shape rather than tracing a softer one around it.
     private static let tileWidth: CGFloat = 136
     private static let tileHeight: CGFloat = 56
-    private static let tileRadius: CGFloat = 10
+    private static let tileRadius: CGFloat = 4
 
     /// Red, not the launcher's orange.
     ///
@@ -346,9 +417,32 @@ struct LauncherView: View {
         Button {
             model.play()
         } label: {
+            // Cut from the same type as the header, because it is the other
+            // end of the same screen. Eighteen points of bold body type was the
+            // system's voice, and it made the one thing the launcher exists to
+            // offer look like a control borrowed off a settings page and set
+            // down under a wordmark in condensed capitals. Condensed, heavy,
+            // capitals, letters opened up: that is the motif the header already
+            // established and the player already likes, and the button now
+            // speaks from inside it rather than from beside it.
+            //
+            // Twenty rather than eighteen because the condensed cut gives back
+            // the width the larger size costs: КАМПАНИЯ comes out at about 103
+            // points and the longer CAMPAIGN at about 91, both inside the 112
+            // the block leaves between its paddings, so each language is set at
+            // full size and minimumScaleFactor below is still only insurance.
+            // Black was tried, being the wordmark's own weight, and left the
+            // Russian two points off that limit -- a heavier weight buys nothing
+            // here that the capitals have not already bought, and it would put
+            // the next translation into the scale factor. Tracking 1.5 against
+            // the wordmark's 1: capitals want more air the smaller they are set,
+            // and this lands the label between the wordmark's tight lock-up and
+            // the wide-spaced line above it, which is where a button belongs.
             Text(L("Кампания"))
-                .font(.system(size: 18, weight: .bold))
-                .tracking(0.5)
+                .font(.system(size: 20, weight: .heavy))
+                .fontWidth(.condensed)
+                .textCase(.uppercase)
+                .tracking(1.5)
                 .lineLimit(1)
                 // Insurance for a language whose word for this is longer than
                 // either of the two the launcher speaks.
@@ -1459,10 +1553,14 @@ private struct ControlsView: View {
         // The controller, down the left.
         case moveDigital, yaw, pitch, deadzone, invertLook
         case rumble, rumbleImpact, rumbleImpactScale, adaptive
-        case gyroMode, gyroSens, gyroInvertYaw, gyroInvertPitch, gyroYawSource
+        case gyroMode, gyroSplit, gyroSens, gyroYawSens, gyroPitchSens
+        case gyroInvertYaw, gyroInvertPitch, gyroYawSource
         case test, binds, reset
         // Everything else, down the right.
-        case touchControls, touchLookSens, touchGyro, touchGyroSens
+        case touchControls
+        case touchLookSplit, touchLookSens, touchLookYawSens, touchLookPitchSens
+        case touchGyro, touchGyroSplit, touchGyroSens, touchGyroYawSens, touchGyroPitchSens
+        case touchGyroInvertYaw, touchGyroInvertPitch
         case volume, music
         case autoSwitch, viewBob, crosshair
         case perfHud, perfLog, padLog
@@ -1489,10 +1587,24 @@ private struct ControlsView: View {
                 // It scales the kick this switch turns on, so with the switch
                 // off there is nothing for it to be a scale of.
                 return model.rumble > 0 && model.rumbleImpact
-            case .gyroSens, .gyroInvertYaw, .gyroInvertPitch, .gyroYawSource:
+            case .gyroSplit, .gyroInvertYaw, .gyroInvertPitch, .gyroYawSource:
                 return model.gyroMode != 0
+            // The common slider and the pair that replaces it are the same row
+            // of the page in two states, so exactly one of them is ever drawn.
+            case .gyroSens:
+                return model.gyroMode != 0 && !model.gyroSplitAxes
+            case .gyroYawSens, .gyroPitchSens:
+                return model.gyroMode != 0 && model.gyroSplitAxes
+            case .touchLookSens:
+                return !model.touchLookSplitAxes
+            case .touchLookYawSens, .touchLookPitchSens:
+                return model.touchLookSplitAxes
+            case .touchGyroSplit, .touchGyroInvertYaw, .touchGyroInvertPitch:
+                return model.touchGyro != 0
             case .touchGyroSens:
-                return model.touchGyro
+                return model.touchGyro != 0 && !model.touchGyroSplitAxes
+            case .touchGyroYawSens, .touchGyroPitchSens:
+                return model.touchGyro != 0 && model.touchGyroSplitAxes
             default:
                 return true
             }
@@ -1622,13 +1734,46 @@ private struct ControlsView: View {
                 }
 
                 if model.gyroMode != 0 {
+                    // One switch, not two extra sliders beside the one that is
+                    // already there. The per-axis keys mean "nothing set here"
+                    // at zero, which is not a position a slider can offer:
+                    // a player who set one and then reached for the common
+                    // figure would find it doing nothing, with no way to see
+                    // why. So the two states are drawn as two states, and the
+                    // switch decides which of them is on the page.
                     Field {
-                        SliderRow(title: L("Чувствительность гироскопа"),
-                                  value: $model.gyroSens,
-                                  range: 0.2...3.0, step: 0.1,
-                                  readout: String(format: "%.1f", model.gyroSens))
-                            .id(Row.gyroSens)
-                            .padFocus(focused(.gyroSens))
+                        Toggle(L("Раздельно по осям"), isOn: $model.gyroSplitAxes)
+                            .id(Row.gyroSplit)
+                            .padFocus(focused(.gyroSplit))
+                    }
+
+                    if model.gyroSplitAxes {
+                        Field {
+                            SliderRow(title: L("Чувствительность по горизонтали"),
+                                      value: $model.gyroYawSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.gyroYawSens))
+                                .id(Row.gyroYawSens)
+                                .padFocus(focused(.gyroYawSens))
+                        }
+
+                        Field {
+                            SliderRow(title: L("Чувствительность по вертикали"),
+                                      value: $model.gyroPitchSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.gyroPitchSens))
+                                .id(Row.gyroPitchSens)
+                                .padFocus(focused(.gyroPitchSens))
+                        }
+                    } else {
+                        Field {
+                            SliderRow(title: L("Чувствительность гироскопа"),
+                                      value: $model.gyroSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.gyroSens))
+                                .id(Row.gyroSens)
+                                .padFocus(focused(.gyroSens))
+                        }
                     }
 
                     // Which way a gyro should turn the view is not something
@@ -1641,7 +1786,7 @@ private struct ControlsView: View {
                             .padFocus(focused(.gyroInvertYaw))
                     }
 
-                    Field(note: L("Действует и на гироскоп контроллера, и на гироскоп планшета.")) {
+                    Field(note: L("Только гироскоп контроллера — у планшета свои переключатели.")) {
                         Toggle(L("Инверсия гироскопа по вертикали"), isOn: $model.gyroInvertPitch)
                             .id(Row.gyroInvertPitch)
                             .padFocus(focused(.gyroInvertPitch))
@@ -1702,33 +1847,118 @@ private struct ControlsView: View {
                     .id(Row.touchControls)
                 }
 
-                Field(note: L("Насколько поворачивается вид за движение пальца по правой половине экрана.")) {
-                    SliderRow(title: L("Чувствительность обзора"),
-                              value: $model.touchLookSens,
-                              range: 0.3...3.0, step: 0.1,
-                              readout: String(format: "%.1f", model.touchLookSens))
-                        .id(Row.touchLookSens)
-                        .padFocus(focused(.touchLookSens))
+                Note(L("note.menu"))
+            }
+
+            // Looking about with a finger and tilting the iPad are two
+            // different ways of aiming that happen to share a screen, and until
+            // now they shared a list as well -- with the pad's own gyro
+            // settings a column away, and the iPad's crowded in under the
+            // touch buttons. Each has its own heading now, and each carries
+            // everything that belongs to it.
+            Panel(L("Обзор пальцем")) {
+                Note(L("Насколько поворачивается вид за движение пальца по правой половине экрана."))
+
+                Field {
+                    Toggle(L("Раздельно по осям"), isOn: $model.touchLookSplitAxes)
+                        .id(Row.touchLookSplit)
+                        .padFocus(focused(.touchLookSplit))
                 }
 
-                Field(note: model.touchGyro ? nil : L("note.gyro")) {
-                    Toggle(L("Гироскоп планшета"), isOn: $model.touchGyro)
-                        .id(Row.touchGyro)
-                        .padFocus(focused(.touchGyro))
-                }
+                if model.touchLookSplitAxes {
+                    Field {
+                        SliderRow(title: L("Чувствительность по горизонтали"),
+                                  value: $model.touchLookYawSens,
+                                  range: 0.3...3.0, step: 0.1,
+                                  readout: String(format: "%.1f", model.touchLookYawSens))
+                            .id(Row.touchLookYawSens)
+                            .padFocus(focused(.touchLookYawSens))
+                    }
 
-                if model.touchGyro {
-                    Field(note: L("note.gyro")) {
-                        SliderRow(title: L("Чувствительность гироскопа"),
-                                  value: $model.touchGyroSens,
-                                  range: 0.2...3.0, step: 0.1,
-                                  readout: String(format: "%.1f", model.touchGyroSens))
-                            .id(Row.touchGyroSens)
-                            .padFocus(focused(.touchGyroSens))
+                    Field {
+                        SliderRow(title: L("Чувствительность по вертикали"),
+                                  value: $model.touchLookPitchSens,
+                                  range: 0.3...3.0, step: 0.1,
+                                  readout: String(format: "%.1f", model.touchLookPitchSens))
+                            .id(Row.touchLookPitchSens)
+                            .padFocus(focused(.touchLookPitchSens))
+                    }
+                } else {
+                    Field {
+                        SliderRow(title: L("Чувствительность обзора"),
+                                  value: $model.touchLookSens,
+                                  range: 0.3...3.0, step: 0.1,
+                                  readout: String(format: "%.1f", model.touchLookSens))
+                            .id(Row.touchLookSens)
+                            .padFocus(focused(.touchLookSens))
                     }
                 }
+            }
 
-                Note(L("note.menu"))
+            Panel(L("Гироскоп планшета")) {
+                Field(note: L("note.gyro")) {
+                    ChoiceRow(title: L("Режим"),
+                              selection: $model.touchGyro,
+                              focused: focused(.touchGyro)) {
+                        Text(L("Выкл")).tag(0)
+                        Text(L("Без контроллера")).tag(1)
+                        Text(L("Всегда")).tag(2)
+                    }
+                    .id(Row.touchGyro)
+                }
+
+                if model.touchGyro != 0 {
+                    Field {
+                        Toggle(L("Раздельно по осям"), isOn: $model.touchGyroSplitAxes)
+                            .id(Row.touchGyroSplit)
+                            .padFocus(focused(.touchGyroSplit))
+                    }
+
+                    if model.touchGyroSplitAxes {
+                        Field {
+                            SliderRow(title: L("Чувствительность по горизонтали"),
+                                      value: $model.touchGyroYawSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.touchGyroYawSens))
+                                .id(Row.touchGyroYawSens)
+                                .padFocus(focused(.touchGyroYawSens))
+                        }
+
+                        Field {
+                            SliderRow(title: L("Чувствительность по вертикали"),
+                                      value: $model.touchGyroPitchSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.touchGyroPitchSens))
+                                .id(Row.touchGyroPitchSens)
+                                .padFocus(focused(.touchGyroPitchSens))
+                        }
+                    } else {
+                        Field {
+                            SliderRow(title: L("Чувствительность гироскопа"),
+                                      value: $model.touchGyroSens,
+                                      range: 0.2...3.0, step: 0.1,
+                                      readout: String(format: "%.1f", model.touchGyroSens))
+                                .id(Row.touchGyroSens)
+                                .padFocus(focused(.touchGyroSens))
+                        }
+                    }
+
+                    // The iPad is held differently from a pad and its sensor is
+                    // read down a different path, so which way each axis comes
+                    // out is a separate question from the controller's and gets
+                    // a separate pair of switches.
+                    Field {
+                        Toggle(L("Инверсия по горизонтали"), isOn: $model.touchGyroInvertYaw)
+                            .id(Row.touchGyroInvertYaw)
+                            .padFocus(focused(.touchGyroInvertYaw))
+                    }
+
+                    Field {
+                        Toggle(L("Инверсия по вертикали"), isOn: $model.touchGyroInvertPitch)
+                            .id(Row.touchGyroInvertPitch)
+                            .padFocus(focused(.touchGyroInvertPitch))
+                    }
+                }
             }
 
             Panel(L("Звук")) {
@@ -1829,15 +2059,26 @@ private struct ControlsView: View {
         case .rumbleImpact:  return .flag(\.rumbleImpact)
         case .rumbleImpactScale: return .range(\.rumbleImpactScale, 0...2, 0.05)
         case .adaptive:      return .flag(\.adaptiveTriggers)
+        case .gyroSplit:     return .flag(\.gyroSplitAxes)
         case .gyroSens:      return .range(\.gyroSens, 0.2...3.0, 0.1)
+        case .gyroYawSens:   return .range(\.gyroYawSens, 0.2...3.0, 0.1)
+        case .gyroPitchSens: return .range(\.gyroPitchSens, 0.2...3.0, 0.1)
         case .gyroInvertYaw:   return .flag(\.gyroInvertYaw)
         case .gyroInvertPitch: return .flag(\.gyroInvertPitch)
         case .gyroYawSource: return .choice(\.gyroYawSource, [0, 1, 2])
         case .gyroMode:      return .choice(\.gyroMode, [0, 1, 2])
         case .touchControls: return .choice(\.touchControls, [0, 1, 2])
+        case .touchLookSplit: return .flag(\.touchLookSplitAxes)
         case .touchLookSens: return .range(\.touchLookSens, 0.3...3.0, 0.1)
-        case .touchGyro:     return .flag(\.touchGyro)
+        case .touchLookYawSens:   return .range(\.touchLookYawSens, 0.3...3.0, 0.1)
+        case .touchLookPitchSens: return .range(\.touchLookPitchSens, 0.3...3.0, 0.1)
+        case .touchGyro:     return .choice(\.touchGyro, [0, 1, 2])
+        case .touchGyroSplit: return .flag(\.touchGyroSplitAxes)
         case .touchGyroSens: return .range(\.touchGyroSens, 0.2...3.0, 0.1)
+        case .touchGyroYawSens:   return .range(\.touchGyroYawSens, 0.2...3.0, 0.1)
+        case .touchGyroPitchSens: return .range(\.touchGyroPitchSens, 0.2...3.0, 0.1)
+        case .touchGyroInvertYaw:   return .flag(\.touchGyroInvertYaw)
+        case .touchGyroInvertPitch: return .flag(\.touchGyroInvertPitch)
         case .volume:        return .range(\.volume, 0...1, 0.05)
         case .music:         return .range(\.musicVolume, 0...1, 0.05)
         case .autoSwitch:    return .flag(\.autoSwitch)

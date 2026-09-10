@@ -49,7 +49,7 @@ extern void IOSTouch_QueueKey( int key, int down );
 extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
 extern void IOSTouch_QueueCommand( const char *command, int key );
-extern float IOSTouch_LookSensitivity( void );
+extern float IOSTouch_LookSensitivity( int pitch );
 extern int  IOSTouch_ControllerConnected( void );
 extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
@@ -608,12 +608,20 @@ static CGPoint menuCursor = { 0.0f, 0.0f };
 		if ( touch == self.lookTouch ) {
 			// Carry the fraction, or a slow drag is rounded away to nothing and
 			// fine aim by touch becomes impossible.
-			float sens = IOSTouch_LookSensitivity();
+			//
+			// A sensitivity per axis. The thumb has room to sweep the width of the
+			// screen sideways and barely an inch up and down before the wrist runs
+			// out, so the two directions were never asking for the same number; the
+			// horizontal one is applied to x and the vertical one to y, each to its
+			// own half of the remainder, which keeps the carried fractions apart
+			// exactly as they already were.
+			float yawSens = IOSTouch_LookSensitivity( 0 );
+			float pitchSens = IOSTouch_LookSensitivity( 1 );
 			int dx, dy;
 
 			self.lookRemainder = CGPointMake(
-				self.lookRemainder.x + ( p.x - self.lookLast.x ) * sens,
-				self.lookRemainder.y + ( p.y - self.lookLast.y ) * sens );
+				self.lookRemainder.x + ( p.x - self.lookLast.x ) * yawSens,
+				self.lookRemainder.y + ( p.y - self.lookLast.y ) * pitchSens );
 
 			dx = (int)self.lookRemainder.x;
 			dy = (int)self.lookRemainder.y;

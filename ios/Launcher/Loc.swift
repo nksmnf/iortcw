@@ -135,11 +135,14 @@ enum Loc {
         "Инверсия гироскопа по горизонтали": "Invert gyro horizontally",
         "Инверсия гироскопа по вертикали": "Invert gyro vertically",
         "Горизонталь гироскопа": "Gyro horizontal from",
+        "Раздельно по осям": "Separate axes",
+        "Чувствительность по горизонтали": "Horizontal sensitivity",
+        "Чувствительность по вертикали": "Vertical sensitivity",
         "Разворот": "Yaw",
         "Крен": "Roll",
         "Оба": "Both",
-        "Действует и на гироскоп контроллера, и на гироскоп планшета.":
-            "Applies to the controller's gyro and the iPad's alike.",
+        "Только гироскоп контроллера — у планшета свои переключатели.":
+            "The controller's gyro only -- the iPad has switches of its own.",
         "Выкл": "Off",
         "Всегда": "Always",
         "В прицеле": "While aiming",
@@ -151,6 +154,11 @@ enum Loc {
         "Насколько поворачивается вид за движение пальца по правой половине экрана.":
             "How far the view turns for a given finger movement on the right half of the screen.",
         "Гироскоп планшета": "iPad gyro",
+        "Обзор пальцем": "Finger look",
+        "Режим": "Mode",
+        "Без контроллера": "Without a controller",
+        "Инверсия по горизонтали": "Invert horizontally",
+        "Инверсия по вертикали": "Invert vertically",
         "Звук": "Sound",
         "Громкость": "Volume",
         "Музыка": "Music",
@@ -324,14 +332,16 @@ enum Loc {
 
         "note.gyro": (
             ru: """
-                Доводка прицела наклоном планшета, поверх пальца. Работает \
-                только без контроллера — при подключённом используется его \
-                гироскоп.
+                Доводка прицела наклоном планшета, поверх пальца. «Без \
+                контроллера» — прежнее поведение: с подключённым падом работает \
+                его гироскоп, а этот молчит. «Всегда» держит включёнными оба, и \
+                их вклад складывается.
                 """,
             en: """
-                Fine aim by tilting the iPad, on top of the finger. Only \
-                without a controller -- with one connected its own gyro is used \
-                instead.
+                Fine aim by tilting the iPad, on top of the finger. "Without a \
+                controller" is what it always did: with a pad connected its gyro \
+                takes over and this one stays quiet. "Always" keeps both running \
+                and adds what each of them asks for.
                 """),
 
         "note.diag": (
@@ -403,15 +413,15 @@ enum Loc {
 
         "note.layout": (
             ru: """
-                По умолчанию: R2 — огонь, L2 — прицел, R1 — присесть, L1 — \
-                прыжок, Круг — следующее оружие, Крест — предыдущее, Квадрат — \
+                По умолчанию: R2 — огонь, L2 — прицел, R1 — прыжок, L1 — \
+                присесть, Круг — следующее оружие, Крест — предыдущее, Квадрат — \
                 перезарядка, Треугольник — использовать, L3 — удар ногой, R3 — \
                 спринт. Крестовина ходит, как стрелки на клавиатуре. Свайпы по \
                 тачпаду: вверх-вниз — кратность прицела, влево-вправо — оружие, \
                 тап — предмет.
                 """,
             en: """
-                By default: R2 fire, L2 aim, R1 crouch, L1 jump, Circle next \
+                By default: R2 fire, L2 aim, R1 jump, L1 crouch, Circle next \
                 weapon, Cross previous weapon, Square reload, Triangle use, L3 \
                 kick, R3 sprint. The D-pad walks, like the arrow keys. Touchpad \
                 swipes: up and down change scope magnification, left and right \
