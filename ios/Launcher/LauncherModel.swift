@@ -445,12 +445,16 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_touchControls", "\(touchControls)")
         IOSBridge_SetCvar("in_joystick", "1")
 
-        // Framerate-independent movement. Q3-lineage physics is tied to the
-        // frame rate (the classic 125fps jump), and RTCW's default com_maxfps of
-        // 76 exists to dodge that. Since this is single player, fixing pmove is
-        // the cleaner answer and it makes 120Hz safe.
-        IOSBridge_SetCvar("pmove_fixed", "1")
-        IOSBridge_SetCvar("pmove_msec", "8")
+        // pmove_fixed is deliberately left alone.
+        //
+        // It makes movement frame-rate independent, which is tempting at 120Hz,
+        // but g_active.c applies it to every client -- there is no per-client
+        // switch in this tree, pers.pmoveFixed is read and never set. So turning
+        // it on also runs every AI cast's physics in 8ms steps instead of the
+        // stock single step per think, which is a change to how the game's
+        // characters move that the original never had. Not a trade worth making
+        // for a single-player nicety.
+        IOSBridge_SetCvar("pmove_fixed", "0")
 
         IOSBridge_SetCvar("in_tuningVersion", "\(LauncherModel.tuningVersion)")
 
