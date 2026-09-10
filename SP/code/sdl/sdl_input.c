@@ -1394,6 +1394,34 @@ static void IN_GamepadSticks( void )
 			(int)( rx * yawScale ), 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
 			(int)( ry * pitchScale ), 0, NULL );
+
+		// The digital path has had this readout for a while; analogue never did,
+		// and the one report that needed it came from a player in this mode
+		// saying the left stick turned his view. Both sticks are printed beside
+		// what this function queues AND what is actually sitting on the axes,
+		// because those two answer different questions: if the look axes carry a
+		// value while the right stick is at rest, something other than this
+		// function is writing them, and no amount of reading the stick code
+		// would have found it.
+		if ( in_debugPad && in_debugPad->integer ) {
+			static int nextAnalogLog;
+
+			if ( Sys_Milliseconds() >= nextAnalogLog ) {
+				nextAnalogLog = Sys_Milliseconds() + 250;
+				Com_Printf( "pad: analogue L %.2f %.2f R %.2f %.2f | sent side=%d fwd=%d yaw=%d pitch=%d"
+					" | live side=%d fwd=%d yaw=%d pitch=%d gyro=%d,%d touchOwns=%d\n",
+					lx, ly, rx, ry,
+					(int)( lx * sideScale ), (int)( ly * forwardScale ),
+					(int)( rx * yawScale ), (int)( ry * pitchScale ),
+					cl.joystickAxis[j_side_axis->integer],
+					cl.joystickAxis[j_forward_axis->integer],
+					cl.joystickAxis[j_yaw_axis->integer],
+					cl.joystickAxis[j_pitch_axis->integer],
+					cl.joystickAxis[AXIS_GYRO_YAW],
+					cl.joystickAxis[AXIS_GYRO_PITCH],
+					IN_TouchOwnsMovement() );
+			}
+		}
 	}
 }
 
