@@ -84,6 +84,12 @@ slower display, not the game running out of time.
 
 static IORTCWDisplayLinkTarget *perfLinkTarget = nil;
 
+// Filled in by the renderer's backend, which is counting these anyway for
+// r_speeds. Declared here rather than routed through refexport_t: the renderer
+// is linked into this binary, and a readout that needs an ABI change is a
+// readout nobody adds.
+extern void R_GetPerfCounters( int *surfaces, int *tris, int *shaders );
+
 /*
 ==============
 IOSPerf_CPUSeconds
@@ -204,9 +210,10 @@ void Sys_IOS_PerfNoteSwap( double ms )
 }
 
 static void IOSPerf_WriteRow( double fps, double avg, double worst, double swap,
-							  double cpu, double mem, int ents )
+							  double cpu, double mem, int ents,
+							  int surfs, int tris, int shaders )
 {
-	char line[256];
+	char line[320];
 
 	if ( !r_perfLog || !r_perfLog->integer ) {
 		if ( perfLogOpen ) {
@@ -225,14 +232,15 @@ static void IOSPerf_WriteRow( double fps, double avg, double worst, double swap,
 		}
 
 		perfLogOpen = qtrue;
-		Q_strncpyz( line, "time,fps,frame_ms,worst_ms,swap_ms,cpu_pct,mem_mb,ents,refresh_hz,maxfps,map\n",
+		Q_strncpyz( line, "time,fps,frame_ms,worst_ms,swap_ms,cpu_pct,mem_mb,ents,refresh_hz,maxfps,surfs,tris,shaders,map\n",
 			sizeof( line ) );
 		FS_Write( line, strlen( line ), perfLogFile );
 	}
 
-	Com_sprintf( line, sizeof( line ), "%.1f,%.1f,%.2f,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%d,%s\n",
+	Com_sprintf( line, sizeof( line ), "%.1f,%.1f,%.2f,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%d,%d,%d,%d,%s\n",
 		(double)Sys_Milliseconds() / 1000.0, fps, avg, worst, swap, cpu, mem, ents,
 		perfRefreshHz, Cvar_VariableIntegerValue( "com_maxfps" ),
+		surfs, tris, shaders,
 		cl.mapname[0] ? cl.mapname : "-" );
 
 	FS_Write( line, strlen( line ), perfLogFile );
@@ -287,6 +295,9 @@ void Sys_IOS_PerfFrame( void )
 		double mem   = IOSPerf_FootprintMB();
 		double cpuNow = IOSPerf_CPUSeconds();
 		int    ents  = ( clc.state == CA_ACTIVE ) ? cl.snap.numEntities : 0;
+		int    surfs = 0, tris = 0, shaders = 0;
+
+		R_GetPerfCounters( &surfs, &tris, &shaders );
 
 		if ( now > perfCpuWallLast ) {
 			perfCpuPercent = 100.0 * ( cpuNow - perfCpuLast ) / ( now - perfCpuWallLast );
@@ -297,11 +308,12 @@ void Sys_IOS_PerfFrame( void )
 		if ( r_perfHud && r_perfHud->integer ) {
 			UIView *parent = perfLabel.superview;
 			CGFloat top = parent ? parent.safeAreaInsets.top : 0.0;
-			CGFloat width = 460.0;
+			CGFloat width = 640.0;
 
 			perfLabel.text = [NSString stringWithFormat:
-				@"%3.0f FPS  %5.1f/%5.1f ms  %3.0f Hz  cpu %3.0f%%  %4.0f MB  ent %3d",
-				fps, avg, worst, perfRefreshHz, perfCpuPercent, mem, ents];
+				@"%3.0f FPS %5.1f/%5.1f ms %3.0f Hz cpu %3.0f%% %4.0f MB  %4d surf %5dk tri  ent %3d",
+				fps, avg, worst, perfRefreshHz, perfCpuPercent, mem,
+				surfs, tris / 1000, ents];
 
 			// Under the safe area rather than at the very edge: on this iPad the
 			// top inset is where the rounded corners eat into the screen.
@@ -310,7 +322,8 @@ void Sys_IOS_PerfFrame( void )
 				top + 4.0f, width, 22.0f );
 		}
 
-		IOSPerf_WriteRow( fps, avg, worst, swap, perfCpuPercent, mem, ents );
+		IOSPerf_WriteRow( fps, avg, worst, swap, perfCpuPercent, mem, ents,
+			surfs, tris, shaders );
 
 		perfWindowStart = now;
 		perfFrames = 0;

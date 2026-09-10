@@ -399,6 +399,40 @@ static void SetViewportAndScissor( void ) {
 }
 
 /*
+==================
+R_NotePerfCounters
+
+Hands the backend's own counters to the platform layer's performance readout.
+
+Deliberately a plain function rather than another entry in refexport_t: the
+renderer is linked into the binary on this platform, the numbers are already
+being counted for r_speeds, and a readout that has to be asked for through the
+refexport ABI is a readout nobody adds.
+==================
+*/
+static int perfDrawSurfs, perfTris, perfShaders;
+
+void R_NotePerfCounters( int surfaces, int tris, int shaders )
+{
+	perfDrawSurfs = surfaces;
+	perfTris = tris;
+	perfShaders = shaders;
+}
+
+void R_GetPerfCounters( int *surfaces, int *tris, int *shaders )
+{
+	if ( surfaces ) {
+		*surfaces = perfDrawSurfs;
+	}
+	if ( tris ) {
+		*tris = perfTris;
+	}
+	if ( shaders ) {
+		*shaders = perfShaders;
+	}
+}
+
+/*
 =================
 RB_BeginDrawingView
 
@@ -895,6 +929,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	oldAtiTess = -1;
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
+	R_NotePerfCounters( numDrawSurfs, backEnd.pc.c_indexes / 3, backEnd.pc.c_shaders );
 
 	for ( i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++ ) {
 		if ( drawSurf->sort == oldSort ) {

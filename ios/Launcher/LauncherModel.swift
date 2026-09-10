@@ -128,10 +128,17 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
             "r_ext_texture_filter_anisotropic": "1",
             "r_ext_max_anisotropy": "16",
 
-            // Geometry. Lower subdivisions means finer curves.
-            "r_subdivisions": "1",
+            // Geometry. Lower subdivisions means finer curves -- and a lot more
+            // of them. 1 is the finest the engine allows and multiplies the
+            // triangles on every arch, rail and stairwell in the game for a
+            // difference nobody can see at arm's length on a tablet; 2 is
+            // already past the point of diminishing returns.
+            "r_subdivisions": "2",
             "r_lodbias": "0",
-            "r_lodCurveError": "999",
+            // 999 switches curve level of detail off outright, so a curved
+            // surface across the map costs what it costs up close. 250 is the
+            // engine's own default and keeps the detail where it is looked at.
+            "r_lodCurveError": "250",
 
             // World
             "r_fastsky": "0",
