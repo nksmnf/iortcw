@@ -71,11 +71,99 @@ endfunction()
 # ---------------------------------------------------------------------------
 # The port's own version, separate from the engine's. The engine is iortcw
 # 1.51d-SP wherever it runs; this number is about the iPadOS build.
-set(IORTCW_PORT_VERSION "0.4.0")
+set(IORTCW_PORT_VERSION "0.5.0")
 
-# Build number: the day it was built. Enough to tell two builds apart, which is
-# all it is for, and it does not need a counter kept anywhere.
-string(TIMESTAMP IORTCW_BUILD_NUMBER "%Y%m%d" UTC)
+# Build number and commit, both read from git.
+#
+# The number used to be the date, which could not do the one job it had: two
+# builds made on the same day -- exactly the pair worth telling apart -- came
+# out identical. The commit count grows with the history instead. Nothing has
+# to be kept in the tree for it, unlike a counter file, which would show up as
+# a local change after every build, and it is derived rather than stored, so
+# the same source always gives the same number.
+#
+# CFBundleVersion has to stay an integer, so the commit itself rides along
+# separately in IORTCWGitHash. The number says which build, the hash says which
+# code.
+find_package(Git QUIET)
+
+# No git -- a source archive, or a machine without it installed -- is not worth
+# failing a configure over. 0 and an empty hash read as "unknown", which is
+# exactly what is known in that case.
+set(IORTCW_BUILD_NUMBER "0")
+set(IORTCW_GIT_HASH "")
+
+if(Git_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-list --count HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _git_count
+        RESULT_VARIABLE _git_result
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+
+# Outside a repository, and in one that has no commits yet, git answers with an
+# error rather than a number; the fallback above then stands.
+if(_git_result EQUAL 0 AND _git_count MATCHES "^[0-9]+$")
+    set(IORTCW_BUILD_NUMBER "${_git_count}")
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE IORTCW_GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+
+    # --no-optional-locks so that looking at the tree does not write to it:
+    # plain git status refreshes and rewrites the index as a side effect, which
+    # is not something a build should be doing to someone's repository.
+    #
+    # Untracked files count as dirty on purpose. The launcher's sources are
+    # globbed, so a file that is in no commit can still be in the binary;
+    # everything a build produces is gitignored and stays out of this.
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" --no-optional-locks status --porcelain
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _git_dirty
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT _git_dirty STREQUAL "")
+        string(APPEND IORTCW_GIT_HASH "-dirty")
+    endif()
+
+    # Both values are read once, while cmake runs. A build tree left to itself
+    # would therefore keep reporting the commit it was generated on, and a
+    # build number that lies is worse than none at all. git rewrites HEAD on a
+    # checkout and appends to logs/HEAD whenever HEAD moves at all, so watching
+    # those two makes the generated build system re-run cmake by itself exactly
+    # when the number changes -- on the next build, before anything is linked.
+    #
+    # An edit that is not committed touches neither file, so -dirty appears at
+    # the next configure rather than at the moment of the edit.
+    # ios/scripts/build-ipa.sh configures on every run, so what ships is never
+    # stale.
+    foreach(_git_file HEAD logs/HEAD)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse --git-path ${_git_file}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_watch
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        # --git-path answers relative to the working directory in a plain
+        # checkout and absolutely in a linked worktree. Reflogs can also be
+        # switched off, in which case logs/HEAD is simply not there.
+        get_filename_component(_git_watch "${_git_watch}"
+            ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(EXISTS "${_git_watch}")
+            set_property(DIRECTORY APPEND PROPERTY
+                CMAKE_CONFIGURE_DEPENDS "${_git_watch}")
+        endif()
+    endforeach()
+endif()
+
+message(STATUS
+    "iORTCW port ${IORTCW_PORT_VERSION}, build ${IORTCW_BUILD_NUMBER} ${IORTCW_GIT_HASH}")
 
 # Version string, mirroring the Makefile's PRODUCT_VERSION
 # ---------------------------------------------------------------------------

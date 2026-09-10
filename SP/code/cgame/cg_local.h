@@ -1776,6 +1776,11 @@ extern vmCvar_t cg_expectedhunkusage;
 
 extern vmCvar_t cg_showAIState;
 
+// Controller rumble. The master volume lives engine side in in_rumble; these
+// only decide what is worth rumbling for.
+extern vmCvar_t cg_rumbleImpact;
+extern vmCvar_t cg_rumbleImpactScale;
+
 extern vmCvar_t cg_notebook;
 extern vmCvar_t cg_notebookpages;           // bitflags for the currently accessable pages.  if they wanna cheat, let 'em.  Most won't, or will wait 'til they actually play it.
 
@@ -2489,5 +2494,6 @@ void        trap_HapticTrigger( int side, int mode, float start, float end, floa
 // cg_haptics.c
 void        CG_HapticsInit( void );
 void        CG_HapticDamage( int damage );
+void        CG_HapticEnemyHit( int hits );
 void        CG_HapticsFrame( void );
 void        CG_HapticWeaponChanged( int weapon );

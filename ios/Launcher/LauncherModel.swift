@@ -121,6 +121,14 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
             "r_texturebits": "32",
             "r_colorbits": "32",
             "r_depthbits": "24",
+            // Without this the pixel format comes back with no stencil at
+            // all, and cg_shadows 2 -- what "Максимум" asks for -- draws
+            // nothing: tr_shadows.c bails when stencilBits < 4, and
+            // cg_players.c only draws the cheap blob at exactly 1. So the
+            // top preset was the one setting with no character shadows of
+            // any kind, worse than the preset below it. The device reports
+            // GL_OES_stencil8, so eight bits is there for the asking.
+            "r_stencilbits": "8",
             "r_textureMode": "GL_LINEAR_MIPMAP_LINEAR",
             "r_detailtextures": "1",
             // No S3TC on Apple hardware, and the ES path does not implement the
@@ -231,10 +239,58 @@ struct CampaignMission: Identifiable, Hashable {
     ]
 }
 
+/// Which of the two sets of game data something belongs to.
+///
+/// The raw values are the engine side's IOS_DATA_SET_*, and they are written
+/// out here rather than imported from the bridge: a bare C enum and a typedef'd
+/// one arrive in Swift as two different kinds of thing, and the launcher should
+/// not have to be edited because the header changed its mind about which it is.
+enum DataSetKind: Int32, CaseIterable, Identifiable {
+    case campaign = 0
+    case multiplayer = 1
+
+    var id: Int32 { rawValue }
+}
+
+/// One file a set expects, and whether it is on the device.
+struct DataFileState: Identifiable, Hashable {
+    let name: String
+    let present: Bool
+    /// The set cannot be played without it. pak0.pk3 is the case that matters:
+    /// its absence is a fatal error inside FS_Startup rather than a level the
+    /// player never reaches.
+    let required: Bool
+
+    var id: String { name }
+}
+
+/// A whole set: the files it wants, and what the ones that are there add up to.
+///
+/// The numbers are read from the pk3 directories rather than worked out from
+/// the filenames, so they describe what the engine will actually find.
+struct DataSetState: Identifiable, Hashable {
+    let kind: DataSetKind
+    let files: [DataFileState]
+    let maps: Int
+    let entries: Int
+    let megabytes: Double
+    /// The files the engine cannot start without are all there.
+    let isPlayable: Bool
+    /// What the player has is what they should have: the complete set at the
+    /// last official patch level, nothing missing and nothing wearing an id
+    /// pak's name. Stricter than `isPlayable`, which asks only whether it runs.
+    let isRecommended: Bool
+
+    var id: Int32 { kind.rawValue }
+
+    /// Everything the set lists is present -- stricter than `isPlayable`, which
+    /// asks only for the files without which there is nothing to start.
+    var isComplete: Bool { !files.isEmpty && files.allSatisfy(\.present) }
+}
+
 @MainActor
 final class LauncherModel: ObservableObject {
     // Game data
-    @Published var dataMask: Int = 0
     @Published var dataPath: String = ""
 
     // Graphics
@@ -259,7 +315,21 @@ final class LauncherModel: ObservableObject {
     // controller's sensor and the iPad's -- they are read through the same path.
     @Published var gyroInvertYaw: Bool = false
     @Published var gyroInvertPitch: Bool = false
+    // Where the horizontal half of the gyro comes from: 0 the pad turning flat,
+    // 1 the pad tipping left and right, 2 the two added together. Roll is the
+    // default because it is the wrists that do it, and the wrists are steadier
+    // than the arm the flat turn comes from.
+    @Published var gyroYawSource: Int = 1
     @Published var rumble: Double = 100
+    // A kick when a shot lands on someone, which is a different thing from the
+    // vibration for damage taken and is switched separately: one is information
+    // the player needs, the other is the weapon having weight.
+    @Published var rumbleImpact: Bool = true
+    // How hard that kick is, as a multiplier on it and on nothing else: the
+    // vibration for damage taken keeps its own strength. A player who wants to
+    // feel their shots land without being shaken by them turns this down rather
+    // than turning the motors down, which would take the damage warning with it.
+    @Published var rumbleImpactScale: Double = 1.0
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
     @Published var touchControls: Int = 0   // automatic: follows the hand, see ios_touch.m
@@ -291,29 +361,35 @@ final class LauncherModel: ObservableObject {
     @Published var controllerName: String? = nil
 
     // What is actually in the pk3s, read from their directories rather than
-    // taken on faith from five filenames being present.
-    @Published var dataMaps: Int = 0
-    @Published var dataFiles: Int = 0
-    @Published var dataMegabytes: Double = 0
+    // taken on faith from the filenames being present. Both sets, in the order
+    // DataSetKind lists them.
+    @Published private(set) var dataSets: [DataSetState] = []
 
-    /// "0.2.0 (20260910)" -- the port's version, not the engine's.
-    var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        return "\(short) (\(build))"
+    func dataSet(_ kind: DataSetKind) -> DataSetState? {
+        dataSets.first { $0.kind == kind }
     }
 
-    /// When this binary was built, taken from the executable itself so it can
-    /// never disagree with what is actually running.
-    var buildTime: String {
-        guard let url = Bundle.main.executableURL,
-              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let date = attrs[.modificationDate] as? Date else { return "—" }
+    /// "0.4.0" -- the port's version, not the engine's.
+    var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd.MM.yyyy HH:mm"
-        return formatter.string(from: date)
+    /// The build number, which only ever goes up. It replaced the build time in
+    /// this readout: a timestamp says when a binary was made and nothing about
+    /// which one it is, and the one a player reads out when something is wrong
+    /// has to be a number two people can compare.
+    var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+    }
+
+    /// The commit the build came from, short form, with "-dirty" on it when the
+    /// tree had uncommitted work in it. Missing when git was not there to ask,
+    /// and then nothing is shown rather than a placeholder that looks like a
+    /// hash.
+    var buildCommit: String? {
+        guard let hash = Bundle.main.infoDictionary?["IORTCWGitHash"] as? String,
+              !hash.isEmpty else { return nil }
+        return hash
     }
 
     /// "iortcw 1.51d-SP ios-arm64", the engine's own version string.
@@ -322,10 +398,12 @@ final class LauncherModel: ObservableObject {
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
 
-    static let dataFiles = ["pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3",
-                            "sp_pak3.pk3", "sp_pak4.pk3"]
-
-    var hasAllData: Bool { dataMask == (1 << LauncherModel.dataFiles.count) - 1 }
+    /// The launcher used to carry the campaign's five filenames as a list of
+    /// its own, and to work out from a bitmask over them whether the set was
+    /// complete. The bridge owns both lists now -- it is the side that knows
+    /// which files an engine build refuses to start without -- and each section
+    /// of the Data tab asks its own set. What is left here is the one question
+    /// the rest of the launcher asks: can the game be started at all.
     var canPlay: Bool { IOSBridge_HasGameData() }
 
     init() {
@@ -359,19 +437,43 @@ final class LauncherModel: ObservableObject {
             importedCount += moved
         }
 
-        let previous = dataMask
-        dataMask = Int(IOSBridge_GameDataMask())
+        // Forced on every pass, because forcing it is what this poll is for:
+        // the files are being copied in with this screen open and the lists
+        // have to tick over as they land, rather than making the player relaunch
+        // for them. The bridge is built to be polled -- a forced rescan reopens
+        // only the pk3s whose size or timestamp moved, so a pass over an
+        // unchanged folder costs a stat per file. The scan also covers the
+        // multiplayer set, which the old campaign-only mask never saw.
+        _ = IOSBridge_ScanData(true)
 
-        // Only when the set of files changed, and only once it is complete:
-        // reading five zip directories is cheap but not free, and this runs
-        // every second while the launcher is open.
-        if hasAllData && (dataMaps == 0 || dataMask != previous) {
-            if IOSBridge_ScanData(dataMask != previous) {
-                dataMaps = Int(IOSBridge_DataMaps())
-                dataFiles = Int(IOSBridge_DataFiles())
-                dataMegabytes = IOSBridge_DataMegabytes()
-            }
+        // Assigned only when something differs. This runs once a second, and a
+        // published value handed identical contents still redraws the tab.
+        let fresh = DataSetKind.allCases.map { snapshot(of: $0) }
+        if fresh != dataSets {
+            dataSets = fresh
         }
+    }
+
+    /// One pass over a set, straight from the bridge.
+    private func snapshot(of kind: DataSetKind) -> DataSetState {
+        let set = kind.rawValue
+        var files: [DataFileState] = []
+        for index in 0..<IOSBridge_SetFileCount(set) {
+            // A name that came back empty would be a bridge that disagrees with
+            // its own count; skip it rather than putting a blank row on screen.
+            guard let name = IOSBridge_SetFileName(set, index) else { continue }
+            files.append(DataFileState(name: String(cString: name),
+                                       present: IOSBridge_SetFilePresent(set, index),
+                                       required: IOSBridge_SetFileRequired(set, index)))
+        }
+
+        return DataSetState(kind: kind,
+                            files: files,
+                            maps: Int(IOSBridge_SetMaps(set)),
+                            entries: Int(IOSBridge_SetFiles(set)),
+                            megabytes: IOSBridge_SetMegabytes(set),
+                            isPlayable: IOSBridge_SetIsPlayable(set),
+                            isRecommended: IOSBridge_SetIsRecommended(set))
     }
 
     private func observeControllers() {
@@ -391,15 +493,24 @@ final class LauncherModel: ObservableObject {
     /// game ships with. Applied on first run and by the Reset button.
     func applyDefaultBindings() {
         bindings = [
-            // Triggers do the shooting, shoulders change weapon -- the layout
-            // every console shooter uses, so it needs no learning.
+            // Triggers do the shooting. Above them the shoulders move the
+            // player, and the face buttons change the weapon -- the opposite
+            // way round from the usual console layout, and on purpose.
+            //
+            // Crouching is what a player does while already shooting, so it
+            // belongs under the finger that is already on the trigger: R1 sits
+            // directly above R2, and ducking no longer costs the thumb its hold
+            // on the look stick. Jump takes L1 for the symmetry, over the aim
+            // trigger. Changing weapon is the opposite kind of act -- it
+            // happens between fights, not during one -- so it goes to the face
+            // buttons, where the thumb has time to leave the stick for it.
             "PAD0_RIGHTTRIGGER":      "+attack",
             "PAD0_LEFTTRIGGER":       "+zoom",
-            "PAD0_RIGHTSHOULDER":     "weapnext",
-            "PAD0_LEFTSHOULDER":      "weapprev",
+            "PAD0_RIGHTSHOULDER":     "+movedown",   // R1 -- crouch, over the trigger
+            "PAD0_LEFTSHOULDER":      "+moveup",     // L1 -- jump, over the aim
 
-            "PAD0_A":                 "+moveup",     // Cross  -- jump
-            "PAD0_B":                 "+movedown",   // Circle -- crouch
+            "PAD0_A":                 "weapprev",    // Cross  -- previous weapon
+            "PAD0_B":                 "weapnext",    // Circle -- next weapon
             "PAD0_X":                 "+reload",     // Square -- reload
             "PAD0_Y":                 "+activate",   // Triangle -- use/open
 
@@ -446,7 +557,7 @@ final class LauncherModel: ObservableObject {
     /// `in_tuningVersion` could not be read back before the engine was up it
     /// fired on every single launch instead of once. Each bump now names the
     /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
-    private static let tuningVersion = 3
+    private static let tuningVersion = 4
 
     /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
     /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
@@ -499,6 +610,7 @@ final class LauncherModel: ObservableObject {
         brightness       = cvarValue("r_gamma", brightness)
 
         gyroMode         = Int(cvarValue("in_gyro", Double(gyroMode)))
+        gyroYawSource    = Int(cvarValue("in_gyroYawSource", Double(gyroYawSource)))
         touchControls    = Int(cvarValue("in_touchControls", Double(touchControls)))
         maxFPS           = Int(cvarValue("com_maxfps", Double(maxFPS)))
         skill            = Int(cvarValue("g_gameskill", Double(skill)))
@@ -522,6 +634,8 @@ final class LauncherModel: ObservableObject {
         gyroInvertPitch  = cvarValue("in_gyroInvertPitch", gyroInvertPitch ? 1 : 0) != 0
         moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
         adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
+        rumbleImpact     = cvarValue("cg_rumbleImpact", rumbleImpact ? 1 : 0) != 0
+        rumbleImpactScale = cvarValue("cg_rumbleImpactScale", rumbleImpactScale)
         hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
 
         migrate(from: stored)
@@ -546,6 +660,24 @@ final class LauncherModel: ObservableObject {
             bindings["PAD0_RIGHTSTICK_CLICK"] = "+sprint"
         }
 
+        // 4: the shoulders took over movement and the face buttons took over
+        // weapons, for the reasons written out in applyDefaultBindings(). Moved
+        // only for a player still carrying exactly the old four: anyone who put
+        // something else on any of them arranged it that way on purpose, and a
+        // change of mind here is not a reason to overrule it. It touches no
+        // button the bump above does, so a config still on version 2 takes both
+        // in turn and gets the same layout a fresh install would.
+        if stored < 4,
+           bindings["PAD0_RIGHTSHOULDER"] == "weapnext",
+           bindings["PAD0_LEFTSHOULDER"] == "weapprev",
+           bindings["PAD0_A"] == "+moveup",
+           bindings["PAD0_B"] == "+movedown" {
+            bindings["PAD0_RIGHTSHOULDER"] = "+movedown"
+            bindings["PAD0_LEFTSHOULDER"] = "+moveup"
+            bindings["PAD0_A"] = "weapprev"
+            bindings["PAD0_B"] = "weapnext"
+        }
+
         // The crosshair shape is seeded, not owned. There is no crosshair
         // control in the launcher, so leaving cg_drawCrosshair in the generated
         // config would re-apply it after wolfconfig.cfg on every launch and
@@ -554,7 +686,14 @@ final class LauncherModel: ObservableObject {
         // that migrates the config, and dropped from the set afterwards: the
         // engine archives it within the frame (Com_Frame calls
         // Com_WriteConfiguration) and it is the player's from then on.
-        seedsCrosshair = stored < LauncherModel.tuningVersion
+        //
+        // The bound is the version this seeding was introduced at, not the
+        // current one. Written as `stored < tuningVersion` it would fire again
+        // on every later bump, and a player who is only being handed a new
+        // button layout would silently lose the crosshair they had chosen in
+        // the game's own options -- the exact overruling this pass exists to
+        // stop.
+        seedsCrosshair = stored < 3
         if !seedsCrosshair {
             IOSBridge_ForgetCvar("cg_drawCrosshair")
         }
@@ -641,9 +780,12 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")
         IOSBridge_SetCvar("in_gyroSens", String(format: "%.2f", gyroSens))
+        IOSBridge_SetCvar("in_gyroYawSource", "\(gyroYawSource)")
         IOSBridge_SetCvar("in_gyroInvertYaw", gyroInvertYaw ? "1" : "0")
         IOSBridge_SetCvar("in_gyroInvertPitch", gyroInvertPitch ? "1" : "0")
         IOSBridge_SetCvar("in_rumble", String(format: "%.0f", rumble))
+        IOSBridge_SetCvar("cg_rumbleImpact", rumbleImpact ? "1" : "0")
+        IOSBridge_SetCvar("cg_rumbleImpactScale", String(format: "%.2f", rumbleImpactScale))
         IOSBridge_SetCvar("in_adaptiveTriggers", adaptiveTriggers ? "1" : "0")
         IOSBridge_SetCvar("in_triggerHard", String(format: "%.2f", triggerHard))
         IOSBridge_SetCvar("in_touchControls", "\(touchControls)")

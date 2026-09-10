@@ -185,6 +185,28 @@ extension View {
                 .accessibilityHidden(true)
         }
     }
+
+    /// The cursor around a block, rather than around a row.
+    ///
+    /// The row cursor is a filled plate, which would sit on top of a button
+    /// that is already a filled block and bury it. This is a ring drawn just
+    /// outside the shape instead: it keeps the one accent colour the cursor has
+    /// everywhere else in the launcher -- a cursor that changes colour with
+    /// what it is on is not a cursor -- and the gap of background it leaves
+    /// keeps that orange off the red underneath, where the two would otherwise
+    /// muddy each other.
+    func padFocusRing(_ focused: Bool, radius: CGFloat) -> some View {
+        overlay {
+            RoundedRectangle(cornerRadius: radius + 5, style: .continuous)
+                .strokeBorder(Theme.accent, lineWidth: 3)
+                .padding(-6)
+                .opacity(focused ? 1 : 0)
+                // Decoration and nothing else: a shape over the button would
+                // otherwise take the taps meant for it.
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
 }
 
 /// Move a slider one step, without letting the rounding walk the value off the

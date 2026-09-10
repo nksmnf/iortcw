@@ -455,6 +455,13 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	float pitch   = j_pitch->value   * cl.joystickAxis[j_pitch_axis->integer];
 	float up      = j_up->value      * cl.joystickAxis[j_up_axis->integer];
 
+	// Whether the input backend is reading the sticks itself and writing these
+	// axes directly, rather than synthesising key presses and letting the
+	// bindings decide what a stick does. sdl_input.c owns the cvar; a build
+	// without that backend has no such cvar, the lookup answers zero, and
+	// everything below behaves exactly as it always did.
+	qboolean padDirect = Cvar_VariableIntegerValue( "in_gamepadDirect" ) ? qtrue : qfalse;
+
 	if ( !( kb[KB_SPEED].active ^ cl_run->integer ) ) {
 		cmd->buttons |= BUTTON_WALKING;
 	}
@@ -465,14 +472,41 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 		anglespeed = 0.001 * cls.frametime;
 	}
 
-	if ( !kb[KB_STRAFE].active ) {
+	// cl_anglespeedkey is there to make a keyboard turn usable: hold walk and
+	// the arrow keys swing faster. The direct path does not need the help --
+	// what it puts on the look axes is already a rate the player picked, in
+	// degrees per second (in_lookYawSpeed) -- so scaling it because he happens
+	// to be walking only makes the view spin. Same reasoning as the gyro below.
+	if ( padDirect ) {
+		anglespeed = 0.001 * cls.frametime;
+	}
+
+	// +mlook and +strafe swap the look axes with the movement ones. That trade
+	// is worth making on a device with one stick and a keyboard beside it:
+	// holding strafe turns the turn axis into a sidestep, holding mlook turns
+	// the walk axis into a look, and the player is the one holding the key, so
+	// he knows which way round it currently is.
+	//
+	// A pad read by the direct path has two sticks and no such shortage. Left
+	// moves, right looks, and that is the whole layout -- swapping the two
+	// behind the player's back is what had the right stick walking him forwards
+	// instead of aiming. The numbers make it worse than a swapped role: the
+	// look axes carry a turn rate in degrees per second, so several hundred of
+	// them land where a movement byte is expected and ClampChar pins it at a
+	// full run in whichever direction the thumb leaned.
+	//
+	// Nothing here disables the keys. They still swap the mouse and the
+	// keyboard as they always have, including for a player who has put +strafe
+	// on a pad button; it is only the sticks the backend reads itself that stop
+	// listening, because for them the answer is never in doubt.
+	if ( !kb[KB_STRAFE].active || padDirect ) {
 		cl.viewangles[YAW] += anglespeed * yaw;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)right );
 	} else {
 		cl.viewangles[YAW] += anglespeed * right;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)yaw );
 	}
-	if ( kb[KB_MLOOK].active ) {
+	if ( kb[KB_MLOOK].active && !padDirect ) {
 		cl.viewangles[PITCH] += anglespeed * forward;
 		cmd->forwardmove = ClampChar( cmd->forwardmove + (int)pitch );
 	} else {

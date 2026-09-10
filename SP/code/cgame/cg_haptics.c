@@ -34,9 +34,27 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "cg_local.h"
 
+// One hit pulse every 200ms at most. A held MP40 lands ten hits a second and a
+// pulse each would arrive as one unbroken buzz; at five a second the pad is
+// quiet three quarters of the time and the hand still counts them separately.
+#define HAPTIC_IMPACT_INTERVAL  200
+
+// Hits that land during that gap are not thrown away, they are merged into the
+// next pulse and make it stronger. Past four the difference stops being legible
+// anyway, and the cap also keeps a nonsense counter delta from becoming a jolt.
+#define HAPTIC_IMPACT_MAX_STACK 4
+
+// A tick that arrives half a second after the shot describes nothing, so a
+// queue that could not be played while it was still true is dropped.
+#define HAPTIC_IMPACT_STALE     500
+
 static int   hapticCaps;
 static int   hapticLastLED;      // packed rgb, to avoid resending an unchanged colour
 static int   hapticNextLEDCheck;
+static int   hapticMotorsUntil;  // the motors are still running an earlier effect
+static int   hapticImpactReady;  // earliest cg.time a hit pulse may start
+static int   hapticImpactQueue;  // hits waiting for the motors to come free
+static int   hapticImpactQueued; // cg.time the oldest of them landed
 
 /*
 ==============
@@ -47,6 +65,16 @@ void CG_HapticsInit( void ) {
 	hapticCaps = trap_HapticInfo();
 	hapticLastLED = -1;
 	hapticNextLEDCheck = 0;
+
+	// The game modules are linked into the engine here rather than loaded per
+	// map, so a static holds whatever the previous level left in it. Every
+	// timestamp below is compared against cg.time, which starts over with the
+	// map: anything carried across would sit in the future and mute the pad for
+	// the rest of the session.
+	hapticMotorsUntil = 0;
+	hapticImpactReady = 0;
+	hapticImpactQueue = 0;
+	hapticImpactQueued = 0;
 
 	if ( hapticCaps ) {
 		CG_Printf( "Controller haptics:%s%s\n",
@@ -59,7 +87,7 @@ void CG_HapticsInit( void ) {
 ==============
 CG_HapticDamage
 
-The only thing the pad rumbles for, and it says how much it hurt.
+What the pad rumbles for, and it says how much it hurt.
 
 Rumbling for every shot fired turns the pad into background noise and tells the
 player nothing they did not already know -- they pulled the trigger. A hit is
@@ -101,19 +129,133 @@ void CG_HapticDamage( int damage ) {
 	high = low * 0.45f;
 
 	trap_HapticRumble( low, high, duration );
+
+	// The engine hands this straight to SDL_GameControllerRumble, which replaces
+	// the running effect instead of mixing with it. Anything else that wants the
+	// motors has to know they are taken until this one has played out.
+	hapticMotorsUntil = cg.time + duration;
+}
+
+/*
+==============
+CG_HapticImpactFlush
+
+Plays the queued hit pulse once the motors are free and the previous pulse is
+far enough behind. Kept apart from CG_HapticEnemyHit so that a hit landed under
+a damage rumble still gets its pulse when the rumble ends, instead of being lost
+or cutting the rumble short.
+==============
+*/
+static void CG_HapticImpactFlush( void ) {
+	int hits, duration;
+	float low, high, scale;
+
+	if ( !hapticImpactQueue ) {
+		return;
+	}
+
+	if ( !cg_rumbleImpact.integer ) {
+		hapticImpactQueue = 0;
+		return;
+	}
+
+	if ( cg.time > hapticImpactQueued + HAPTIC_IMPACT_STALE ) {
+		hapticImpactQueue = 0;
+		return;
+	}
+
+	// Being wounded outranks landing a hit. Firing now would replace the damage
+	// rumble and steal the length that carries how much was taken, which is the
+	// one thing the display does not say usefully. The hits wait their turn.
+	if ( cg.time < hapticMotorsUntil || cg.time < hapticImpactReady ) {
+		return;
+	}
+
+	hits = hapticImpactQueue;
+	hapticImpactQueue = 0;
+
+	// The mirror image of the damage pulse, so the two are never mistaken for
+	// each other mid-fight: damage is the low motor, long and dull, a shove;
+	// a hit is the high motor, brief and dry, a click. Weight rides on the high
+	// motor and on the length, and the low motor stays near silent to hold the
+	// contrast -- lean on it and a burst of hits starts to feel like a wound.
+	duration = 30 + hits * 12;
+	low  = 0.07f;
+	high = 0.45f + hits * 0.11f;
+
+	scale = cg_rumbleImpactScale.value;
+	if ( scale < 0.0f ) {
+		scale = 0.0f;
+	}
+	if ( scale > 2.0f ) {
+		scale = 2.0f;
+	}
+
+	low *= scale;
+	high *= scale;
+
+	if ( low > 1.0f ) {
+		low = 1.0f;
+	}
+	if ( high > 1.0f ) {
+		high = 1.0f;
+	}
+
+	trap_HapticRumble( low, high, duration );
+
+	hapticMotorsUntil = cg.time + duration;
+	hapticImpactReady = cg.time + HAPTIC_IMPACT_INTERVAL;
+}
+
+/*
+==============
+CG_HapticEnemyHit
+
+The player put hits on someone. Queued rather than played on the spot, because
+fast weapons deliver these far quicker than a hand can tell them apart; see
+CG_HapticImpactFlush for what happens to the queue.
+==============
+*/
+void CG_HapticEnemyHit( int hits ) {
+	if ( !( hapticCaps & HAPTIC_CAP_RUMBLE ) ) {
+		return;
+	}
+
+	if ( !cg_rumbleImpact.integer ) {
+		return;
+	}
+
+	if ( hits <= 0 ) {
+		return;
+	}
+
+	if ( !hapticImpactQueue ) {
+		hapticImpactQueued = cg.time;
+	}
+
+	hapticImpactQueue += hits;
+	if ( hapticImpactQueue > HAPTIC_IMPACT_MAX_STACK ) {
+		hapticImpactQueue = HAPTIC_IMPACT_MAX_STACK;
+	}
+
+	// Try straight away: a lone shot from a bolt-action should not wait a frame
+	// for the once-per-frame flush to notice it.
+	CG_HapticImpactFlush();
 }
 
 /*
 ==============
 CG_HapticsFrame
 
-Light bar colour from health: green when healthy through to red when nearly
-dead. Rate-limited because the colour only needs to track health, not frames,
-and every call is a Bluetooth write.
+Drains the hit queue, then sets the light bar colour from health: green when
+healthy through to red when nearly dead. The colour is rate-limited because it
+only needs to track health, not frames, and every call is a Bluetooth write.
 ==============
 */
 void CG_HapticsFrame( void ) {
 	int health, r, g, b, packed;
+
+	CG_HapticImpactFlush();
 
 	if ( !( hapticCaps & HAPTIC_CAP_LED ) ) {
 		return;

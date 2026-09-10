@@ -929,7 +929,6 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	oldAtiTess = -1;
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
-	R_NotePerfCounters( numDrawSurfs, backEnd.pc.c_indexes / 3, backEnd.pc.c_shaders );
 
 	for ( i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++ ) {
 		if ( drawSurf->sort == oldSort ) {
@@ -1646,6 +1645,14 @@ const void  *RB_SwapBuffers( const void *data ) {
 	if ( tess.numIndexes ) {
 		RB_EndSurface();
 	}
+
+	// The frame's counters are only complete here. RB_RenderDrawSurfList runs
+	// once per view and the 2D pass adds to them after the last one, while
+	// R_PerformanceCounters zeroes them at the *start* of the next frame's
+	// command issue -- so anything sampled earlier reports a half-built frame,
+	// or the leftovers of the previous one.
+	R_NotePerfCounters( backEnd.pc.c_surfaces, backEnd.pc.c_indexes / 3,
+		backEnd.pc.c_shaders );
 
 	// texture swapping test
 	if ( r_showImages->integer ) {

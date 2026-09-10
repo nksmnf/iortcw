@@ -57,11 +57,24 @@ enum Loc {
         "Нет контроллера": "No controller",
         "Готово": "Ready",
         "Нет игровых файлов": "Game data missing",
-        "ИГРАТЬ": "PLAY",
+        // The line under the footer's status: what is going to load, or where
+        // to go when there is nothing to load.
+        "%ld карт · %.0f МБ": "%ld maps · %.0f MB",
+        "Откройте вкладку «Данные»": "Open the Data tab",
+        "Не хватает файлов: %ld": "%ld files missing",
         "Язык": "Language",
 
         // Data
+        "Установка": "Installation",
+        "Игровые файлы кампании": "Campaign game files",
+        "Игровые файлы мультиплеера": "Multiplayer game files",
         "Все игровые файлы найдены.": "All game files found.",
+        "Набор неполный, но играть можно.": "Incomplete, but playable.",
+        "Набор неполный.": "The set is incomplete.",
+        "Полный официальный набор": "Complete official set",
+        "%ld карт · %ld файлов · %.0f МБ распакованных данных":
+            "%ld maps · %ld files · %.0f MB uncompressed",
+        "iORTCW для iPadOS": "iORTCW for iPadOS",
         "Скопируйте данные Return to Castle Wolfenstein":
             "Copy in your Return to Castle Wolfenstein data",
         "обязателен": "required",
@@ -110,11 +123,21 @@ enum Loc {
         "Мёртвая зона": "Dead zone",
         "Инверсия вертикали": "Invert vertical",
         "Вибрация": "Vibration",
+        "Отдача при попадании": "Impact feedback on hits",
+        "Сила отдачи": "Impact strength",
+        // Degrees per second. The unit letter is a word, so it is translated
+        // like one -- it was being built into the readout in code and stayed
+        // Cyrillic on an English launcher.
+        "%ld°/с": "%ld°/s",
         "Адаптивные триггеры": "Adaptive triggers",
         "Чувствительность гироскопа": "Gyro sensitivity",
         "Гироскоп": "Gyro",
         "Инверсия гироскопа по горизонтали": "Invert gyro horizontally",
         "Инверсия гироскопа по вертикали": "Invert gyro vertically",
+        "Горизонталь гироскопа": "Gyro horizontal from",
+        "Разворот": "Yaw",
+        "Крен": "Roll",
+        "Оба": "Both",
         "Действует и на гироскоп контроллера, и на гироскоп планшета.":
             "Applies to the controller's gyro and the iPad's alike.",
         "Выкл": "Off",
@@ -148,8 +171,6 @@ enum Loc {
 
         // Pad navigation. The button names are the ones printed on a DualSense,
         // so they stay as they are in both languages.
-        "D-pad — выбор, Cross — подтвердить, Circle — назад, L1/R1 — вкладки":
-            "D-pad moves, Cross confirms, Circle goes back, L1/R1 switch tabs",
         "Options — начать игру": "Options starts the game",
         "Держите Circle, чтобы закрыть": "Hold Circle to close",
 
@@ -244,6 +265,18 @@ enum Loc {
                 The list updates as they copy. The large ones take a few minutes.
                 """),
 
+        "note.mpdata": (
+            ru: """
+                Мультиплеер в этой сборке не поддерживается: собран только \
+                одиночный код. Файлы показаны, чтобы было видно, что лежит на \
+                диске.
+                """,
+            en: """
+                Multiplayer is not supported in this build -- only the single \
+                player code is compiled. The files are listed so that it is \
+                clear what is on the device.
+                """),
+
         "note.campaign": (
             ru: """
                 Запуск отсюда идёт мимо меню игры: оно рассчитано на мышь, и \
@@ -271,6 +304,22 @@ enum Loc {
             en: """
                 Automatic: shown until a controller is in use; back on a touch, \
                 and gone again five seconds after the screen is left alone.
+                """),
+
+        "note.gyroyaw": (
+            ru: """
+                Разворот — это поворот пада плашмя, как руля, лежащего на \
+                столе. Крен — наклон вправо-влево вокруг оси, идущей через \
+                кнопку PS. Крен обычно точнее: его делают запястья, а разворот \
+                идёт от всей руки. «Оба» складывает их и работает при любом \
+                хвате.
+                """,
+            en: """
+                Yaw is the pad turning flat, like a wheel lying on a table. \
+                Roll is tipping it left and right, around the line through the \
+                PS button. Roll is usually the finer of the two: the wrists do \
+                it, where yaw comes from the whole arm. Both adds them \
+                together and works whichever way the pad is held.
                 """),
 
         "note.gyro": (
@@ -311,6 +360,34 @@ enum Loc {
                 hums continuously and tells you nothing new.
                 """),
 
+        "note.impactscale": (
+            ru: """
+                Насколько сильным делать этот толчок. Множитель действует \
+                только на попадания по врагу — вибрация от полученного урона \
+                остаётся какой была, поэтому предупреждение о том, что бьют \
+                вас, не глохнет вместе с отдачей.
+                """,
+            en: """
+                How hard that kick should be. The multiplier applies to hits on \
+                an enemy only -- the vibration for damage taken keeps its own \
+                strength, so turning the recoil down does not quieten the \
+                warning that something is hitting you.
+                """),
+        "note.impact": (
+            ru: """
+                Короткий толчок, когда попадание приходится по врагу. Это \
+                отдельная вещь от вибрации при получении урона: та сообщает, \
+                что происходит с игроком, а эта даёт оружию отдачу, чтобы удар \
+                чувствовался, а не только звучал.
+                """,
+            en: """
+                A short kick when a shot lands on an enemy. It is a separate \
+                thing from the vibration for damage taken: that one tells the \
+                player what is happening to them, this one gives the weapon \
+                something to push back with, so a hit is felt and not only \
+                heard.
+                """),
+
         "note.menu": (
             ru: """
                 Кнопка MENU в углу открывает меню игры — там сохранение, \
@@ -326,19 +403,19 @@ enum Loc {
 
         "note.layout": (
             ru: """
-                По умолчанию: R2 — огонь, L2 — прицел, R1/L1 — смена оружия, \
-                Квадрат — перезарядка, Треугольник — использовать, Крест — \
-                прыжок, Круг — присесть, L3 — удар ногой, R3 — спринт. \
-                Крестовина ходит, как стрелки на клавиатуре. Свайпы по тачпаду: \
-                вверх-вниз — кратность прицела, влево-вправо — оружие, тап — \
-                предмет.
+                По умолчанию: R2 — огонь, L2 — прицел, R1 — присесть, L1 — \
+                прыжок, Круг — следующее оружие, Крест — предыдущее, Квадрат — \
+                перезарядка, Треугольник — использовать, L3 — удар ногой, R3 — \
+                спринт. Крестовина ходит, как стрелки на клавиатуре. Свайпы по \
+                тачпаду: вверх-вниз — кратность прицела, влево-вправо — оружие, \
+                тап — предмет.
                 """,
             en: """
-                By default: R2 fire, L2 aim, R1/L1 change weapon, Square \
-                reload, Triangle use, Cross jump, Circle crouch, L3 kick, R3 \
-                sprint. The D-pad walks, like the arrow keys. Touchpad swipes: up \
-                and down change scope magnification, left and right change \
-                weapon, a tap selects the next item.
+                By default: R2 fire, L2 aim, R1 crouch, L1 jump, Circle next \
+                weapon, Cross previous weapon, Square reload, Triangle use, L3 \
+                kick, R3 sprint. The D-pad walks, like the arrow keys. Touchpad \
+                swipes: up and down change scope magnification, left and right \
+                change weapon, a tap selects the next item.
                 """),
     ]
 }

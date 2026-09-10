@@ -99,16 +99,66 @@ const char *IOSBridge_BuildCommandLine( void );
 
 // --- what is in the game data ----------------------------------------------
 
-// Reads the pk3 directories -- not their contents -- and reports what is there.
-// Cached, so the launcher's once-a-second refresh is free after the first call;
-// pass true to force a rescan after files have been added.
+// Reads the pk3 directories -- not their contents -- and reports what is there,
+// for both sets of data below. Cached, so the launcher's once-a-second refresh
+// is free after the first call; pass true to force a rescan after files have
+// been added. Even a forced rescan only reopens pk3s whose size or timestamp
+// has changed, so polling while the user copies costs a stat per file.
 //
 // Returns false if nothing could be read yet.
 bool IOSBridge_ScanData( bool rescan );
 
+// The campaign, as they always have been. The Play button and everything below
+// it is written against these three.
 int    IOSBridge_DataMaps( void );      // maps/*.bsp across every pak
 int    IOSBridge_DataFiles( void );     // entries in total
 double IOSBridge_DataMegabytes( void ); // uncompressed size of the lot
+
+// --- the two sets of data ---------------------------------------------------
+//
+// RTCW ships its single-player campaign and its multiplayer as separate pk3s,
+// and a player may have one and not the other, so the launcher shows them as
+// two lists. The bridge owns what each list contains: it is the side that knows
+// which files the engine refuses to start without.
+//
+// Every getter below scans on first use, so they can be called in any order.
+// index runs 0 .. IOSBridge_SetFileCount(set) - 1; out-of-range arguments
+// answer 0, "" or false rather than trapping.
+
+#define IOS_DATA_SET_CAMPAIGN     0
+#define IOS_DATA_SET_MULTIPLAYER  1
+#define IOS_DATA_SET_COUNT        2
+
+int         IOSBridge_SetFileCount( int set );
+const char *IOSBridge_SetFileName( int set, int index );
+bool        IOSBridge_SetFilePresent( int set, int index );
+
+// Required files are the ones the engine calls Com_Error over. The optional
+// ones -- multiplayer's bonus map packs and mp_bin.pk3 -- cost the player
+// nothing to skip beyond the servers they can join, but they are part of the
+// complete set, so IOSBridge_SetIsRecommended does count them.
+bool        IOSBridge_SetFileRequired( int set, int index );
+
+// Statistics over the files of the set that are present. pak0.pk3 is retail
+// media that both halves of the game load, so it is in both sets and counted
+// in both -- the two totals deliberately do not add up to what is on disk.
+//
+// SetMaps counts maps/mp_*.bsp for multiplayer and every maps/*.bsp for the
+// campaign, because pak0.pk3's 32 maps are all campaign maps and none of them
+// is a level any server runs.
+int         IOSBridge_SetMaps( int set );
+int         IOSBridge_SetFiles( int set );      // entries inside its pk3s
+double      IOSBridge_SetMegabytes( int set );  // uncompressed size of the set
+
+// Will the engine start on this? Every required file present, and readable as
+// a zip -- a pk3 halfway through being copied is not yet in place.
+bool        IOSBridge_SetIsPlayable( int set );
+
+// Has the player exactly what they should have: the complete set at the last
+// official patch level (1.41 for multiplayer, the Game of the Year files for
+// the campaign), with nothing missing and nothing extra wearing an id pak's
+// name. Stricter than IOSBridge_SetIsPlayable, which only asks whether it runs.
+bool        IOSBridge_SetIsRecommended( int set );
 
 // "iortcw 1.51d-SP ios-arm64", the same string the engine prints on startup.
 const char *IOSBridge_EngineVersion( void );

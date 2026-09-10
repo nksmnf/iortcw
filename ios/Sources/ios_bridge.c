@@ -28,7 +28,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "../../SP/code/zlib-1.2.11/unzip.h"
 
+#include <dirent.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /*
@@ -42,20 +44,133 @@ ten minutes copying 637MB: it does not distinguish the real data from five
 files of the right names. Counting the maps does, and it is nearly free -- a zip
 directory is a few hundred kilobytes at the end of the file, so this never
 touches the 300MB of content in front of it.
+
+RTCW ships as two independent sets of data and a player may well have one and
+not the other, so both are tracked. What a set is made of is decided here and
+not in the launcher, because this side already has to know what the engine
+refuses to start without.
 ==============
 */
-static qboolean dataScanned;
-static int      dataMaps;
-static int      dataFiles;
-static double   dataMegabytes;
+typedef struct {
+	const char *name;
+	qboolean required;		// the engine will not start without it
+} dataFileDef_t;
 
-static void IOSBridge_ScanPak( const char *path )
+typedef struct {
+	qboolean present;		// the file is in main/
+	qboolean scanned;		// and its central directory was read whole
+	off_t size;
+	time_t mtime;
+	int maps;
+	int mpMaps;
+	int entries;
+	double megabytes;
+} dataFileScan_t;
+
+// The campaign. All five are required: SP's FS_CheckSPPaks calls Com_Error
+// unless sp_pak1 through sp_pak4 are all present, and pak0.pk3 is checked
+// before that. sp_pak4.pk3 came with the Game of the Year edition, which is
+// why README.md's older list of four is not enough for this engine.
+static const dataFileDef_t campaignFiles[] = {
+	{ "pak0.pk3", qtrue },
+	{ "sp_pak1.pk3", qtrue },
+	{ "sp_pak2.pk3", qtrue },
+	{ "sp_pak3.pk3", qtrue },
+	{ "sp_pak4.pk3", qtrue }
+};
+
+// Multiplayer.
+//
+// pak0.pk3 is the retail media rather than campaign data -- both halves of the
+// game load it -- so it is listed in both sets and, below, read only once.
+//
+// mp_pak0 through mp_pak5 are required because MP's FS_CheckMPPaks calls
+// Com_Error naming the 1.41 point release unless all six are there. Only the
+// first three came on the disc (13.11.2001); 3, 4 and 5 arrive with the March,
+// May and October 2002 point releases, so a shop-bought copy alone will not do.
+//
+// mp_bin.pk3 holds the original x86 cgame and ui modules. This build has its
+// own and cannot run those anyway, but a pure server references that pak and a
+// client without it fails the check -- worth having, not worth refusing to
+// start over.
+//
+// The mp_pakmaps packs are one bonus map each, added between 1.1 (trenchtoast,
+// 18.12.2001) and 1.4 (dam and rocket, 02.06.2002). The game starts and plays
+// without them; they only decide whether the player can join a server running
+// that map. Optional, but part of the complete 1.41 install.
+static const dataFileDef_t multiplayerFiles[] = {
+	{ "pak0.pk3", qtrue },
+	{ "mp_pak0.pk3", qtrue },
+	{ "mp_pak1.pk3", qtrue },
+	{ "mp_pak2.pk3", qtrue },
+	{ "mp_pak3.pk3", qtrue },
+	{ "mp_pak4.pk3", qtrue },
+	{ "mp_pak5.pk3", qtrue },
+	{ "mp_bin.pk3", qfalse },
+	{ "mp_pakmaps0.pk3", qfalse },
+	{ "mp_pakmaps1.pk3", qfalse },
+	{ "mp_pakmaps2.pk3", qfalse },
+	{ "mp_pakmaps3.pk3", qfalse },
+	{ "mp_pakmaps4.pk3", qfalse },
+	{ "mp_pakmaps5.pk3", qfalse },
+	{ "mp_pakmaps6.pk3", qfalse }
+};
+
+// Name shapes id used for this set's paks: <prefix><number>.pk3. A file that
+// fits one of them but is not in the manifest above is one we do not
+// understand -- a point release newer than this code, or a renamed pak -- and
+// it is why a set can be complete and still not be the recommended one. A mod
+// dropped into main/ matches none of these and is left alone, which is the
+// point: only files pretending to be id's are questioned.
+static const char *campaignShapes[] = { "pak", "sp_pak", NULL };
+static const char *multiplayerShapes[] = { "mp_pak", "mp_pakmaps", NULL };
+
+typedef struct {
+	const dataFileDef_t *def;
+	dataFileScan_t *scan;
+	const char **shapes;
+	int numFiles;
+	qboolean mpMapsOnly;
+
+	int maps;
+	int entries;
+	double megabytes;
+	qboolean playable;		// every required file present and readable
+	qboolean complete;		// ... and every optional one too
+	qboolean strayPak;		// something id-shaped in main/ that we do not know
+} dataSet_t;
+
+static dataFileScan_t campaignScan[ARRAY_LEN( campaignFiles )];
+static dataFileScan_t multiplayerScan[ARRAY_LEN( multiplayerFiles )];
+
+static qboolean dataScanned;
+
+static dataSet_t dataSets[IOS_DATA_SET_COUNT] = {
+	{ campaignFiles, campaignScan, campaignShapes,
+		(int)ARRAY_LEN( campaignFiles ), qfalse,
+		0, 0, 0.0, qfalse, qfalse, qfalse },
+	{ multiplayerFiles, multiplayerScan, multiplayerShapes,
+		(int)ARRAY_LEN( multiplayerFiles ), qtrue,
+		0, 0, 0.0, qfalse, qfalse, qfalse }
+};
+
+/*
+==============
+IOSBridge_ScanPak
+
+Counts one pk3 by walking its central directory.
+==============
+*/
+static void IOSBridge_ScanPak( const char *path, dataFileScan_t *scan )
 {
 	unzFile uf = unzOpen( path );
 	unz_global_info gi;
 	int i;
 
 	if ( !uf ) {
+		// No end-of-central-directory record yet, which is what a pk3 halfway
+		// through being copied looks like. Left unscanned so the next pass
+		// tries again rather than believing a count of zero.
 		return;
 	}
 
@@ -73,14 +188,22 @@ static void IOSBridge_ScanPak( const char *path )
 			break;
 		}
 
-		dataFiles++;
-		dataMegabytes += (double)info.uncompressed_size / ( 1024.0 * 1024.0 );
+		scan->entries++;
+		scan->megabytes += (double)info.uncompressed_size / ( 1024.0 * 1024.0 );
 
 		if ( !Q_stricmpn( name, "maps/", 5 ) ) {
 			const char *ext = strrchr( name, '.' );
 
 			if ( ext && !Q_stricmp( ext, ".bsp" ) ) {
-				dataMaps++;
+				scan->maps++;
+
+				// Every multiplayer map id shipped is called mp_something and no
+				// campaign map is. pak0.pk3 belongs to both sets and holds 32
+				// campaign maps; counted under "multiplayer" they would promise
+				// the player three times the maps they can join a server on.
+				if ( !Q_stricmpn( name + 5, "mp_", 3 ) ) {
+					scan->mpMaps++;
+				}
 			}
 		}
 
@@ -90,24 +213,216 @@ static void IOSBridge_ScanPak( const char *path )
 	}
 
 	unzClose( uf );
+
+	scan->scanned = qtrue;
+}
+
+/*
+==============
+IOSBridge_ReuseScan
+
+pak0.pk3 belongs to both sets, and at 4775 entries it has by far the largest
+central directory of the twenty. Reading it once per set would double the only
+cost this whole thing has, for an answer that cannot differ.
+==============
+*/
+static const dataFileScan_t *IOSBridge_ReuseScan( const char *name,
+		const struct stat *st )
+{
+	int s, i;
+
+	for ( s = 0; s < IOS_DATA_SET_COUNT; s++ ) {
+		const dataSet_t *set = &dataSets[s];
+
+		for ( i = 0; i < set->numFiles; i++ ) {
+			const dataFileScan_t *scan = &set->scan[i];
+
+			if ( Q_stricmp( set->def[i].name, name ) ) {
+				continue;
+			}
+
+			if ( scan->scanned && scan->size == st->st_size
+					&& scan->mtime == st->st_mtime ) {
+				return scan;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/*
+==============
+IOSBridge_ScanSet
+
+Re-reads only what has changed since the last pass.
+
+The launcher rescans once a second while the user copies files in, and there
+are twenty central directories across the two sets -- over 150MB of multiplayer
+data on top of the campaign's 637MB. Opening all of them at that rate would
+make the wait it is reporting on measurably worse. Size and mtime decide, so a
+file still being written is re-read next pass and a finished one never again.
+==============
+*/
+static void IOSBridge_ScanSet( dataSet_t *set, const char *dir )
+{
+	int i;
+
+	set->maps = 0;
+	set->entries = 0;
+	set->megabytes = 0.0;
+	set->playable = qtrue;
+	set->complete = qtrue;
+
+	for ( i = 0; i < set->numFiles; i++ ) {
+		dataFileScan_t *scan = &set->scan[i];
+		char path[MAX_OSPATH];
+		struct stat st;
+
+		Com_sprintf( path, sizeof( path ), "%s/main/%s", dir, set->def[i].name );
+
+		if ( stat( path, &st ) != 0 ) {
+			memset( scan, 0, sizeof( *scan ) );
+		} else if ( !scan->scanned || scan->size != st.st_size
+				|| scan->mtime != st.st_mtime ) {
+			const dataFileScan_t *shared =
+				IOSBridge_ReuseScan( set->def[i].name, &st );
+
+			memset( scan, 0, sizeof( *scan ) );
+
+			if ( shared ) {
+				*scan = *shared;
+			} else {
+				scan->size = st.st_size;
+				scan->mtime = st.st_mtime;
+				IOSBridge_ScanPak( path, scan );
+			}
+
+			scan->present = qtrue;
+		}
+
+		if ( !scan->scanned ) {
+			// A required file that is there but unreadable is worth no more
+			// than a missing one, and during a copy that is exactly what it is.
+			if ( set->def[i].required ) {
+				set->playable = qfalse;
+			}
+			set->complete = qfalse;
+			continue;
+		}
+
+		set->maps += set->mpMapsOnly ? scan->mpMaps : scan->maps;
+		set->entries += scan->entries;
+		set->megabytes += scan->megabytes;
+	}
+}
+
+/*
+==============
+IOSBridge_MatchNumbered
+
+<prefix><digits>.pk3, and nothing else. "mp_pakmaps0.pk3" does not match the
+prefix "mp_pak" because what follows it has to be a number.
+==============
+*/
+static qboolean IOSBridge_MatchNumbered( const char *name, const char *prefix )
+{
+	size_t len = strlen( prefix );
+	const char *p;
+
+	if ( strlen( name ) <= len || Q_stricmpn( name, prefix, (int)len ) ) {
+		return qfalse;
+	}
+
+	p = name + len;
+
+	if ( *p < '0' || *p > '9' ) {
+		return qfalse;
+	}
+
+	while ( *p >= '0' && *p <= '9' ) {
+		p++;
+	}
+
+	return Q_stricmp( p, ".pk3" ) ? qfalse : qtrue;
+}
+
+/*
+==============
+IOSBridge_IsStrayPak
+==============
+*/
+static qboolean IOSBridge_IsStrayPak( const dataSet_t *set, const char *name )
+{
+	int i;
+
+	for ( i = 0; set->shapes[i]; i++ ) {
+		if ( IOSBridge_MatchNumbered( name, set->shapes[i] ) ) {
+			break;
+		}
+	}
+
+	if ( !set->shapes[i] ) {
+		return qfalse;		// not shaped like ours: a mod, or the other set
+	}
+
+	for ( i = 0; i < set->numFiles; i++ ) {
+		if ( !Q_stricmp( set->def[i].name, name ) ) {
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
+/*
+==============
+IOSBridge_ScanStrays
+
+One readdir of main/, which holds a couple of dozen entries. Cheap enough to
+repeat with every rescan, and it is the only way to answer "and nothing else"
+rather than just "nothing missing".
+==============
+*/
+static void IOSBridge_ScanStrays( const char *dir )
+{
+	char path[MAX_OSPATH];
+	DIR *d;
+	struct dirent *entry;
+	int s;
+
+	for ( s = 0; s < IOS_DATA_SET_COUNT; s++ ) {
+		dataSets[s].strayPak = qfalse;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/main", dir );
+
+	d = opendir( path );
+	if ( !d ) {
+		return;
+	}
+
+	while ( ( entry = readdir( d ) ) != NULL ) {
+		for ( s = 0; s < IOS_DATA_SET_COUNT; s++ ) {
+			if ( IOSBridge_IsStrayPak( &dataSets[s], entry->d_name ) ) {
+				dataSets[s].strayPak = qtrue;
+			}
+		}
+	}
+
+	closedir( d );
 }
 
 bool IOSBridge_ScanData( bool rescan )
 {
-	static const char *paks[] = {
-		"pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3", "sp_pak3.pk3", "sp_pak4.pk3"
-	};
 	const char *dir;
-	size_t i;
+	int s;
 
 	if ( dataScanned && !rescan ) {
-		return dataMaps > 0;
+		return dataSets[IOS_DATA_SET_CAMPAIGN].maps > 0;
 	}
 
 	dataScanned = qtrue;
-	dataMaps = 0;
-	dataFiles = 0;
-	dataMegabytes = 0.0;
 
 	dir = Sys_IOS_DataPath();
 
@@ -115,19 +430,127 @@ bool IOSBridge_ScanData( bool rescan )
 		return false;
 	}
 
-	for ( i = 0; i < ARRAY_LEN( paks ); i++ ) {
-		char path[MAX_OSPATH];
-
-		Com_sprintf( path, sizeof( path ), "%s/main/%s", dir, paks[i] );
-		IOSBridge_ScanPak( path );
+	// Campaign first, so multiplayer's pak0.pk3 finds it already read.
+	for ( s = 0; s < IOS_DATA_SET_COUNT; s++ ) {
+		IOSBridge_ScanSet( &dataSets[s], dir );
 	}
 
-	return dataMaps > 0;
+	IOSBridge_ScanStrays( dir );
+
+	return dataSets[IOS_DATA_SET_CAMPAIGN].maps > 0;
 }
 
-int    IOSBridge_DataMaps( void )      { return dataMaps; }
-int    IOSBridge_DataFiles( void )     { return dataFiles; }
-double IOSBridge_DataMegabytes( void ) { return dataMegabytes; }
+/*
+==============
+IOSBridge_DataSet
+
+Every per-set getter goes through here, so a launcher that asks before it has
+called IOSBridge_ScanData gets an answer rather than zeroes. The scan is
+cached, so after the first one this costs nothing.
+==============
+*/
+static const dataSet_t *IOSBridge_DataSet( int set )
+{
+	if ( set < 0 || set >= IOS_DATA_SET_COUNT ) {
+		return NULL;
+	}
+
+	IOSBridge_ScanData( false );
+
+	return &dataSets[set];
+}
+
+int IOSBridge_SetFileCount( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return s ? s->numFiles : 0;
+}
+
+const char *IOSBridge_SetFileName( int set, int index )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	if ( !s || index < 0 || index >= s->numFiles ) {
+		return "";
+	}
+
+	return s->def[index].name;
+}
+
+bool IOSBridge_SetFilePresent( int set, int index )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	if ( !s || index < 0 || index >= s->numFiles ) {
+		return false;
+	}
+
+	return s->scan[index].present ? true : false;
+}
+
+bool IOSBridge_SetFileRequired( int set, int index )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	if ( !s || index < 0 || index >= s->numFiles ) {
+		return false;
+	}
+
+	return s->def[index].required ? true : false;
+}
+
+int IOSBridge_SetMaps( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return s ? s->maps : 0;
+}
+
+int IOSBridge_SetFiles( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return s ? s->entries : 0;
+}
+
+double IOSBridge_SetMegabytes( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return s ? s->megabytes : 0.0;
+}
+
+bool IOSBridge_SetIsPlayable( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return ( s && s->playable ) ? true : false;
+}
+
+/*
+==============
+IOSBridge_SetIsRecommended
+
+"Exactly what you should have", which is a stricter question than "will it
+start". Every file of the set is present and readable, optional ones included
+-- that is what makes it the complete 1.41-era install rather than merely a
+startable one -- and there is nothing beside them wearing an id pak's name that
+this code does not recognise.
+==============
+*/
+bool IOSBridge_SetIsRecommended( int set )
+{
+	const dataSet_t *s = IOSBridge_DataSet( set );
+
+	return ( s && s->complete && !s->strayPak ) ? true : false;
+}
+
+// Kept meaning the campaign, because everything from the Play button down is
+// written against them.
+int    IOSBridge_DataMaps( void )      { return dataSets[IOS_DATA_SET_CAMPAIGN].maps; }
+int    IOSBridge_DataFiles( void )     { return dataSets[IOS_DATA_SET_CAMPAIGN].entries; }
+double IOSBridge_DataMegabytes( void ) { return dataSets[IOS_DATA_SET_CAMPAIGN].megabytes; }
 
 const char *IOSBridge_EngineVersion( void )
 {
@@ -191,17 +614,16 @@ yes/no -- the common failure is copying some of the files but not all.
 */
 int IOSBridge_GameDataMask( void )
 {
-	static const char *files[] = {
-		"pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3", "sp_pak3.pk3", "sp_pak4.pk3"
-	};
 	int mask = 0;
 	int i;
 
-	for ( i = 0; i < (int)ARRAY_LEN( files ); i++ ) {
+	// Straight off the campaign manifest, so the bit order the launcher has
+	// always read stays tied to the list this file scans.
+	for ( i = 0; i < (int)ARRAY_LEN( campaignFiles ); i++ ) {
 		char path[MAX_OSPATH];
 
 		Com_sprintf( path, sizeof( path ), "%s/main/%s",
-			Sys_IOS_DataPath(), files[i] );
+			Sys_IOS_DataPath(), campaignFiles[i].name );
 
 		if ( access( path, R_OK ) == 0 ) {
 			mask |= ( 1 << i );

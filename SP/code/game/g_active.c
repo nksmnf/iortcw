@@ -102,6 +102,19 @@ void P_DamageFeedback( gentity_t *player ) {
 
 
 
+// Flame damage below is dealt every frame for as long as the target burns, and
+// the burn outlives the trigger pull by seconds. One accuracy hit per tick
+// would keep the client's impact queue permanently full and turn a hit into a
+// wound-length buzz, so hits are counted at this interval at most.
+#define FLAME_ACCURACY_HIT_INTERVAL 300
+
+// level.time of the last flame hit counted against each client. The game module
+// is linked into the engine, so this outlives the level that filled it while
+// level.time starts over with the next map: a stamp from ahead of us is a
+// leftover, not a recent hit, and is dropped below rather than gagging the
+// counter until the clock catches up.
+static int flameAccuracyHitTime[MAX_CLIENTS];
+
 /*
 =============
 P_WorldEffects
@@ -205,6 +218,25 @@ void P_WorldEffects( gentity_t *ent ) {
 
 		if ( ent->health > 0 ) {
 			attacker = g_entities + ent->flameBurnEnt;
+
+			// count the hit here rather than at each G_Damage below, and only while
+			// fresh flame is still landing: the client refreshes flameQuotaTime
+			// through Cmd_ClientDamage_f while its flame chunks touch this entity
+			// and stops the moment they miss, so this ties the pulse to the trigger
+			// instead of to a burn that runs on by itself. It is also what keeps the
+			// hit honest: a burn lit any other way (the zombie's own flame attack,
+			// the CatchFire script action) never touches flameQuota, and those leave
+			// flameBurnEnt at zero -- which is the player in single player.
+			if ( level.time < flameAccuracyHitTime[ent->s.number] ) {
+				flameAccuracyHitTime[ent->s.number] = 0;
+			}
+			if ( ent->flameQuotaTime > flameAccuracyHitTime[ent->s.number]
+				 && level.time - flameAccuracyHitTime[ent->s.number] >= FLAME_ACCURACY_HIT_INTERVAL
+				 && LogAccuracyHit( ent, attacker ) ) {
+				flameAccuracyHitTime[ent->s.number] = level.time;
+				attacker->client->ps.persistant[PERS_ACCURACY_HITS]++;
+			}
+
 			if ( g_gametype.integer == GT_SINGLE_PLAYER ) { // JPW NERVE
 				if ( ent->r.svFlags & SVF_CASTAI ) {
 					G_Damage( ent, attacker, attacker, NULL, NULL, 2, DAMAGE_NO_KNOCKBACK, MOD_FLAMETHROWER );

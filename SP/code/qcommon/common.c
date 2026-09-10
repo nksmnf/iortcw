@@ -1013,15 +1013,24 @@ void Com_TouchMemory( void ) {
 
 	sum = 0;
 
+	// The loads have to be volatile: sum is never read afterwards, so at -O3
+	// clang deletes both loops outright. That, and not only the bad bound
+	// below, is why this has always reported 0 msec.
 	j = hunk_low.permanent >> 2;
 	for ( i = 0 ; i < j ; i += 64 ) {         // only need to touch each page
-		sum += ( (int *)s_hunkData )[i];
+		sum += ( (volatile int *)s_hunkData )[i];
 	}
 
+	// The high hunk grows down from the end of the block, so it occupies
+	// [s_hunkTotal - permanent, s_hunkTotal). Upstream ends the walk at
+	// hunk_high.permanent, which is an offset from the *start* of the block and
+	// is therefore below the first index whenever the two hunks do not fill it
+	// between them -- with com_hunkMegs 512 the loop never ran at all, and the
+	// pages this is here to warm stayed cold until the map asked for them.
 	i = ( s_hunkTotal - hunk_high.permanent ) >> 2;
-	j = hunk_high.permanent >> 2;
+	j = s_hunkTotal >> 2;
 	for (  ; i < j ; i += 64 ) {          // only need to touch each page
-		sum += ( (int *)s_hunkData )[i];
+		sum += ( (volatile int *)s_hunkData )[i];
 	}
 
 	end = Sys_Milliseconds();
@@ -2703,6 +2712,67 @@ int Com_TimeVal(int minMsec)
 	return timeVal;
 }
 
+#if TARGET_OS_IPHONE
+// Measured by the display link in ios_perf.m; 0 until it has ticked once.
+// Declared here rather than in sys_local.h because nothing else in the engine
+// has any use for it, and qcommon should not start carrying platform headers.
+extern double Sys_IOS_RefreshHz( void );
+#endif
+
+/*
+=================
+Com_FrameMsec
+
+The frame budget in whole milliseconds, with the fraction carried across frames.
+
+1000 / 120 is 8 in integer arithmetic, so com_maxfps 120 asks this loop for
+125fps. Against a 120Hz panel that is a frame produced every 8ms and a frame
+shown every 8.33ms: the two drift apart, one frame in fifteen is served twice,
+and the frame times come out as a sawtooth instead of a line. Carrying the
+remainder makes the average interval the one that was actually asked for.
+
+Where the real cadence of the display is known -- iOS measures it, because
+ProMotion picks its own rate rather than announcing one -- a com_maxfps above
+that cadence is snapped down to it. Frames the panel cannot show cost power and
+bring the beat back.
+=================
+*/
+static int Com_FrameMsec( int maxfps, qboolean snapToDisplay ) {
+	static float carry = 0.0f;
+	float wanted;
+	int msec;
+
+	wanted = (float)maxfps;
+
+#if TARGET_OS_IPHONE
+	if ( snapToDisplay ) {
+		double hz = Sys_IOS_RefreshHz();
+
+		// The sanity floor is deliberate: this may only ever lower the cap
+		// towards the panel, never strand the game at some transient reading.
+		if ( hz >= 30.0 && wanted > (float)hz ) {
+			wanted = (float)hz;
+		}
+	}
+#else
+	(void)snapToDisplay;
+#endif
+
+	wanted = 1000.0f / wanted + carry;
+	msec = (int)wanted;
+
+	if ( msec < 1 ) {
+		// Faster than this clock can measure. Drop the carry rather than let it
+		// accumulate a debt the loop has no way to pay back.
+		carry = 0.0f;
+		return 1;
+	}
+
+	carry = wanted - msec;
+
+	return msec;
+}
+
 /*
 =================
 Com_Frame
@@ -2765,11 +2835,11 @@ void Com_Frame( void ) {
 		else
 		{
 			if(com_minimized->integer && com_maxfpsMinimized->integer > 0)
-				minMsec = 1000 / com_maxfpsMinimized->integer;
+				minMsec = Com_FrameMsec( com_maxfpsMinimized->integer, qfalse );
 			else if(com_unfocused->integer && com_maxfpsUnfocused->integer > 0)
-				minMsec = 1000 / com_maxfpsUnfocused->integer;
+				minMsec = Com_FrameMsec( com_maxfpsUnfocused->integer, qfalse );
 			else if(com_maxfps->integer > 0)
-				minMsec = 1000 / com_maxfps->integer;
+				minMsec = Com_FrameMsec( com_maxfps->integer, qtrue );
 			else
 				minMsec = 1;
 			
