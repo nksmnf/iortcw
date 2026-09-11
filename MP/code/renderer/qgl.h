@@ -34,7 +34,20 @@ If you have questions concerning this license or the applicable additional terms
 #define __QGL_H__
 
 #ifdef USE_OPENGLES
-#ifdef USE_LOCAL_HEADERS
+#if defined(__APPLE__)
+// iOS reaches GLES through EAGL, not EGL -- there is no EGL implementation on
+// the platform at all. SDL creates the context, and these headers are the ones
+// Apple ships. (The EGL include on the other platforms is only ever an include;
+// nothing in the renderer calls into EGL.)
+#	include <OpenGLES/ES1/gl.h>
+#	include <OpenGLES/ES1/glext.h>
+// Apple's GLES headers spell the calling convention GL_APIENTRY and never
+// define the APIENTRY that the rest of this header (and SDL's GL headers on
+// every other platform) expects. Both are empty on arm64.
+#	ifndef APIENTRY
+#		define APIENTRY GL_APIENTRY
+#	endif
+#elif defined(USE_LOCAL_HEADERS)
 #	include "SDL_opengles.h"
 #	include "EGL/egl.h"
 #else

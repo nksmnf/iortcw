@@ -46,7 +46,9 @@ QGL_3_0_PROCS;
 #undef GLE
 
 #ifdef USE_OPENGLES
-#ifdef USE_LOCAL_HEADERS
+#if defined(__APPLE__)
+// Already pulled in by qgl.h from <OpenGLES/ES1/...>; Apple has no GLES/ prefix.
+#elif defined(USE_LOCAL_HEADERS)
 #	include "GLES/glext.h"
 #else
 #	include <GLES/glext.h>

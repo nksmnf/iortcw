@@ -244,6 +244,136 @@ enum Loc {
         "25. Пробуждение": "25. Awakening",
         "26. Финал": "26. End",
 
+        // --- Мультиплеер: вкладки и экраны ---
+        "Серверы": "Servers",
+        "Мультиплеер": "Multiplayer",
+        "Свой сервер": "Host",
+
+        // Поиск игры
+        "Поиск игры": "Find a game",
+        "Обновить список": "Refresh list",
+        "Идёт опрос…": "Scanning\u{2026}",
+        "Только с игроками": "Occupied only",
+        "Найденные серверы": "Servers found",
+        "Подключиться": "Connect",
+        "Подключиться по адресу": "Connect by address",
+        "ботов": "bots",
+        "Список собирается напрямую с трёх живых мастер-серверов. Боты не считаются за игроков: на большинстве серверов их два-три десятка, и без этого пустой сервер выглядит полным.":
+            "The list is gathered straight from the three masters that still answer. Bots are not counted as players: most servers run twenty or thirty, and without that an empty server looks full.",
+        "Если вы знаете адрес сервера, его не обязательно искать в списке. Формат: 192.168.1.10:27960":
+            "If you know the address you do not need the list. Format: 192.168.1.10:27960",
+        "Игровые файлы ещё не на месте — подключиться не получится. Откройте вкладку «Данные».":
+            "The game data is not in place yet, so joining will not work. See the Data tab.",
+        "Игровые файлы ещё не на месте. Откройте вкладку «Данные».":
+            "The game data is not in place yet. See the Data tab.",
+
+        // Настройки клиента
+        "Игрок": "Player",
+        "Имя": "Name",
+        "Имя, под которым вас видят на сервере.": "The name other players see.",
+        "Сеть": "Network",
+        "Скорость (rate)": "Rate",
+        "Пакетов в секунду": "Packets per second",
+        "Снимков в секунду": "Snapshots per second",
+        "Докачивать карты с сервера": "Download maps from the server",
+        "Экран боя": "Heads-up display",
+        "Вид прицела": "Crosshair",
+        "Размер прицела": "Crosshair size",
+        "Счётчик кадров": "Frame counter",
+        "Лагометр": "Lagometer",
+        "Кровь": "Blood",
+        "Упрощённые предметы": "Simple items",
+        "Автоперезарядка": "Auto-reload",
+        "нет": "off",
+        "Пропускная способность канала. 25000 подходит для любого современного подключения; снижать имеет смысл только на очень плохой связи.":
+            "Channel bandwidth. 25000 suits any modern connection; lowering it only helps on a genuinely bad line.",
+        "Сколько снимков состояния мира сервер шлёт вам в секунду. Больше значения, чем сервер отдаёт, получить нельзя.":
+            "How many world snapshots the server sends you per second. You cannot receive more than it sends.",
+        "Больше половины населённых серверов играют на нестандартных картах. Без докачки на них просто не зайти. Качается по UDP — медленно, но это единственный путь: curl в сборку для iOS не входит.":
+            "Over half the populated servers run custom maps, and without downloads you simply cannot join them. It goes over UDP -- slow, but it is the only route: curl is not built for iOS.",
+        "0 убирает прицел совсем.": "0 removes the crosshair entirely.",
+        "Перезаряжать автоматически, когда обойма опустела.": "Reload automatically when the magazine runs dry.",
+        "Графика, чувствительность стиков, гироскоп и раскладка геймпада — на вкладках «Графика» и «Управление»: они общие с одиночной игрой.":
+            "Graphics, stick feel, gyro and the pad layout are on the Graphics and Controls tabs: they are shared with the campaign.",
+
+        // Хостинг
+        "Сервер": "Server",
+        "Название": "Title",
+        "Как сервер называется в списке.": "How the server is named in the list.",
+        "Режим": "Mode",
+        "Играю сам": "I play",
+        "Локальный": "LAN",
+        "Интернет": "Internet",
+        "Работать при скрытом приложении": "Keep running when hidden",
+        "Игра": "Game",
+        "Режим игры": "Game type",
+        "Задание": "Objective",
+        "Секундомер": "Stopwatch",
+        "Контрольные точки": "Checkpoint",
+        "Захват и удержание": "Capture and hold",
+        "Ротация карт": "Map rotation",
+        "Карты игры": "Stock maps",
+        "В ротации": "In rotation",
+        "не задана": "not set",
+        "карт": "maps",
+        "Слотов": "Slots",
+        "Лимит времени, мин": "Time limit, min",
+        "Огонь по своим": "Friendly fire",
+        "Уравнивать команды": "Force team balance",
+        "Разминка": "Warmup",
+        "Длительность разминки, с": "Warmup length, s",
+        "Жизней на раунд": "Lives per round",
+        "без лимита": "unlimited",
+        "Доступ": "Access",
+        "Порт": "Port",
+        "Пароль на вход": "Join password",
+        "Пароль rcon": "rcon password",
+        "Приветствие": "Message of the day",
+        "Регистрировать на мастер-серверах": "Register with the masters",
+        "Тонкая настройка": "Fine tuning",
+        "Проверка файлов (sv_pure)": "File check (sv_pure)",
+        "Защита от флуда": "Flood protection",
+        "Потолок скорости клиента": "Client rate ceiling",
+        "Максимальный пинг": "Maximum ping",
+        "Лимит жалоб": "Complaint limit",
+        "Запустить сервер": "Start server",
+        "Карты по очереди. Первая запускается сразу.": "Maps in order. The first one starts immediately.",
+        "0 — без ограничения по времени.": "0 means no time limit.",
+        "0 — обычные бесконечные респауны.": "0 is the usual unlimited respawns.",
+        "0 — не ограничивать. Отсекает игроков с пингом выше или ниже порога.":
+            "0 means no limit. Rejects players whose ping is outside the threshold.",
+        "Разминка перед началом раунда.": "A warmup period before the round begins.",
+        "Порт UDP. Если поднимаете несколько серверов или он уже занят — смените.":
+            "The UDP port. Change it if you run more than one server or it is already taken.",
+        "Пусто — сервер открыт для всех.": "Empty means the server is open to everyone.",
+        "Пароль удалённого управления. Пустой — rcon выключен, и это правильное состояние, если вы им не пользуетесь.":
+            "The remote-control password. Empty disables rcon, which is the right state if you do not use it.",
+        "Сообщение, которое видят подключившиеся.": "Shown to players as they join.",
+        "Сервер сообщает о себе мастер-серверам каждые пять минут. Без этого в общий список он не попадёт.":
+            "The server reports to the masters every five minutes. Without it, it never reaches the public list.",
+        "Требовать от клиентов те же файлы, что на сервере. Выключение открывает дорогу чит-пакам.":
+            "Require clients to load the same files as the server. Turning it off opens the door to cheat paks.",
+        "Приложение продолжает работать, когда вы его свернули или погасили экран. Держите планшет на зарядке: процессор не засыпает, и батарея садится заметно быстрее.":
+            "The app keeps running when you put it away or the screen goes off. Keep the tablet plugged in: the CPU never sleeps and the battery drains noticeably faster.",
+        "В этом режиме движок ничего не рисует: экран планшета останется тёмным, пока сервер работает. Это нормально — сервер живёт в фоне.":
+            "In this mode the engine draws nothing: the tablet stays dark while the server runs. That is expected -- the server lives in the background.",
+        "Пусто — сервер запустится на первой карте из списка ниже.":
+            "Empty means the server starts on the first map from the list below.",
+        "Вы играете на своём же сервере, картинка на планшете. Другие игроки находят вас только в локальной сети.":
+            "You play on your own server and the tablet shows the game. Others can only find you on the local network.",
+        "Чистый сервер без игрока: планшет ничего не рисует, экран будет тёмным. Виден только в локальной сети.":
+            "A plain server with no player attached: nothing is drawn and the screen stays dark. Visible on the local network only.",
+        "Сервер регистрируется на мастер-серверах и виден всем. Картинки нет. Нужен проброс UDP-порта на роутере — через мобильный интернет входящие соединения не проходят.":
+            "The server registers with the masters and is visible to everyone. Nothing is drawn. You need a UDP port forward on your router -- incoming connections never arrive over mobile data.",
+        "Штатный режим RTCW: одна команда выполняет задачу, другая защищает. Так играет почти вся сеть.":
+            "The standard RTCW mode: one team completes an objective, the other defends. Nearly the whole network plays this.",
+        "То же задание, но команды меняются местами и соревнуются, кто быстрее.":
+            "The same objective, but the teams swap and race each other's time.",
+        "Команды удерживают флаги-контрольные точки на карте.":
+            "Teams hold flag checkpoints across the map.",
+        "Очки начисляются за время удержания точек.":
+            "Points accrue for time spent holding the points.",
+
     ]
 
     /// The paragraphs, both languages together.

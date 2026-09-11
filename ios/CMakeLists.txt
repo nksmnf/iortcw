@@ -427,10 +427,15 @@ endif()
 # The application
 # ---------------------------------------------------------------------------
 if(IORTCW_IOS)
+    # No space in the product name: it becomes the .app filename and the
+    # executable inside it, and both are handled by shell scripts. The name the
+    # player sees is CFBundleDisplayName, set just below.
     if(IORTCW_IS_MP)
-        set(APP_NAME "iORTCW MP")
+        set(APP_NAME iORTCW-MP)
+        set(IORTCW_DISPLAY_NAME "iORTCW MP")
     else()
         set(APP_NAME iORTCW)
+        set(IORTCW_DISPLAY_NAME "iORTCW")
     endif()
     # The asset catalogue carries the app icon. It has to be a source of the
     # target, not just a bundle resource, so Xcode runs actool over it.

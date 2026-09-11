@@ -54,6 +54,45 @@ unsigned int CON_LogRead( char *out, unsigned int outSize );
 char *Sys_StripAppBundle( char *pwd );
 #endif
 
+#if TARGET_OS_IPHONE
+// implemented in ios/Sources/sys_ios.m
+const char *Sys_IOS_DataPath( void );      // <container>/Documents, read/write
+const char *Sys_IOS_AppPath( void );       // bundle resources, read-only
+void        Sys_IOS_InitPaths( void );     // creates main/ and main/save/
+qboolean    Sys_IOS_HasGameData( void );   // is main/pak0.pk3 there yet?
+int         Sys_IOS_ImportLooseData( void ); // move stray pk3s into main/
+void        Sys_IOS_InitAudioSession( void );
+void        Sys_IOS_InitSDLHints( void );  // must run before SDL creates its window
+// ios_dualsense.m -- adaptive triggers, which SDL does not expose
+void        Sys_IOS_SetAdaptiveTrigger( int side, int mode, float start, float end, float force );
+qboolean    Sys_IOS_HasAdaptiveTriggers( void );
+
+// ios_touch.m -- on-screen controls, shown only when no controller is attached
+void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
+
+// Tell iPadOS that this part of the interface reads the controller itself, so
+// it stops delivering the same input a second time through UIKit. Takes a
+// UIWindow or a UIView; safe to call more than once on the same one.
+void        Sys_IOS_ClaimControllerEvents( void *windowOrView );
+
+// Whether a real keyboard is attached, as opposed to the arrow keys iPadOS
+// synthesises from a game controller.
+qboolean    Sys_IOS_HasHardwareKeyboard( void );
+void        Sys_IOS_PerfInit( void *parentView );
+void        Sys_IOS_PerfFrame( void );
+void        Sys_IOS_PerfNoteSwap( double ms );
+void        Sys_IOS_GyroInit( void );
+void        Sys_IOS_GyroFrame( void );
+void        Sys_IOS_GyroShutdown( void );
+void        Sys_IOS_TouchOverlayUpdate( void );
+void        Sys_IOS_TouchOverlayShutdown( void );
+
+// Launcher (Swift, via @_cdecl) and its C-side bridge
+void        IOSLauncher_RunModal( void );
+void        IOSLauncher_Show( void );
+const char *IOSBridge_BuildCommandLine( void );
+#endif
+
 void Sys_GLimpSafeInit( void );
 void Sys_GLimpInit( void );
 void Sys_PlatformInit( void );

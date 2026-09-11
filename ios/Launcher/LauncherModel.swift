@@ -448,6 +448,14 @@ final class LauncherModel: ObservableObject {
 
     @Published var controllerName: String? = nil
 
+    /// Multiplayer settings, hosting included. Built in both applications so the
+    /// type is always available; only the MP launcher shows the tabs that use
+    /// it, and only its commit() writes any of it out.
+    let mp = MultiplayerModel()
+
+    /// True in the MP application. Decides which tabs the launcher offers.
+    var isMultiplayer: Bool { IOSBridge_IsMultiplayer() }
+
     // What is actually in the pk3s, read from their directories rather than
     // taken on faith from the filenames being present. Both sets, in the order
     // DataSetKind lists them.
@@ -986,6 +994,12 @@ final class LauncherModel: ObservableObject {
         // hand the player the wrong weapons on the next cold start.
         IOSBridge_SetCvar("g_gameskill", "\(skill)")
         IOSBridge_SetCvar("g_missionLoadout", "\(missionLoadout)")
+
+        // Before the write, for the reason spelled out above: a pair stashed
+        // after it reaches neither the file nor the engine.
+        if isMultiplayer {
+            mp.commitClient()
+        }
 
         IOSBridge_WriteConfig()
     }

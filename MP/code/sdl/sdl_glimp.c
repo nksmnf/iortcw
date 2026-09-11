@@ -36,10 +36,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "sdl_icon.h"
 
 #ifdef USE_OPENGLES
+#if !defined(__APPLE__)
+// Apple has no EGL; the context comes from EAGL via SDL's UIKit backend.
 #ifdef USE_LOCAL_HEADERS
 #	include "EGL/egl.h"
 #else
 #	include <EGL/egl.h>
+#endif
 #endif
 void myglMultiTexCoord2f( GLenum texture, GLfloat s, GLfloat t )
 {

@@ -137,11 +137,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #endif
 
 
-//============================================================== MAC OS X ===
+//======================================================= MAC OS X and iOS ===
 
 #if defined(__APPLE__) || defined(__APPLE_CC__)
 
+#include <TargetConditionals.h>
+
+#if TARGET_OS_IPHONE
+#define OS_STRING "ios"
+#else
 #define OS_STRING "macosx"
+#endif
+
 #define ID_INLINE inline
 #define PATH_SEP '/'
 

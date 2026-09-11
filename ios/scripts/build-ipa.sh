@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build an unsigned .ipa for sideloading with AltStore.
 #
-#   ios/scripts/build-ipa.sh
+#   ios/scripts/build-ipa.sh            -- the campaign
+#   IORTCW_TREE=MP ios/scripts/build-ipa.sh  -- multiplayer
 #
 # The archive is deliberately unsigned: AltStore re-signs the payload with the
 # user's own free developer certificate when it installs, and re-signs it again
@@ -15,8 +16,17 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BUILD_DIR="$ROOT/build/ios"
-OUT_DIR="$ROOT/build/ipa"
+TREE="${IORTCW_TREE:-SP}"
+export IORTCW_TREE="$TREE"   # gen-xcode.sh reads it too
+
+case "$TREE" in
+    SP) SUFFIX=""; APP_NAME="iORTCW"; DATA="pak0.pk3  sp_pak1.pk3  sp_pak2.pk3  sp_pak3.pk3  sp_pak4.pk3" ;;
+    MP) SUFFIX="-mp"; APP_NAME="iORTCW-MP"; DATA="pak0.pk3  mp_pak0.pk3 .. mp_pak5.pk3" ;;
+    *)  echo "error: IORTCW_TREE must be SP or MP, got '$TREE'" >&2; exit 1 ;;
+esac
+
+BUILD_DIR="$ROOT/build/ios$SUFFIX"
+OUT_DIR="$ROOT/build/ipa$SUFFIX"
 
 if [ -z "$DEVELOPER_DIR" ] && [ -d /Applications/Xcode.app ]; then
     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -29,14 +39,14 @@ fi
 echo "==> Generating project"
 "$ROOT/ios/scripts/gen-xcode.sh" device > /dev/null
 
-echo "Building iORTCW (Release, unsigned)..."
+echo "Building $APP_NAME (Release, unsigned)..."
 cmake --build "$BUILD_DIR" --config Release -- \
       -quiet \
       CODE_SIGNING_ALLOWED=NO \
       CODE_SIGNING_REQUIRED=NO \
       CODE_SIGN_IDENTITY=""
 
-APP="$BUILD_DIR/Release-iphoneos/iORTCW.app"
+APP="$BUILD_DIR/Release-iphoneos/$APP_NAME.app"
 if [ ! -d "$APP" ]; then
     echo "error: $APP was not produced" >&2
     exit 1
@@ -47,20 +57,20 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/Payload"
 cp -R "$APP" "$OUT_DIR/Payload/"
 
-( cd "$OUT_DIR" && zip -qry iORTCW.ipa Payload )
+( cd "$OUT_DIR" && zip -qry "$APP_NAME.ipa" Payload )
 rm -rf "$OUT_DIR/Payload"
 
-SIZE=$(du -h "$OUT_DIR/iORTCW.ipa" | cut -f1)
+SIZE=$(du -h "$OUT_DIR/$APP_NAME.ipa" | cut -f1)
 
 cat <<EOF
 
-Built $OUT_DIR/iORTCW.ipa ($SIZE)
+Built $OUT_DIR/$APP_NAME.ipa ($SIZE)
 
 To install:
   1. Send the .ipa to your iPad and open it with AltStore, or use AltServer.
-  2. Launch iORTCW once. It will report that the game data is missing.
-  3. In Files -> On My iPad -> iORTCW -> main, copy in from your RTCW install:
-        pak0.pk3  sp_pak1.pk3  sp_pak2.pk3  sp_pak3.pk3  sp_pak4.pk3
+  2. Launch $APP_NAME once. It will report that the game data is missing.
+  3. In Files -> On My iPad -> $APP_NAME -> main, copy in from your RTCW install:
+        $DATA
      The launcher notices them as they arrive; no relaunch needed.
   4. Pair a DualSense over Bluetooth and set your bindings in the launcher.
 EOF

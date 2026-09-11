@@ -65,28 +65,50 @@ struct WolfMap: Identifiable, Hashable {
     ]
 }
 
-/// How visible a hosted server is.
+/// How a hosted game is run. This is the "dedicated" cvar, and it decides three
+/// things at once, which is why it is one control rather than three:
+///
+///   0  listen  -- the host plays. There is a renderer, so the iPad shows the
+///                 game. No heartbeat is sent, so it is findable on the LAN by
+///                 broadcast and nowhere else.
+///   1  LAN     -- a real server with no client attached. Nothing is drawn, so
+///                 the screen stays dark; still no heartbeat.
+///   2  internet-- as above, and registered with the masters every five minutes.
+///
+/// The heartbeat check is explicit about this: only dedicated 2 reports to a
+/// master (MP/code/server/sv_main.c:259). So "play with friends over the
+/// internet" and "watch the game on the tablet" cannot both be true.
 enum ServerVisibility: Int, CaseIterable, Identifiable {
-    case lan = 1        // dedicated 1
-    case internet = 2   // dedicated 2
+    case listen = 0
+    case lan = 1
+    case internet = 2
 
     var id: Int { rawValue }
 
     var title: String {
         switch self {
-        case .lan:      return "Локальная сеть"
+        case .listen:   return "Играю сам"
+        case .lan:      return "Локальный"
         case .internet: return "Интернет"
         }
     }
 
     var detail: String {
         switch self {
+        case .listen:
+            return "Вы играете на своём же сервере, картинка на планшете. Другие игроки находят вас только в локальной сети."
         case .lan:
-            return "Сервер виден только в вашей сети. Heartbeat мастерам не отправляется."
+            return "Чистый сервер без игрока: планшет ничего не рисует, экран будет тёмным. Виден только в локальной сети."
         case .internet:
-            return "Сервер регистрируется на мастер-серверах. Нужен проброс UDP-порта на роутере — через мобильный интернет входящие соединения не проходят."
+            return "Сервер регистрируется на мастер-серверах и виден всем. Картинки нет. Нужен проброс UDP-порта на роутере — через мобильный интернет входящие соединения не проходят."
         }
     }
+
+    /// Does the engine draw anything in this mode?
+    var hasRenderer: Bool { self == .listen }
+
+    /// Does it report to the masters?
+    var registersWithMasters: Bool { self == .internet }
 }
 
 // MARK: - Model
@@ -110,7 +132,7 @@ final class MultiplayerModel: ObservableObject {
 
     // --- hosting -----------------------------------------------------------
     @Published var hostName: String = "iORTCW iPad"
-    @Published var visibility: ServerVisibility = .lan
+    @Published var visibility: ServerVisibility = .listen
     @Published var maxClients: Int = 12
     @Published var gameType: WolfGameType = .objective
     @Published var startMap: String = "mp_beach"
@@ -298,9 +320,53 @@ final class MultiplayerModel: ObservableObject {
         // clearing them makes "LAN only" unambiguous rather than relying on the
         // dedicated check alone.
         for (index, master) in MultiplayerModel.masterServers.enumerated() {
-            let shouldRegister = registerWithMasters && visibility == .internet
+            let shouldRegister = registerWithMasters && visibility.registersWithMasters
             IOSBridge_SetCvar("sv_master\(index + 1)", shouldRegister ? master : "")
         }
+    }
+
+    // MARK: Starting
+
+    /// Join a server. The address goes in as a startup command, which the engine
+    /// runs once it is up -- the same path the launcher already uses to start a
+    /// campaign mission.
+    func connect(to address: String) {
+        commitClient()
+        save()
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_WriteConfig()
+        IOSBridge_SetStartupCommand("connect \(address)")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Start hosting.
+    ///
+    /// dedicated and net_port are both settled before any config is exec'd --
+    /// one is CVAR_INIT, the other CVAR_LATCH -- so they go on the command line
+    /// rather than into ios_launcher.cfg, where they would simply be ignored.
+    func startHosting() {
+        commitClient()
+        commitServer()
+
+        for (name, value) in rotationCommands() {
+            IOSBridge_SetCvar(name, value)
+        }
+
+        save()
+
+        IOSBridge_SetExtraArgs(
+            "+set dedicated \(visibility.rawValue) +set net_port \(netPort)")
+        IOSBridge_WriteConfig()
+
+        // Keeping the process scheduled is what makes hosting survive the app
+        // being put away. Only worth it when there is actually a server: a
+        // silent audio graph running behind a single-player game is pure drain.
+        IOSBridge_SetKeepAwake(keepAwake)
+
+        // vstr d1 rather than "map X": it starts the rotation at its first
+        // entry, so nextmap is already primed when the first round ends.
+        IOSBridge_SetStartupCommand("vstr d1")
+        IOSBridge_LauncherFinished()
     }
 
     /// The map rotation, as the vstr chain RTCW servers have always used.

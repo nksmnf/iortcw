@@ -61,7 +61,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 static AVAudioEngine       *keepAliveEngine;
 static AVAudioSourceNode   *keepAliveSource;
 static BOOL                 keepAliveActive;
-static UIBackgroundTaskIdentifier keepAliveTask = UIBackgroundTaskInvalid;
+// UIBackgroundTaskInvalid is not a compile-time constant in the current SDK, so
+// this cannot be its initialiser; zero is never a valid identifier and the
+// accessor below turns it into the real sentinel.
+static UIBackgroundTaskIdentifier keepAliveTask;
 
 /*
 ==============
@@ -169,9 +172,9 @@ static void IOSKeepAlive_Stop( void )
 	dispatch_async( dispatch_get_main_queue(), ^{
 		[UIApplication sharedApplication].idleTimerDisabled = NO;
 
-		if ( keepAliveTask != UIBackgroundTaskInvalid ) {
+		if ( keepAliveTask != 0 && keepAliveTask != UIBackgroundTaskInvalid ) {
 			[[UIApplication sharedApplication] endBackgroundTask:keepAliveTask];
-			keepAliveTask = UIBackgroundTaskInvalid;
+			keepAliveTask = 0;
 		}
 	} );
 

@@ -33,7 +33,10 @@ struct LauncherView: View {
     /// the home indicator's inset, read once the window exists. See `footer`.
     @State private var bottomInset: CGFloat = 0
 
-    private static let tabCount = 4
+    /// The MP application carries two extra tabs -- finding a game and running
+    /// one -- and swaps Campaign for the multiplayer settings, so the count is
+    /// not a constant.
+    private static var tabCount: Int { IOSBridge_IsMultiplayer() ? 6 : 4 }
 
     /// The tab the launcher opens on is decided here rather than being a
     /// constant on `tab`, because the model is built before the view is and by
@@ -50,9 +53,16 @@ struct LauncherView: View {
     init(model: LauncherModel) {
         self.model = model
 
-        let campaignReady = model.dataSet(.campaign)?.isPlayable ?? false
-        // The Picker's tags, in the order the tabs are written below.
-        _tab = State(initialValue: campaignReady ? 1 : 0)
+        // The Picker's tags, in the order the tabs are written below. In the MP
+        // application the set that matters is the multiplayer one, and tab 1 is
+        // the server browser rather than the campaign.
+        if IOSBridge_IsMultiplayer() {
+            let mpReady = model.dataSet(.multiplayer)?.isPlayable ?? false
+            _tab = State(initialValue: mpReady ? 1 : 0)
+        } else {
+            let campaignReady = model.dataSet(.campaign)?.isPlayable ?? false
+            _tab = State(initialValue: campaignReady ? 1 : 0)
+        }
     }
 
     var body: some View {
@@ -66,10 +76,19 @@ struct LauncherView: View {
             // at one look. It starts on the same left line as the emblem above
             // it and the content below, so the screen hangs off one edge.
             Picker("", selection: $tab) {
-                Text(L("Данные")).tag(0)
-                Text(L("Кампания")).tag(1)
-                Text(L("Графика")).tag(2)
-                Text(L("Управление")).tag(3)
+                if model.isMultiplayer {
+                    Text(L("Данные")).tag(0)
+                    Text(L("Серверы")).tag(1)
+                    Text(L("Мультиплеер")).tag(2)
+                    Text(L("Свой сервер")).tag(3)
+                    Text(L("Графика")).tag(4)
+                    Text(L("Управление")).tag(5)
+                } else {
+                    Text(L("Данные")).tag(0)
+                    Text(L("Кампания")).tag(1)
+                    Text(L("Графика")).tag(2)
+                    Text(L("Управление")).tag(3)
+                }
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 620)
@@ -81,11 +100,22 @@ struct LauncherView: View {
             Divider()
 
             Group {
-                switch tab {
-                case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                case 1: CampaignView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                case 2: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                if model.isMultiplayer {
+                    switch tab {
+                    case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    case 1: ServersView(model: model, mp: model.mp)
+                    case 2: MultiplayerSettingsView(mp: model.mp)
+                    case 3: HostView(model: model, mp: model.mp)
+                    case 4: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    }
+                } else {
+                    switch tab {
+                    case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    case 1: CampaignView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    case 2: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                    }
                 }
             }
 
@@ -550,11 +580,11 @@ enum Space {
 
 /// The corner of a card. One value, so panels, lists and blocks are cut the
 /// same way; the action button is deliberately tighter, see `tileRadius`.
-private let cardRadius: CGFloat = 14
+let cardRadius: CGFloat = 14
 
 /// The corner of a control the system draws for us -- what a segmented picker
 /// is cut to, and therefore what a focus ring around one has to follow.
-private let controlRadius: CGFloat = 8
+let controlRadius: CGFloat = 8
 
 /// The launcher's ladder of type.
 ///
@@ -668,7 +698,7 @@ enum Theme {
 /// The heading is the launcher's own section type rather than the Form's small
 /// grey caps, so a block of settings weighs the same as a block of anything
 /// else here.
-private struct Panel<Content: View>: View {
+struct Panel<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
@@ -703,7 +733,7 @@ private struct Panel<Content: View>: View {
 /// settings legible: the eye groups by proximity before it reads a word, and a
 /// note set as far from the control above it as from the one below belongs to
 /// neither of them.
-private struct Field<Content: View>: View {
+struct Field<Content: View>: View {
     var note: String? = nil
     @ViewBuilder var content: Content
 
@@ -731,7 +761,7 @@ private struct Field<Content: View>: View {
 /// them, which is also the longest and therefore the most precise it can be.
 /// The readout is monospaced so that the line does not shift as the digits
 /// change under the thumb.
-private struct SliderRow: View {
+struct SliderRow: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -763,7 +793,7 @@ private struct SliderRow: View {
 /// The pad cursor is drawn as a ring around the pair rather than as the filled
 /// plate the other rows get. A segmented control's unselected segments are
 /// translucent, and a wash of orange laid behind them comes through as mud.
-private struct ChoiceRow<Value: Hashable, Options: View>: View {
+struct ChoiceRow<Value: Hashable, Options: View>: View {
     let title: String
     @Binding var selection: Value
     let focused: Bool
@@ -784,7 +814,7 @@ private struct ChoiceRow<Value: Hashable, Options: View>: View {
 
 /// A sentence that belongs to a whole panel rather than to any one control in
 /// it -- the ones that used to sit at the end of a Form section.
-private struct Note: View {
+struct Note: View {
     let text: String
 
     init(_ text: String) { self.text = text }

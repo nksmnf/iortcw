@@ -155,6 +155,25 @@ If you have questions concerning this license or the applicable additional terms
 #define Q_EXPORT
 #endif
 
+// Controller haptic capabilities, and the DualSense adaptive trigger modes.
+//
+// Carried here rather than in the platform layer because the same names are
+// shared by the engine and by ios/Sources/ios_dualsense.m. The multiplayer
+// game modules do not drive them yet -- there is no cg_haptics.c in this tree,
+// so nothing sets a per-weapon trigger profile the way the campaign does -- but
+// the platform layer is shared between the two applications and has to compile
+// against either.
+#define HAPTIC_CAP_RUMBLE   1
+#define HAPTIC_CAP_LED      2
+#define HAPTIC_CAP_GYRO     4
+#define HAPTIC_CAP_TOUCHPAD 8
+#define HAPTIC_CAP_ADAPTIVE 16
+
+#define ADAPTIVE_TRIGGER_OFF       0
+#define ADAPTIVE_TRIGGER_FEEDBACK  1   // constant resistance
+#define ADAPTIVE_TRIGGER_WEAPON    2   // resists, then breaks -- a trigger pull
+#define ADAPTIVE_TRIGGER_VIBRATION 3   // rattles, for automatics
+
 /**********************************************************************
   VM Considerations
 
