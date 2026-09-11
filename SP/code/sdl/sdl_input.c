@@ -87,6 +87,7 @@ static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player hea
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
 static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
 static cvar_t *in_debugPad          = NULL;  // log gamepad buttons and sticks
+static cvar_t *in_padPointerGuard   = NULL;  // ignore the system pointer while a stick is pushed
 static cvar_t *in_touchLookSens     = NULL;  // how fast a finger turns the view, both axes
 static cvar_t *in_touchLookYawSens  = NULL;  // per-axis overrides; 0 means "use in_touchLookSens"
 static cvar_t *in_touchLookPitchSens = NULL;
@@ -677,7 +678,39 @@ static void IN_GamepadGyro( void );
 static void IN_GyroReset( void );
 static void IN_GyroContribute( int source, int pitch, int yaw );
 static void IN_GyroFlush( void );
+static void IN_PadEmuFrame( void );
+static void IN_DigitalMoveRelease( void );
+static void IN_ClearJoystickAxes( void );
+static void IN_NotePadStickDirections( void );
+static qboolean IN_PadStickPushedRecently( void );
+static void IN_PadEmuEnsure( void );
+static void IN_PadEmuForget( void );
+static void IN_PadEmuDetach( void );
 
+
+/*
+===============
+IN_ClearJoystickAxes
+
+Puts every joystick axis back to zero.
+
+CL_JoystickEvent assigns and never decays -- an axis keeps whatever it was last
+told until something tells it otherwise -- and the only thing that ever tells
+the look axes otherwise is IN_GamepadSticks, which is reached only while a pad
+is open. A controller that disconnects, runs flat or is simply reopened while a
+stick is pushed therefore leaves a turn rate sitting on the axis with nothing
+left alive to take it off, and the view spins, at a fixed speed, for the rest of
+the session. That is not a thing the player can undo.
+===============
+*/
+static void IN_ClearJoystickAxes( void )
+{
+	int i;
+
+	for ( i = 0; i < MAX_JOYSTICK_AXIS; i++ ) {
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, i, 0, 0, NULL );
+	}
+}
 
 /*
 ===============
@@ -704,8 +737,11 @@ static void IN_InitJoystick( void )
 
 	// Before any of the early returns below: the controller list has changed,
 	// so whatever the gyro had learned or last sent belongs to a pad that may
-	// no longer be there.
+	// no longer be there, and a direction the old stick was holding belongs to
+	// nobody.
 	IN_GyroReset();
+	IN_DigitalMoveRelease();
+	IN_ClearJoystickAxes();
 
 	// SDL 2.0.4 requires SDL_INIT_JOYSTICK to be initialized separately from
 	// SDL_INIT_GAMECONTROLLER for SDL_JoystickOpen() to work correctly,
@@ -732,6 +768,12 @@ static void IN_InitJoystick( void )
 		}
 		Com_DPrintf("SDL_Init(SDL_INIT_GAMECONTROLLER) passed.\n");
 	}
+
+	// A virtual pad, when one has been asked for, is put back before the list
+	// is read. IN_ShutdownJoystick takes the joystick subsystem down and every
+	// virtual device with it, and a map load performs an input restart, so
+	// without this the emulation would quietly end halfway through a test.
+	IN_PadEmuEnsure();
 
 	total = SDL_NumJoysticks();
 	if ( total )
@@ -796,6 +838,19 @@ static void IN_InitJoystick( void )
 
 	if (SDL_IsGameController(in_joystickNo->integer))
 		gamepad = SDL_GameControllerOpen(in_joystickNo->integer);
+
+	// Said out loud, because everything about how the sticks behave hangs on
+	// it and the failure is silent otherwise. Without a gamepad handle the
+	// engine falls back to the raw joystick path, where an axis becomes an
+	// arrow key -- and an arrow key turns the view at a fixed rate no stick can
+	// moderate. A player meeting that has no way to tell it from a bug in the
+	// stick code, and neither had we.
+	if ( !gamepad ) {
+		Com_Printf( "Joystick %d (%s) did not open as a gamepad%s%s\n",
+			in_joystickNo->integer, SDL_JoystickNameForIndex( in_joystickNo->integer ),
+			SDL_IsGameController( in_joystickNo->integer ) ? ": " : " (SDL has no mapping for it)",
+			SDL_IsGameController( in_joystickNo->integer ) ? SDL_GetError() : "" );
+	}
 
 	// Remember which physical device this is. SDL announces a controller that
 	// is already open often enough that reopening on every announcement costs
@@ -973,6 +1028,15 @@ static void IN_ShutdownJoystick( void )
 
 	openedInstance = -1;
 
+	// Nothing else will ever let go of them: the stick's movement keys are held
+	// by IN_DigitalMove, which is only reached while a pad is open.
+	IN_DigitalMoveRelease();
+	IN_ClearJoystickAxes();
+
+	// Quitting the subsystem destroys every virtual device with it, so the
+	// emulation's handle is stale from here rather than merely closed.
+	IN_PadEmuForget();
+
 	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
 	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
 }
@@ -1113,7 +1177,7 @@ x and y come in as -1..1 and are rewritten in place.
 static void IN_ApplyStickCurve( float *x, float *y, float deadzone, float expo )
 {
 	float mag = sqrt( (*x) * (*x) + (*y) * (*y) );
-	float scaled, curved;
+	float travel, scaled, curved;
 
 	if ( mag < deadzone ) {
 		*x = 0.0f;
@@ -1121,13 +1185,17 @@ static void IN_ApplyStickCurve( float *x, float *y, float deadzone, float expo )
 		return;
 	}
 
-	if ( mag > 1.0f ) {
-		mag = 1.0f;
-	}
+	// How far over the stick is, for the curve, capped at the edge. Kept apart
+	// from mag, which is what the direction is divided by: folding the two
+	// together -- clamping mag and then dividing by it -- is what made a stick
+	// held in a corner come out 1.41 long instead of 1, so a diagonal aimed
+	// half again as fast as a cardinal. The comment below claimed the opposite
+	// while the code did that.
+	travel = ( mag > 1.0f ) ? 1.0f : mag;
 
 	// Rescale so the stick starts moving from zero at the edge of the deadzone
 	// instead of jumping to whatever the deadzone cut off.
-	scaled = ( mag - deadzone ) / ( 1.0f - deadzone );
+	scaled = ( travel - deadzone ) / ( 1.0f - deadzone );
 
 	// expo 0 is linear, 1 is fully cubed. Blending keeps the top end at full
 	// speed while making the centre much finer.
@@ -1156,19 +1224,55 @@ Keys are emitted only on change, so the engine sees clean presses and releases
 rather than a stream of repeats.
 ===============
 */
+// Which of the four directions the movement stick is currently holding. At file
+// scope rather than inside IN_DigitalMove because IN_DigitalMoveRelease has to
+// be able to let go of them from outside.
+static qboolean padDigitalHeld[4];   // forward, back, left, right
+
+static const char *padDigitalCommands[4] = { "+forward", "+back", "+moveleft", "+moveright" };
+
+// One key number per direction, and not the ones the D-pad uses.
+//
+// A +command carries the key that pressed it, and a -command with no key at
+// all clears every holder. Leaving these blank meant the stick and the D-pad
+// shared a slot: whichever let go first released the other one too, so
+// holding a direction on the D-pad did nothing as soon as the stick moved.
+static const int padDigitalKeys[4] = { K_PAD0_LEFTSTICK_UP, K_PAD0_LEFTSTICK_DOWN,
+									   K_PAD0_LEFTSTICK_LEFT, K_PAD0_LEFTSTICK_RIGHT };
+
+/*
+===============
+IN_DigitalMoveRelease
+
+Lets go of every direction the stick was holding.
+
+Needed because the holding is done by a key that only this code ever releases,
+and only while it is being called -- which stops the moment the controller goes
+away. A pad unplugged, or a battery gone flat, while the player was walking
+forward left +forward held with nothing left alive to clear it, and the player
+walked into the wall until he quit.
+===============
+*/
+static void IN_DigitalMoveRelease( void )
+{
+	int i;
+
+	for ( i = 0; i < 4; i++ ) {
+		if ( !padDigitalHeld[i] ) {
+			continue;
+		}
+
+		Cbuf_AddText( va( "-%s %d\n", padDigitalCommands[i] + 1, padDigitalKeys[i] ) );
+		padDigitalHeld[i] = qfalse;
+	}
+}
+
 static void IN_DigitalMove( float x, float y )
 {
-	static qboolean held[4];   // forward, back, left, right
-	const char *commands[4] = { "+forward", "+back", "+moveleft", "+moveright" };
+	qboolean *held = padDigitalHeld;
+	const char **commands = padDigitalCommands;
+	const int *keys = padDigitalKeys;
 
-	// One key number per direction, and not the ones the D-pad uses.
-	//
-	// A +command carries the key that pressed it, and a -command with no key at
-	// all clears every holder. Leaving these blank meant the stick and the D-pad
-	// shared a slot: whichever let go first released the other one too, so
-	// holding a direction on the D-pad did nothing as soon as the stick moved.
-	const int keys[4] = { K_PAD0_LEFTSTICK_UP, K_PAD0_LEFTSTICK_DOWN,
-						  K_PAD0_LEFTSTICK_LEFT, K_PAD0_LEFTSTICK_RIGHT };
 	qboolean want[4] = { qfalse, qfalse, qfalse, qfalse };
 	float mag = sqrt( x * x + y * y );
 	int i;
@@ -1551,6 +1655,11 @@ static void IN_GamepadMove( void )
 	qboolean menuMode;
 
 	SDL_GameControllerUpdate();
+
+	// Before anything reads the pad: IN_PadEchoKey, which runs later in the
+	// frame from IN_ProcessEvents, needs to know which way the sticks are being
+	// pushed in order to recognise iPadOS's keyboard copy of them.
+	IN_NotePadStickDirections();
 
 	// While a menu or the console is up, the pad drives the UI rather than the
 	// player. RTCW's menus only understand mouse and keyboard, so the buttons
@@ -2280,6 +2389,28 @@ static void IN_JoyMove( void )
 	if (!stick)
 		return;
 
+#if TARGET_OS_IPHONE
+	// Everything below is ioquake3's raw joystick path, and on a tablet it is
+	// worse than nothing. It turns axes into keys through joy_keys, whose first
+	// four entries are the arrow keys, which the stock config binds to +left,
+	// +right, +forward and +back -- so the left stick would walk the player and
+	// turn his view at a fixed 140 degrees a second at the same time, which is
+	// the fault this port has already been chasing once.
+	//
+	// A pad on iPadOS always opens as a gamepad; if it has not, something is
+	// wrong enough to say so and leave the sticks quiet rather than guess.
+	{
+		static qboolean said;
+
+		if ( !said ) {
+			said = qtrue;
+			Com_Printf( "Joystick is open but not as a gamepad: the sticks are left alone.\n"
+						"See the \"did not open as a gamepad\" line above for why.\n" );
+		}
+	}
+	return;
+#endif
+
 	SDL_JoystickUpdate();
 
 	// update the ball state.
@@ -2471,22 +2602,113 @@ static void IN_JoyMove( void )
 
 /*
 ===============
+IN_NotePadStickDirections
+
+Remembers when each stick direction was last pushed, for IN_PadEchoKey.
+
+Kept as a time rather than as a flag because the key and the stick do not arrive
+together: iPadOS decides a stick has been pushed, posts the press through UIKit,
+and the stick may well be somewhere else by the time the engine reads the event
+queue. A direction that was pushed a moment ago is still the pad's doing.
+===============
+*/
+#define PAD_ECHO_SLOTS  4    // left, right, up, down
+#define PAD_ECHO_GRACE  250  // ms a direction stays "recently pushed"
+
+static int padStickPushed[PAD_ECHO_SLOTS];
+
+static void IN_NotePadStickDirections( void )
+{
+	// Deliberately well below the deflection iPadOS needs before it decides the
+	// stick has been pushed. The job here is to have the direction marked
+	// before the key turns up, not to agree with the system about where the
+	// edge sits -- and a stick this far over is being pushed on purpose, so
+	// nothing is lost by counting it.
+	const float pushed = 0.25f;
+
+	const struct { int axis; float sign; int slot; } dirs[] = {
+		{ SDL_CONTROLLER_AXIS_LEFTX,  -1.0f, 0 },
+		{ SDL_CONTROLLER_AXIS_LEFTX,   1.0f, 1 },
+		{ SDL_CONTROLLER_AXIS_LEFTY,  -1.0f, 2 },
+		{ SDL_CONTROLLER_AXIS_LEFTY,   1.0f, 3 },
+		{ SDL_CONTROLLER_AXIS_RIGHTX, -1.0f, 0 },
+		{ SDL_CONTROLLER_AXIS_RIGHTX,  1.0f, 1 },
+		{ SDL_CONTROLLER_AXIS_RIGHTY, -1.0f, 2 },
+		{ SDL_CONTROLLER_AXIS_RIGHTY,  1.0f, 3 },
+	};
+
+	int now = Sys_Milliseconds();
+	int i;
+
+	if ( !gamepad ) {
+		return;
+	}
+
+	// Both sticks, not just the left one. Which of them the focus engine reads
+	// is Apple's business and has changed between releases; what is certain is
+	// that a direction the player is not pushing on either stick did not come
+	// from the pad.
+	for ( i = 0; i < (int)ARRAY_LEN( dirs ); i++ ) {
+		float value = (float)SDL_GameControllerGetAxis( gamepad, dirs[i].axis ) / 32767.0f;
+
+		if ( value * dirs[i].sign > pushed ) {
+			padStickPushed[dirs[i].slot] = now;
+		}
+	}
+}
+
+/*
+===============
+IN_PadStickPushedRecently
+
+Whether any stick direction is being pushed, or was a moment ago.
+===============
+*/
+static qboolean IN_PadStickPushedRecently( void )
+{
+	int now = Sys_Milliseconds();
+	int i;
+
+	for ( i = 0; i < PAD_ECHO_SLOTS; i++ ) {
+		if ( padStickPushed[i] && now - padStickPushed[i] < PAD_ECHO_GRACE ) {
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+===============
 IN_PadEchoKey
 
-iPadOS hands a game controller's buttons to the app twice: once as controller
-input, and again as UIPress events for menu navigation. SDL turns the second
-copy into keyboard keys -- D-pad to the arrows, Cross to Return, Options to
-Escape, the PS button to Pause -- and RTCW's stock keyboard bindings then act on
-them as well as on ours.
+iPadOS hands a game controller to the app twice: once as controller input, and
+again through UIKit, which is what it does for every app that has not said
+otherwise. SDL turns the second copy into keyboard keys -- the arrows, Return,
+Escape, Pause -- and RTCW's stock keyboard bindings then act on them as well as
+on ours.
 
-The result was one press doing two things: D-pad left walked left and turned the
-view, Cross jumped and opened the door, Options opened the menu and printed
-"unknown cmd pause".
+The first half of this was found on the buttons: one press did two things, D-pad
+left walked left and turned the view, Cross jumped and opened the door, Options
+opened the menu and printed "unknown cmd pause".
+
+The other half is the sticks, and it is far worse, because UIKit's idea of a
+direction is a key rather than a position. LEFTARROW and RIGHTARROW are bound to
++left and +right -- turn, not strafe -- and a key turns at cl_yawspeed, a fixed
+140 degrees a second, however gently the stick is leaning. That is the whole of
+"a small lean sends the camera spinning, always at the same speed", and with the
+movement stick also walking the player forward it is the whole of "it walks in
+circles".
 
 Dropping these keys outright would break a real Bluetooth keyboard, so a key is
-only dropped while the controller button that would have produced it is actually
-held. A release is matched to the press that was dropped, since the button may
-already be up by then.
+dropped only while the pad is actually producing it: the button held, or the
+stick pushed that way within the last quarter second. A release is matched to
+the press that was dropped, since the button may already be up by then.
+
+This is the safety net rather than the cure. The cure is one line further out,
+where the system is told not to send the second copy at all -- see
+SDLRootViewController in ios/cmake/patch-sdl.cmake -- and this stays because the
+setting is Apple's to honour and the bug it guards against costs a mission.
 
 Returns qtrue if the key is an echo of the pad and should be ignored.
 ===============
@@ -2496,15 +2718,15 @@ static qboolean IN_PadEchoKey( int key, qboolean down )
 	static qboolean dropped[8];
 	int i;
 
-	const struct { int key; int button; } echoes[] = {
-		{ K_LEFTARROW,  SDL_CONTROLLER_BUTTON_DPAD_LEFT  },
-		{ K_RIGHTARROW, SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
-		{ K_UPARROW,    SDL_CONTROLLER_BUTTON_DPAD_UP    },
-		{ K_DOWNARROW,  SDL_CONTROLLER_BUTTON_DPAD_DOWN  },
-		{ K_ENTER,      SDL_CONTROLLER_BUTTON_A          },
-		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_START      },
-		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_B          },
-		{ K_PAUSE,      SDL_CONTROLLER_BUTTON_GUIDE      },
+	const struct { int key; int button; int stick; } echoes[] = {
+		{ K_LEFTARROW,  SDL_CONTROLLER_BUTTON_DPAD_LEFT,   0 },
+		{ K_RIGHTARROW, SDL_CONTROLLER_BUTTON_DPAD_RIGHT,  1 },
+		{ K_UPARROW,    SDL_CONTROLLER_BUTTON_DPAD_UP,     2 },
+		{ K_DOWNARROW,  SDL_CONTROLLER_BUTTON_DPAD_DOWN,   3 },
+		{ K_ENTER,      SDL_CONTROLLER_BUTTON_A,          -1 },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_START,      -1 },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_B,          -1 },
+		{ K_PAUSE,      SDL_CONTROLLER_BUTTON_GUIDE,      -1 },
 	};
 
 	if ( !gamepad ) {
@@ -2517,13 +2739,51 @@ static qboolean IN_PadEchoKey( int key, qboolean down )
 		}
 
 		if ( down ) {
+			const char *from = NULL;
+
 			if ( SDL_GameControllerGetButton( gamepad, echoes[i].button ) ) {
+				from = "button";
+			} else if ( echoes[i].stick >= 0 && padStickPushed[echoes[i].stick] &&
+						Sys_Milliseconds() - padStickPushed[echoes[i].stick] < PAD_ECHO_GRACE ) {
+				from = "stick";
+			}
+
+#if TARGET_OS_IPHONE
+			// And if the pad is not visibly behind it, it still is.
+			//
+			// iPadOS decides the stick has moved before SDL has caught up with
+			// where it is -- the arrow arrives a frame or two ahead of the axis
+			// -- so asking the pad what it is doing right now answers "nothing"
+			// for most of these. Measured on the device: three echoes caught by
+			// the stick, fifty-seven missed.
+			//
+			// What settles it is the keyboard, or the absence of one. SDL only
+			// synthesises keys from UIPress while GameController reports no
+			// keyboard attached; a real keyboard goes down an entirely different
+			// road. So with a pad open and no keyboard on the device, one of
+			// these keys cannot have come from a player pressing it.
+			if ( !from && !Sys_IOS_HasHardwareKeyboard() ) {
+				from = "the system";
+			}
+#endif
+
+			if ( from ) {
 				dropped[i] = qtrue;
+
 				if ( in_debugPad && in_debugPad->integer ) {
-					Com_Printf( "pad: dropped keyboard echo of button %d\n",
-						echoes[i].button );
+					Com_Printf( "pad: dropped keyboard echo of %s (key %d)\n", from, key );
 				}
+
 				return qtrue;
+			}
+			// Got here with a pad open and no pad input behind the key. Either a
+			// real keyboard is in play, or the system is echoing something this
+			// does not recognise yet -- and the second one is invisible without
+			// being said, because what it looks like from the sofa is a stick
+			// fault.
+			if ( in_debugPad && in_debugPad->integer ) {
+				Com_Printf( "pad: keyboard key %d passed through with a pad open"
+					" (no button or stick behind it)\n", key );
 			}
 		} else if ( dropped[i] ) {
 			dropped[i] = qfalse;
@@ -2652,6 +2912,37 @@ static void IN_ProcessEvents( void )
 					Com_Printf( "touch: move to %d,%d (rel %d,%d) of %dx%d\n",
 						e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel,
 						cls.glconfig.vidWidth, cls.glconfig.vidHeight );
+				}
+#endif
+#if TARGET_OS_IPHONE
+				// The other half of the same problem the arrows have. iPadOS
+				// also lets a controller drive the system pointer, and a
+				// pointer being pushed by a stick arrives here as an unbroken
+				// stream of relative motion -- which the mouse path turns into
+				// a view that spins on its own, at a rate the game never chose
+				// and the stick cannot moderate.
+				//
+				// Nothing at this level distinguishes that stream from a real
+				// trackpad; SDL reports both as the same indirect pointer. So
+				// it is judged by the pad instead: motion that is not a finger,
+				// arriving while a stick is being pushed, is the pad's.
+				//
+				// A finger is exempt because the on-screen controls are built
+				// on it, and the cvar exists because a player with a real mouse
+				// and a pad in his other hand should be able to say so.
+				if ( in_padPointerGuard && in_padPointerGuard->integer &&
+					 e.motion.which != SDL_TOUCH_MOUSEID &&
+					 IN_PadStickPushedRecently() ) {
+					if ( in_debugPad && in_debugPad->integer ) {
+						static int nextEchoLog;
+
+						if ( Sys_Milliseconds() >= nextEchoLog ) {
+							nextEchoLog = Sys_Milliseconds() + 250;
+							Com_Printf( "pad: dropped pointer echo (rel %d,%d)\n",
+								e.motion.xrel, e.motion.yrel );
+						}
+					}
+					break;
 				}
 #endif
 				if( mouseActive )
@@ -3037,6 +3328,11 @@ void IN_Frame( void )
 {
 	qboolean loading;
 
+	// Before the pad is read, so a scripted stick position is on the device by
+	// the time IN_JoyMove looks at it. Does nothing at all unless in_padEmulate
+	// has been turned on. See PAD EMULATION above.
+	IN_PadEmuFrame( );
+
 	IN_JoyMove( );
 
 	// If not DISCONNECTED (main menu) or ACTIVE (in game), we're loading
@@ -3090,6 +3386,573 @@ void IN_Frame( void )
 		Cbuf_AddText( "vid_restart\n" );
 	}
 }
+
+/*
+===============================================================================
+
+PAD EMULATION
+
+A virtual controller, attached through SDL's own virtual joystick device, and a
+script that walks it through the positions players complain about.
+
+It exists because every stick problem this port has had is cross-talk -- one
+stick driving an output that belongs to the other -- and cross-talk cannot be
+judged by feel. "The camera drifted" and "the camera drifted because the
+movement stick is sitting on the yaw axis" are the same sentence from the sofa,
+and the second one is the only one that can be fixed.
+
+The virtual pad arrives the way a real one does, so everything downstream is
+the real path and nothing is stubbed: SDL builds a game controller mapping for
+it, IN_InitJoystick opens it, IN_GamepadMove reads it with
+SDL_GameControllerGetAxis, IN_GamepadSticks curves it, and the result lands on
+the joystick axes and in the usercmd. No code below this point knows it is a
+test.
+
+What each step measures is the two things the player sees -- the movement bytes
+in the command that was built, and how far the view turned while the stick was
+held -- against what that stick position is supposed to produce, and, which is
+the whole point, against zero for the outputs it must not touch.
+
+  in_padEmulate 1    attach the virtual pad; 0 detaches it
+  padtest            run the script and print the table
+
+The gyros are reported beside every row rather than switched off for the
+duration. A controller or tablet gyro feeding the view is a real cause of "the
+stick turns the camera", and silencing it during the one test that would show
+it would be a way of passing rather than of being right.
+
+===============================================================================
+*/
+
+// Long enough for the digital movement path to have taken effect -- it goes out
+// as console commands and is therefore a frame behind -- and then long enough
+// again that a turn rate is measured rather than inferred from one frame's
+// rounding.
+#define PADEMU_SETTLE_FRAMES   8
+#define PADEMU_SAMPLE_FRAMES  16
+
+// What a step expects of one output. The sign says which way; PADEMU_NUDGE
+// means "the same way, but only a little", which is what a stick held 5 degrees
+// off the vertical is asking for and what the reported fault turns into a full
+// speed spin.
+#define PADEMU_ZERO    0
+#define PADEMU_FULL    1
+#define PADEMU_NUDGE   2
+#define PADEMU_DIAG    3   // about seven tenths, which is what a corner is worth
+#define PADEMU_ANY     9   // not this step's business
+
+typedef struct
+{
+	const char *what;
+
+	// Stick positions as SDL reports them: x right, y down, -1..1.
+	float lx, ly, rx, ry;
+
+	// Wanted outputs, in the player's terms rather than the engine's: forward
+	// and right are the movement bytes, turn is positive to the right and look
+	// is positive upwards. See IN_PadEmuMeasure for where the engine's signs
+	// are turned back into these.
+	int forward, right, turn, look;
+} padEmuStep_t;
+
+static const padEmuStep_t padEmuScript[] =
+{
+	// The movement stick alone. Every one of these has to leave the view
+	// completely still -- a turn on any of these rows is the walking-in-circles
+	// fault, and the rows with a little sideways lean on them are the exact
+	// position that provokes it.
+	{ "left stick forward",              0.00f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward, 5% sideways", 0.05f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward, 15% sideways",0.15f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick back",                 0.00f,  1.00f,  0.00f,  0.00f, -PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick right",                1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick left",                -1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward-right",        0.71f, -0.71f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+
+	// The look stick alone. None of these may move the player an inch.
+	{ "right stick right",               0.00f,  0.00f,  1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO },
+	{ "right stick left",                0.00f,  0.00f, -1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO },
+	{ "right stick forward (look up)",   0.00f,  0.00f,  0.00f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_FULL },
+	{ "right stick back (look down)",    0.00f,  0.00f,  0.00f,  1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL },
+	{ "right stick forward, 5% sideways",0.00f,  0.00f,  0.05f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_NUDGE, PADEMU_FULL },
+
+	// Held right into a corner, which a square-gated stick can do. The curve
+	// has to bring the length back to one before splitting it, or the diagonal
+	// aims half again faster than either cardinal.
+	{ "right stick into the corner",     0.00f,  0.00f,  1.00f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_DIAG, PADEMU_DIAG },
+
+	// Both at once, which is how the game is actually played.
+	{ "left forward + right right",      0.00f, -1.00f,  1.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,   PADEMU_FULL, PADEMU_ZERO },
+
+	// And nothing at all, which has to come out as nothing at all. A row that
+	// fails here is something else writing the axes -- a gyro, a stuck touch --
+	// and every other row in the table is worth less until it passes.
+	{ "both sticks centred",             0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_ZERO },
+};
+
+static cvar_t *in_padEmulate = NULL;
+
+static SDL_Joystick *padEmuStick = NULL;      // our own handle on the virtual device
+static SDL_JoystickID padEmuInstance = -1;
+
+static int   padEmuStepIndex = -1;            // -1 when no run is in progress
+static int   padEmuFrame;
+static float padEmuYawStart, padEmuPitchStart;
+static int   padEmuStartTime;
+static int   padEmuPassed, padEmuFailed;
+static qboolean padEmuQuitWhenDone;   // padtest quit -- for scripted runs
+static int   padEmuAttachCount;       // how many times the device has been put in
+static int   padEmuAttachAtStart;     // what it was when the current run began
+static qboolean padEmuAutoAttached;   // padtest brought the virtual pad in itself
+
+/*
+===============
+IN_PadEmuEnsure
+
+Puts the virtual device in the list, if one has been asked for and is not there
+already. Deliberately does not reopen anything: it is called from inside
+IN_InitJoystick, which is about to enumerate and open whatever it finds.
+===============
+*/
+static void IN_PadEmuEnsure( void )
+{
+	int index;
+
+	if ( !in_padEmulate || !in_padEmulate->integer || padEmuStick ) {
+		return;
+	}
+
+	if ( !SDL_WasInit( SDL_INIT_JOYSTICK ) ) {
+		return;
+	}
+
+	// Six axes, fifteen buttons and a hat is the shape of a standard pad, and
+	// SDL only builds a game controller mapping for a virtual device that has
+	// it. Without that mapping SDL_IsGameController answers no, the engine
+	// falls back to the raw joystick path, and the test would be exercising a
+	// path no player is on.
+	index = SDL_JoystickAttachVirtual( SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 1 );
+
+	if ( index < 0 ) {
+		Com_Printf( "pademu: SDL_JoystickAttachVirtual failed: %s\n", SDL_GetError() );
+		return;
+	}
+
+	padEmuStick = SDL_JoystickOpen( index );
+
+	if ( !padEmuStick ) {
+		Com_Printf( "pademu: could not open the virtual pad: %s\n", SDL_GetError() );
+		SDL_JoystickDetachVirtual( index );
+		return;
+	}
+
+	padEmuInstance = SDL_JoystickInstanceID( padEmuStick );
+	padEmuAttachCount++;
+
+	// Named rather than left to the order SDL happens to report: a real pad may
+	// be in the list too, and which of the two the engine opens decides what
+	// the test measures.
+	Cvar_Set( "in_joystickNo", va( "%d", index ) );
+
+	Com_Printf( "pademu: virtual pad attached at index %d\n", index );
+}
+
+/*
+===============
+IN_PadEmuForget
+
+The device has gone -- the joystick subsystem was shut down and took it with it
+-- so the handle is stale rather than closed and must not be given back to SDL.
+===============
+*/
+static void IN_PadEmuForget( void )
+{
+	padEmuStick = NULL;
+	padEmuInstance = -1;
+}
+
+/*
+===============
+IN_PadEmuAttach
+===============
+*/
+static void IN_PadEmuAttach( void )
+{
+	if ( padEmuStick ) {
+		return;
+	}
+
+	if ( !SDL_WasInit( SDL_INIT_JOYSTICK ) && SDL_Init( SDL_INIT_JOYSTICK ) != 0 ) {
+		Com_Printf( "pademu: SDL_Init(JOYSTICK) failed: %s\n", SDL_GetError() );
+		return;
+	}
+
+	IN_PadEmuEnsure();
+
+	if ( padEmuStick ) {
+		IN_InitJoystick();
+	}
+}
+
+/*
+===============
+IN_PadEmuDetach
+===============
+*/
+static void IN_PadEmuDetach( void )
+{
+	int i;
+
+	if ( !padEmuStick ) {
+		return;
+	}
+
+	padEmuStepIndex = -1;
+	padEmuAutoAttached = qfalse;
+
+	// Said before anything else, because IN_InitJoystick at the bottom of this
+	// function asks IN_PadEmuEnsure for a virtual pad and would hand back the
+	// one we are in the middle of taking away.
+	if ( in_padEmulate && in_padEmulate->integer ) {
+		Cvar_Set( "in_padEmulate", "0" );
+		in_padEmulate->modified = qfalse;
+	}
+
+	// The engine's own handles on this device go first. Detaching it while they
+	// still point at it leaves IN_InitJoystick closing a joystick that no longer
+	// exists, which is a crash rather than a failed test.
+	if ( openedInstance == padEmuInstance ) {
+		if ( gamepad ) {
+			SDL_GameControllerClose( gamepad );
+			gamepad = NULL;
+		}
+		if ( stick ) {
+			SDL_JoystickClose( stick );
+			stick = NULL;
+		}
+		openedInstance = -1;
+	}
+
+	SDL_JoystickClose( padEmuStick );
+	padEmuStick = NULL;
+
+	// Found by instance rather than by the index it was attached at: devices
+	// come and go while the game runs and that index is not necessarily still
+	// the same device.
+	for ( i = 0; i < SDL_NumJoysticks(); i++ ) {
+		if ( SDL_JoystickGetDeviceInstanceID( i ) == padEmuInstance ) {
+			SDL_JoystickDetachVirtual( i );
+			break;
+		}
+	}
+
+	padEmuInstance = -1;
+
+	Cvar_Set( "in_joystickNo", "0" );
+	Com_Printf( "pademu: virtual pad detached\n" );
+
+	IN_InitJoystick();
+}
+
+/*
+===============
+IN_PadEmuWrite
+
+Puts one stick position on the virtual device. SDL applies it at the next
+SDL_JoystickUpdate, which IN_GamepadMove performs at the top of this same
+frame, so a value written here is read this frame and not the next.
+===============
+*/
+static void IN_PadEmuWrite( float lx, float ly, float rx, float ry )
+{
+	if ( !padEmuStick ) {
+		return;
+	}
+
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_LEFTX,  (Sint16)( Com_Clamp( -1.0f, 1.0f, lx ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_LEFTY,  (Sint16)( Com_Clamp( -1.0f, 1.0f, ly ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_RIGHTX, (Sint16)( Com_Clamp( -1.0f, 1.0f, rx ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_RIGHTY, (Sint16)( Com_Clamp( -1.0f, 1.0f, ry ) * 32767.0f ) );
+}
+
+/*
+===============
+IN_PadEmuCheck
+
+One output against one expectation. full is what that output reads at full
+deflection, and is what turns a raw number into "most of it" or "a little".
+===============
+*/
+static qboolean IN_PadEmuCheck( int want, float measured, float full )
+{
+	float magnitude = fabs( measured );
+
+	if ( want == PADEMU_ANY ) {
+		return qtrue;
+	}
+
+	if ( want == PADEMU_ZERO ) {
+		// A hair of tolerance, because a movement byte is rounded and a turn
+		// rate is measured over a handful of frames. Anything a player could
+		// notice is far outside it.
+		return ( magnitude <= full * 0.02f ) ? qtrue : qfalse;
+	}
+
+	if ( ( want > 0 ) != ( measured > 0.0f ) ) {
+		return qfalse;
+	}
+
+	if ( abs( want ) == PADEMU_NUDGE ) {
+		return ( magnitude > 0.0f && magnitude <= full * 0.30f ) ? qtrue : qfalse;
+	}
+
+	// A stick held in a corner is sqrt(2) from centre, and the curve is
+	// supposed to bring that back to one before splitting it between the axes,
+	// leaving about 0.707 on each. A corner that comes out at full deflection
+	// on both means the direction was renormalised against a clamped
+	// magnitude, and the diagonal is running half again too fast.
+	if ( abs( want ) == PADEMU_DIAG ) {
+		return ( magnitude >= full * 0.55f && magnitude <= full * 0.85f ) ? qtrue : qfalse;
+	}
+
+	return ( magnitude >= full * 0.50f ) ? qtrue : qfalse;
+}
+
+/*
+===============
+IN_PadEmuMeasure
+
+Collects what the step just held produced, prints the row, and says whether it
+was what the step asked for.
+===============
+*/
+static void IN_PadEmuMeasure( const padEmuStep_t *step )
+{
+	const usercmd_t *cmd = &cl.cmds[ cl.cmdNumber & CMD_MASK ];
+	int   elapsed = Sys_Milliseconds() - padEmuStartTime;
+	float seconds = ( elapsed > 0 ) ? elapsed * 0.001f : 0.001f;
+	float turn, look;
+	float fullTurn = in_lookYawSpeed ? in_lookYawSpeed->value : 220.0f;
+	float fullLook = in_lookPitchSpeed ? in_lookPitchSpeed->value : 190.0f;
+	int   ok;
+
+	// The engine counts yaw anti-clockwise and pitch downwards; the table is
+	// written the way the stick is held, so both are turned round once here and
+	// nowhere else.
+	turn = -AngleSubtract( cl.viewangles[YAW],   padEmuYawStart )   / seconds;
+	look = -AngleSubtract( cl.viewangles[PITCH], padEmuPitchStart ) / seconds;
+
+	ok = IN_PadEmuCheck( step->forward, (float)cmd->forwardmove, 127.0f ) &&
+	     IN_PadEmuCheck( step->right,   (float)cmd->rightmove,   127.0f ) &&
+	     IN_PadEmuCheck( step->turn,    turn,                    fullTurn ) &&
+	     IN_PadEmuCheck( step->look,    look,                    fullLook );
+
+	Com_Printf( "%-36s fwd=%+4d right=%+4d turn=%+7.1f look=%+7.1f  axes[%d %d %d %d] gyro[%d %d]  %s\n",
+		step->what,
+		cmd->forwardmove, cmd->rightmove, turn, look,
+		cl.joystickAxis[j_side_axis->integer],
+		cl.joystickAxis[j_forward_axis->integer],
+		cl.joystickAxis[j_yaw_axis->integer],
+		cl.joystickAxis[j_pitch_axis->integer],
+		cl.joystickAxis[AXIS_GYRO_PITCH],
+		cl.joystickAxis[AXIS_GYRO_YAW],
+		ok ? "ok" : "FAILED" );
+
+	if ( ok ) {
+		padEmuPassed++;
+		return;
+	}
+
+	padEmuFailed++;
+
+	// Named individually, because which output went wrong is the whole
+	// diagnosis: a turn on a movement-only row and a movement on a look-only
+	// row are two different bugs that feel the same.
+	if ( !IN_PadEmuCheck( step->forward, (float)cmd->forwardmove, 127.0f ) ) {
+		Com_Printf( "    forward: wanted %s, got %d\n",
+			step->forward == PADEMU_ZERO ? "nothing" : ( step->forward > 0 ? "forward" : "back" ), cmd->forwardmove );
+	}
+	if ( !IN_PadEmuCheck( step->right, (float)cmd->rightmove, 127.0f ) ) {
+		Com_Printf( "    sideways: wanted %s, got %d\n",
+			step->right == PADEMU_ZERO ? "nothing" : ( step->right > 0 ? "right" : "left" ), cmd->rightmove );
+	}
+	if ( !IN_PadEmuCheck( step->turn, turn, fullTurn ) ) {
+		Com_Printf( "    turn: wanted %s, got %.1f deg/s\n",
+			step->turn == PADEMU_ZERO ? "none at all" :
+			( abs( step->turn ) == PADEMU_NUDGE ? "a small one" :
+			( abs( step->turn ) == PADEMU_DIAG ? "about seven tenths" :
+			( step->turn > 0 ? "right" : "left" ) ) ), turn );
+	}
+	if ( !IN_PadEmuCheck( step->look, look, fullLook ) ) {
+		Com_Printf( "    look: wanted %s, got %.1f deg/s\n",
+			step->look == PADEMU_ZERO ? "none at all" :
+			( abs( step->look ) == PADEMU_NUDGE ? "a small one" :
+			( abs( step->look ) == PADEMU_DIAG ? "about seven tenths" :
+			( step->look > 0 ? "up" : "down" ) ) ), look );
+	}
+}
+
+/*
+===============
+IN_PadEmuFrame
+
+Called once a frame from IN_Frame, before the pad is read.
+
+The order inside matters: the step that has just been held is collected first --
+by now the command it fed has been built and the view has already turned -- and
+only then is the next position written. The other way round would measure each
+step against the position that replaced it.
+===============
+*/
+static void IN_PadEmuFrame( void )
+{
+	const padEmuStep_t *step;
+
+	if ( in_padEmulate && in_padEmulate->modified ) {
+		in_padEmulate->modified = qfalse;
+
+		if ( in_padEmulate->integer ) {
+			IN_PadEmuAttach();
+		} else {
+			IN_PadEmuDetach();
+		}
+	}
+
+	// A run with no device under it can only wait forever, so it says so and
+	// stops. This is reachable if something switches the emulation off while a
+	// test is in progress.
+	if ( padEmuStepIndex >= 0 && !padEmuStick ) {
+		Com_Printf( "padtest: the virtual pad went away mid-run (in_padEmulate is %s); stopping\n",
+			in_padEmulate ? in_padEmulate->string : "?" );
+		padEmuStepIndex = -1;
+		padEmuQuitWhenDone = qfalse;
+		return;
+	}
+
+	if ( padEmuStepIndex < 0 || !padEmuStick ) {
+		return;
+	}
+
+	if ( padEmuStepIndex >= (int)ARRAY_LEN( padEmuScript ) ) {
+		Com_Printf( "padtest: %d passed, %d failed\n", padEmuPassed, padEmuFailed );
+
+		// Worth saying out loud rather than leaving in the numbers. An input
+		// restart puts the virtual pad back but loses a frame or two of stick
+		// on the way, and a row measured across one reads as a fault that is
+		// not there.
+		if ( padEmuAttachCount != padEmuAttachAtStart ) {
+			Com_Printf( "padtest: the input system restarted %d time(s) during the run;"
+				" any single odd row is worth repeating\n", padEmuAttachCount - padEmuAttachAtStart );
+		}
+
+		if ( !padEmuFailed ) {
+			Com_Printf( "padtest: left stick moves, right stick looks, neither does the other's job\n" );
+		}
+
+		padEmuStepIndex = -1;
+		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+
+		// A scripted run leaves by the front door. Killing the process instead
+		// leaves the pid file behind, and the next start stops on a modal
+		// "did not exit properly" dialog that no script can answer.
+		if ( padEmuQuitWhenDone ) {
+			padEmuQuitWhenDone = qfalse;
+			Cbuf_AddText( "quit\n" );
+			return;
+		}
+
+		// Give the real pad back. While the virtual one is in the list it is
+		// the one the engine has open, so a test run started from a controller
+		// would otherwise end with that controller dead and no obvious way to
+		// wake it -- which is a worse bug than the one being tested for.
+		if ( padEmuAutoAttached ) {
+			IN_PadEmuDetach();
+		}
+		return;
+	}
+
+	step = &padEmuScript[padEmuStepIndex];
+
+	padEmuFrame++;
+
+	if ( padEmuFrame == PADEMU_SETTLE_FRAMES ) {
+		// The step has taken hold; start the clock.
+		padEmuYawStart   = cl.viewangles[YAW];
+		padEmuPitchStart = cl.viewangles[PITCH];
+		padEmuStartTime  = Sys_Milliseconds();
+	} else if ( padEmuFrame >= PADEMU_SETTLE_FRAMES + PADEMU_SAMPLE_FRAMES ) {
+		IN_PadEmuMeasure( step );
+
+		padEmuStepIndex++;
+		padEmuFrame = 0;
+
+		// Back to centre between steps, so each one is entered from rest rather
+		// than from wherever the last one left the stick. A digital movement key
+		// that is still held would otherwise be credited to the step after it.
+		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+		return;
+	}
+
+	IN_PadEmuWrite( step->lx, step->ly, step->rx, step->ry );
+}
+
+/*
+===============
+IN_PadTest_f
+===============
+*/
+static void IN_PadTest_f( void )
+{
+	if ( padEmuStepIndex >= 0 ) {
+		Com_Printf( "padtest: already running\n" );
+		return;
+	}
+
+	if ( !padEmuStick ) {
+		Cvar_Set( "in_padEmulate", "1" );
+		in_padEmulate->modified = qfalse;
+		IN_PadEmuAttach();
+		padEmuAutoAttached = padEmuStick ? qtrue : qfalse;
+	}
+
+	if ( !padEmuStick ) {
+		Com_Printf( "padtest: no virtual pad, nothing to test with\n" );
+		return;
+	}
+
+	if ( !gamepad ) {
+		Com_Printf( "padtest: the virtual pad is attached but the engine has not opened it as a gamepad.\n" );
+		Com_Printf( "         in_joystick is %s, in_joystickNo is %s. That on its own is the fault.\n",
+			Cvar_VariableString( "in_joystick" ), Cvar_VariableString( "in_joystickNo" ) );
+		return;
+	}
+
+	// The view only turns while the game owns the screen. Run from a menu the
+	// table would come out all zeroes and read as a pass.
+	if ( CL_UIActive() ) {
+		Com_Printf( "padtest: start a map first -- nothing moves while a menu or a loading screen is up\n" );
+		return;
+	}
+
+	Com_Printf( "\npadtest: %d steps. Turn is positive to the right, look is positive upwards.\n",
+		(int)ARRAY_LEN( padEmuScript ) );
+	Com_Printf( "padtest: direct=%s digital=%s dpad=%s deadzone=%s yawSpeed=%s pitchSpeed=%s"
+		" stickExpo=%s moveExpo=%s invert=%s gyro=%s gyroSens=%s touchGyro=%s\n\n",
+		Cvar_VariableString( "in_gamepadDirect" ), Cvar_VariableString( "in_moveDigital" ),
+		Cvar_VariableString( "in_dpadMove" ), Cvar_VariableString( "joy_threshold" ),
+		Cvar_VariableString( "in_lookYawSpeed" ), Cvar_VariableString( "in_lookPitchSpeed" ),
+		Cvar_VariableString( "in_stickExpo" ), Cvar_VariableString( "in_moveExpo" ),
+		Cvar_VariableString( "in_invertLook" ), Cvar_VariableString( "in_gyro" ),
+		Cvar_VariableString( "in_gyroSens" ), Cvar_VariableString( "in_touchGyro" ) );
+
+	padEmuStepIndex = 0;
+	padEmuFrame = 0;
+	padEmuPassed = 0;
+	padEmuFailed = 0;
+	padEmuQuitWhenDone = ( Cmd_Argc() > 1 && !Q_stricmp( Cmd_Argv( 1 ), "quit" ) ) ? qtrue : qfalse;
+	padEmuAttachAtStart = padEmuAttachCount;
+}
+
 
 /*
 ===============
@@ -3172,6 +4035,11 @@ void IN_Init( void *windowData )
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
 	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
 	in_debugPad        = Cvar_Get( "in_debugPad",        "0",  CVAR_ARCHIVE );
+
+	// On by default: what it guards against is a view that turns by itself, and
+	// what it costs is a mouse that stops working for as long as a stick is
+	// held -- which on a tablet with a pad in both hands is nothing at all.
+	in_padPointerGuard = Cvar_Get( "in_padPointerGuard", "1",  CVAR_ARCHIVE );
 	in_touchLookSens   = Cvar_Get( "in_touchLookSens",   "1.0", CVAR_ARCHIVE );
 
 	// Same arrangement as the gyro's pair above: zero defers to in_touchLookSens,
@@ -3187,6 +4055,33 @@ void IN_Init( void *windowData )
 
 	in_lookYawSpeed    = Cvar_Get( "in_lookYawSpeed",   "220", CVAR_ARCHIVE );
 	in_lookPitchSpeed  = Cvar_Get( "in_lookPitchSpeed", "190", CVAR_ARCHIVE );
+
+	// Deliberately not archived. A virtual pad left attached across a restart
+	// would sit in the device list looking like hardware, and the first thing
+	// anyone would do about the resulting confusion is file a bug against the
+	// sticks.
+	in_padEmulate      = Cvar_Get( "in_padEmulate",     "0",   0 );
+
+	// Forced off when the game starts, not merely defaulted off. A config that
+	// has picked the value up -- one seta in a script someone pasted is enough
+	// -- would otherwise open the game with a virtual pad in the device list
+	// and the real one shut out, every time, with nothing on screen to say why.
+	//
+	// Once, though, and not on every IN_Init: a vid_restart comes back through
+	// here, and switching the emulation off underneath a test that is halfway
+	// through leaves it waiting for a device that will never be put back.
+	{
+		static qboolean forcedOff;
+
+		if ( !forcedOff ) {
+			forcedOff = qtrue;
+			Cvar_Set( "in_padEmulate", "0" );
+		}
+	}
+
+	in_padEmulate->modified = qfalse;
+
+	Cmd_AddCommand( "padtest", IN_PadTest_f );
 
 	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
 	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );
@@ -3234,6 +4129,12 @@ void IN_Init( void *windowData )
 		SDL_VERSION( &wmInfo.version );
 
 		if ( SDL_GetWindowWMInfo( SDL_window, &wmInfo ) ) {
+			// Before the overlay, and before a single frame is drawn: until the
+			// system has been told the controller is ours, it sends a copy of
+			// it through UIKit as arrow keys, and the game is played by those
+			// rather than by the sticks.
+			Sys_IOS_ClaimControllerEvents( (void *)wmInfo.info.uikit.window );
+
 			Sys_IOS_TouchOverlayInit( (void *)wmInfo.info.uikit.window );
 		} else {
 			Com_Printf( "Touch overlay: SDL_GetWindowWMInfo failed: %s\n", SDL_GetError() );
@@ -3260,6 +4161,9 @@ void IN_Shutdown( void )
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );
 	mouseAvailable = qfalse;
 
+	Cmd_RemoveCommand( "padtest" );
+
+	IN_PadEmuDetach( );
 	IN_ShutdownJoystick( );
 
 	SDL_window = NULL;

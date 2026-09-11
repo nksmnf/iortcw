@@ -63,9 +63,27 @@ final class LauncherHost {
     }
 
     func dismiss() {
-        window?.isHidden = true
+        let ours = window
         window = nil
         model = nil
+        ours?.isHidden = true
+
+        // Key status does not come back on its own. This window was made key to
+        // put it in front, and hiding it leaves UIKit to choose a successor --
+        // which is not necessarily the game's window, because the touch overlay
+        // sits above it and is deliberately never key. Everything that asks
+        // "which window is in front" then gets an answer nobody intended,
+        // including the system when it decides whether this app is handling the
+        // controller itself or whether it should drive the interface with it.
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+
+        if let game = scene?.windows.first(where: {
+            $0 !== ours && !$0.isHidden && $0.windowLevel == .normal
+        }) {
+            game.makeKeyAndVisible()
+        }
     }
 }
 

@@ -473,9 +473,22 @@ static CGPoint menuCursor = { 0.0f, 0.0f };
 			continue;
 		}
 
-		if ( !self.stickTouch && p.x < self.bounds.size.width * 0.5f ) {
+		if ( !self.stick.hidden && !self.stickTouch && p.x < self.bounds.size.width * 0.5f ) {
 			// Left half drives movement. The stick recentres on the touch so it
 			// does not matter exactly where the thumb lands.
+			//
+			// Only while the stick is actually drawn, for the same reason
+			// buttonAtPoint skips a hidden button: with a controller in hand the
+			// iPad is lying in front of the player, and a palm or a stray finger
+			// on the left half was taking the movement axes off the pad -- both
+			// by writing them itself and by making IN_TouchOwnsMovement true,
+			// which stops the pad clearing them again. The character then walked
+			// on his own, which is not a fault anyone would look for in the
+			// stick code.
+			//
+			// The first touch on a hidden overlay still brings the controls back
+			// -- lastTouchTime above sees to that -- it simply does not also
+			// count as a shove on a stick that was not there.
 			self.stickTouch = touch;
 			self.stick.origin = p;
 			self.stick.current = p;
@@ -795,6 +808,11 @@ void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 	Com_Printf( "Touch overlay: own window %.0fx%.0f level %.0f, in_touchControls %d\n",
 		touchWindow.bounds.size.width, touchWindow.bounds.size.height,
 		(double)touchWindow.windowLevel, in_touchControls->integer );
+
+	// This window sits above the game's, so it is the one the system is most
+	// likely to consult about who handles the controller. Saying it here as
+	// well as on SDL's window costs nothing and removes the question.
+	Sys_IOS_ClaimControllerEvents( (__bridge void *)touchOverlay );
 
 	// The readout lives in the same window: it is already above the game and
 	// already knows about the safe area.

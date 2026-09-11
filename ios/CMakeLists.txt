@@ -71,7 +71,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # The port's own version, separate from the engine's. The engine is iortcw
 # 1.51d-SP wherever it runs; this number is about the iPadOS build.
-set(IORTCW_PORT_VERSION "0.6.1")
+set(IORTCW_PORT_VERSION "0.6.3")
 
 # Build number and commit, both read from git.
 #
@@ -230,6 +230,14 @@ if(IORTCW_IOS)
         GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(SDL2)
+
+    # Applied here rather than as a PATCH_COMMAND so that it also reaches a
+    # tree that was fetched before the patch existed. It only edits sources, so
+    # running after SDL has been configured is soon enough; the compiler picks
+    # the change up on the next build. See the file for what it does and why.
+    set(IORTCW_SDL_SOURCE_DIR "${sdl2_SOURCE_DIR}")
+    include(cmake/patch-sdl.cmake)
+
     set(IORTCW_SDL_TARGET SDL2-static)
     set(IORTCW_SDL_MAIN   SDL2main)
 else()
