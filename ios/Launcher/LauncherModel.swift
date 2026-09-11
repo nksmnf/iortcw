@@ -362,7 +362,15 @@ final class LauncherModel: ObservableObject {
     @Published var musicVolume: Double = 0.5
 
     // Game
-    @Published var autoSwitch: Bool = true
+    //
+    // cg_autoswitch is a mode rather than a flag: 0 never, 1 always, 2 when the
+    // weapon is new to the arsenal, 3 when it sits in a better bank, 4 either,
+    // 5 both. 2 is the game's own default and what the campaign is built
+    // around; the launcher used to write 1, Quake III's rule, which hands the
+    // player a duplicate of a gun they already carry.
+    @Published var autoSwitch: Int = 2
+    @Published var autoActivate: Bool = true
+    @Published var emptySwitch: Bool = false
     @Published var viewBob: Bool = true
     @Published var crosshairSize: Double = 48
 
@@ -656,7 +664,7 @@ final class LauncherModel: ObservableObject {
     /// `in_tuningVersion` could not be read back before the engine was up it
     /// fired on every single launch instead of once. Each bump now names the
     /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
-    private static let tuningVersion = 5
+    private static let tuningVersion = 6
 
     /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
     /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
@@ -731,7 +739,9 @@ final class LauncherModel: ObservableObject {
         musicVolume      = cvarValue("s_musicvolume", musicVolume)
         crosshairSize    = cvarValue("cg_crosshairSize", crosshairSize)
 
-        autoSwitch       = cvarValue("cg_autoswitch", autoSwitch ? 1 : 0) != 0
+        autoSwitch       = Int(cvarValue("cg_autoswitch", Double(autoSwitch)))
+        autoActivate     = cvarValue("cg_autoactivate", autoActivate ? 1 : 0) != 0
+        emptySwitch      = cvarValue("cg_emptyswitch", emptySwitch ? 1 : 0) != 0
         viewBob          = cvarValue("cg_bobup", viewBob ? 1 : 0) != 0
         perfHud          = cvarValue("r_perfHud", perfHud ? 1 : 0) != 0
         perfLog          = cvarValue("r_perfLog", perfLog ? 1 : 0) != 0
@@ -800,6 +810,18 @@ final class LauncherModel: ObservableObject {
            bindings["PAD0_LEFTSHOULDER"] == "+moveup" {
             bindings["PAD0_RIGHTSHOULDER"] = "+moveup"
             bindings["PAD0_LEFTSHOULDER"] = "+movedown"
+        }
+
+        // 6: the weapon switch was a checkbox, and "on" wrote cg_autoswitch 1
+        // -- "always", which is Quake III's rule and not Wolfenstein's. Walking
+        // over a rifle already in the arsenal took the gun out of the player's
+        // hands for a duplicate, which is what a mission started from the
+        // launcher, with a loadout, does constantly. 2 switches only for a
+        // weapon that is genuinely new. Moved only for a config still holding
+        // exactly what the old checkbox wrote: 0 was a deliberate "off", and
+        // anything else was chosen in the control that replaced it.
+        if stored < 6, autoSwitch == 1 {
+            autoSwitch = 2
         }
 
         // The crosshair shape is seeded, not owned. There is no crosshair
@@ -892,7 +914,9 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("s_volume", String(format: "%.2f", volume))
         IOSBridge_SetCvar("s_musicvolume", String(format: "%.2f", musicVolume))
 
-        IOSBridge_SetCvar("cg_autoswitch", autoSwitch ? "1" : "0")
+        IOSBridge_SetCvar("cg_autoswitch", "\(autoSwitch)")
+        IOSBridge_SetCvar("cg_autoactivate", autoActivate ? "1" : "0")
+        IOSBridge_SetCvar("cg_emptyswitch", emptySwitch ? "1" : "0")
         IOSBridge_SetCvar("cg_bobup", viewBob ? "0.005" : "0")
         IOSBridge_SetCvar("cg_bobpitch", viewBob ? "0.002" : "0")
         IOSBridge_SetCvar("cg_bobroll", viewBob ? "0.002" : "0")

@@ -71,7 +71,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # The port's own version, separate from the engine's. The engine is iortcw
 # 1.51d-SP wherever it runs; this number is about the iPadOS build.
-set(IORTCW_PORT_VERSION "0.6.5")
+set(IORTCW_PORT_VERSION "0.6.6")
 
 # Build number and commit, both read from git.
 #

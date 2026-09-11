@@ -1562,7 +1562,7 @@ private struct ControlsView: View {
         case touchGyro, touchGyroSplit, touchGyroSens, touchGyroYawSens, touchGyroPitchSens
         case touchGyroInvertYaw, touchGyroInvertPitch
         case volume, music
-        case autoSwitch, viewBob, crosshair
+        case autoSwitch, autoActivate, emptySwitch, viewBob, crosshair
         case perfHud, perfLog, padLog
     }
 
@@ -1981,10 +1981,26 @@ private struct ControlsView: View {
             }
 
             Panel(L("Игра")) {
+                Field(note: L("note.pickup")) {
+                    ChoiceRow(title: L("Переключаться на подобранное оружие"),
+                              selection: $model.autoSwitch,
+                              focused: focused(.autoSwitch)) {
+                        Text(L("Никогда")).tag(0)
+                        Text(L("Только новое")).tag(2)
+                        Text(L("Новое или лучше")).tag(4)
+                        Text(L("Всегда")).tag(1)
+                    }
+                    .id(Row.autoSwitch)
+                }
                 Field {
-                    Toggle(L("Переключаться на подобранное оружие"), isOn: $model.autoSwitch)
-                        .id(Row.autoSwitch)
-                        .padFocus(focused(.autoSwitch))
+                    Toggle(L("Подбирать предметы на ходу"), isOn: $model.autoActivate)
+                        .id(Row.autoActivate)
+                        .padFocus(focused(.autoActivate))
+                }
+                Field {
+                    Toggle(L("Менять оружие, когда кончились патроны"), isOn: $model.emptySwitch)
+                        .id(Row.emptySwitch)
+                        .padFocus(focused(.emptySwitch))
                 }
                 Field {
                     Toggle(L("Покачивание камеры при ходьбе"), isOn: $model.viewBob)
@@ -2081,7 +2097,9 @@ private struct ControlsView: View {
         case .touchGyroInvertPitch: return .flag(\.touchGyroInvertPitch)
         case .volume:        return .range(\.volume, 0...1, 0.05)
         case .music:         return .range(\.musicVolume, 0...1, 0.05)
-        case .autoSwitch:    return .flag(\.autoSwitch)
+        case .autoSwitch:    return .choice(\.autoSwitch, [0, 2, 4, 1])
+        case .autoActivate:  return .flag(\.autoActivate)
+        case .emptySwitch:   return .flag(\.emptySwitch)
         case .viewBob:       return .flag(\.viewBob)
         case .crosshair:     return .range(\.crosshairSize, 16...96, 4)
         case .perfHud:       return .flag(\.perfHud)
