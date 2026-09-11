@@ -6813,6 +6813,16 @@ void _UI_Init( qboolean inGameLoad ) {
 	uiInfo.uiDC.cursorx = 0;
 	uiInfo.uiDC.cursory = 0;
 
+	// No menu is open yet: Menus_CloseAll below sees to that. menutype is what
+	// the engine asks for through UI_GET_ACTIVE_MENU, and a module linked into
+	// the engine keeps it across a level change, where a bytecode or freshly
+	// loaded one would find it back at UIMENU_NONE. Left stale it says the
+	// previous map's screen is still up: _UI_SetActiveMenu refuses to raise the
+	// briefing a second time, and Key_Event routes keys to the pregame or
+	// clipboard screen -- the pregame branch swallows everything that is not one
+	// of its own keys.
+	menutype = UIMENU_NONE;
+
 	UI_RegisterCvars();
 	UI_InitMemory();
 

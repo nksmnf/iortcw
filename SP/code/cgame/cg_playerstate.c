@@ -394,6 +394,22 @@ void CG_CheckLocalSounds( playerState_t *ps, playerState_t *ops ) {
 		trap_S_StartLocalSound( cgs.media.hitTeamSound, CHAN_LOCAL_SOUND );
 	}
 
+	// Rumble for hits the player landed. PERS_HITS above would be the obvious
+	// counter and it carries the damage as well, but the game only keeps it for
+	// multiplayer -- g_combat.c fences the whole block off behind a gametype
+	// check, so in single player it never moves. PERS_ACCURACY_HITS does move:
+	// the server bumps it on the attacker for bullets, the mounted MG42, direct
+	// and splash missile hits and the kick, and only when LogAccuracyHit agrees
+	// the target was somebody else, alive and taking damage. It counts hits and
+	// not points, so the pulse can say how many, not how hard.
+	//
+	// Reading it as a delta between two player states is what makes this the
+	// player's own hits and nobody else's: this is our playerState, and hits
+	// scored by the enemies around us never touch it.
+	if ( ps->persistant[PERS_ACCURACY_HITS] > ops->persistant[PERS_ACCURACY_HITS] ) {
+		CG_HapticEnemyHit( ps->persistant[PERS_ACCURACY_HITS] - ops->persistant[PERS_ACCURACY_HITS] );
+	}
+
 	// health changes of more than -1 should make pain sounds
 	if ( ps->stats[STAT_HEALTH] < ops->stats[STAT_HEALTH] - 1 ) {
 		if ( ps->stats[STAT_HEALTH] > 0 ) {

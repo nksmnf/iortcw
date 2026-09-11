@@ -50,6 +50,13 @@ static cvar_t *in_keyboardDebug     = NULL;
 static SDL_GameController *gamepad = NULL;
 static SDL_Joystick *stick = NULL;
 
+// Instance id of the device `stick` was opened from, or -1 for nothing open.
+// An instance id names one physical arrival of one device and is never reused,
+// which is what lets a device event be told apart from a repeat of one; the
+// device *index* an add event carries cannot do that. See
+// IN_ControllerEventChangesDevice.
+static SDL_JoystickID openedInstance = -1;
+
 static qboolean mouseAvailable = qfalse;
 static qboolean mouseActive = qfalse;
 
@@ -64,8 +71,13 @@ static cvar_t *in_joystickUseAnalog = NULL;
 
 // DualSense (and any other controller that exposes the same features).
 static cvar_t *in_gyro              = NULL;  // 0 off, 1 always on, 2 only while aiming
-static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt
-static cvar_t *in_gyroDeadzone      = NULL;  // rad/s below which tilt is ignored
+static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt, both axes
+static cvar_t *in_gyroYawSens       = NULL;  // per-axis overrides; 0 means "use in_gyroSens"
+static cvar_t *in_gyroPitchSens     = NULL;
+static cvar_t *in_gyroDeadzone      = NULL;  // rad/s taken off the tilt before it counts
+static cvar_t *in_gyroInvertYaw     = NULL;  // for a controller whose gyro does not match SDL's frame
+static cvar_t *in_gyroInvertPitch   = NULL;  // the iPad's own sensor has its own pair, in ios_gyro.m
+static cvar_t *in_gyroYawSource     = NULL;  // which turn of the pad moves the view sideways
 static cvar_t *in_touchpad          = NULL;  // 0 off, 1 gestures, 2 gestures + drag-to-look
 static cvar_t *in_touchpadSens      = NULL;
 static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts as pressed
@@ -75,6 +87,9 @@ static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player hea
 static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
 static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
 static cvar_t *in_debugPad          = NULL;  // log gamepad buttons and sticks
+static cvar_t *in_touchLookSens     = NULL;  // how fast a finger turns the view, both axes
+static cvar_t *in_touchLookYawSens  = NULL;  // per-axis overrides; 0 means "use in_touchLookSens"
+static cvar_t *in_touchLookPitchSens = NULL;
 static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
 static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
 static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
@@ -592,11 +607,76 @@ static struct
 	int      numTouchpads;
 } gamepadCaps;
 
-enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD };
+enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD, ROUTE_SKIP };
 
+// What counts as "not moving" for the gyro, in rad/s. About 2 degrees a second:
+// below anything a hand does on purpose, above what a still controller reports.
+#define GYRO_REST_RATE  0.035f
+
+// How long the readings have to stay that small before they are believed, in
+// milliseconds. Long enough that a slow deliberate pan is never mistaken for
+// rest and learned as bias.
+#define GYRO_REST_SETTLE  250
+
+// Time constant of the bias estimate, in seconds. Expressed as a time rather
+// than as a per-frame fraction so it converges at the same speed at 60Hz and
+// at 120Hz.
+#define GYRO_BIAS_TAU  0.4f
+
+// Degrees of view per second for each rad/s of real rotation, at in_gyroSens
+// 1.0. This is exactly what the old chain -- 32767/4 into the axis and then
+// j_pitch's 0.022 in CL_JoystickMove -- worked out to, and it is kept to the
+// decimal so that a sensitivity someone has already settled on still means the
+// same thing after the rest of this was rewritten.
+#define GYRO_VIEW_DEGREES_PER_RAD  180.2185f
+
+// Units the gyro axes are carried in. Must match GYRO_AXIS_SCALE in
+// cl_input.c, which reads them, and in ios_gyro.m, which writes the same two
+// axes from the iPad's own sensor.
+#define GYRO_AXIS_SCALE  32.0f
+
+// Which turn of the controller the horizontal half of gyro aiming is read from.
+// See the block in IN_GamepadGyro for what each one feels like. in_gyroYawSource.
+#define GYRO_YAW_FROM_YAW   0   // swinging the pad flat, like a wheel on a table
+#define GYRO_YAW_FROM_ROLL  1   // tilting it, like a wheel held up in front of you
+#define GYRO_YAW_FROM_BOTH  2   // both added together, so either gesture steers
+
+// Resting bias of the controller's gyro, and the last values put on the axes.
+// At file scope rather than inside IN_GamepadGyro because both have to be
+// thrown away when the controller changes -- see IN_GyroReset.
+static float gyroBias[3];
+static int   gyroRestSince;
+static int   gyroSampleTime;
+static int   gyroAxis[2];      // [0] pitch, [1] yaw, as last written to the axes
+
+// Where each half of gyro aiming leaves its contribution.
+//
+// Two sensors can steer the view -- the controller's, read by IN_GamepadGyro,
+// and the iPad's own, read by Sys_IOS_GyroFrame in ios_gyro.m -- and they share
+// one pair of axes. Sharing them by writing them is not possible: CL_JoystickEvent
+// assigns rather than adds, so the second write in a frame erases the first
+// instead of joining it, and since each half only wrote when its own reading had
+// changed, which half that was varied from frame to frame. Neither writes the
+// axes now. Each drops its numbers in here after it has looked at its sensor,
+// including the zero that means it has nothing to add, and IN_GyroFlush adds the
+// rows up and writes the axes once, at the end of IN_Frame, when both have had
+// their turn.
+//
+// A row keeps its last value until its owner replaces it, which is exactly what
+// makes a zero from one half quieten that half and nothing else.
+#define GYRO_SRC_PAD     0   // the controller's own sensor
+#define GYRO_SRC_TABLET  1   // the iPad's, out of CoreMotion
+#define GYRO_SRC_COUNT   2
+
+static int gyroSource[GYRO_SRC_COUNT][2];   // [source][0] pitch, [1] yaw
+
+static qboolean IN_TouchOwnsMovement( void );
 static void IN_GamepadTriggers( void );
 static void IN_GamepadTouchpad( void );
 static void IN_GamepadGyro( void );
+static void IN_GyroReset( void );
+static void IN_GyroContribute( int source, int pitch, int yaw );
+static void IN_GyroFlush( void );
 
 
 /*
@@ -618,8 +698,14 @@ static void IN_InitJoystick( void )
 
 	stick = NULL;
 	gamepad = NULL;
+	openedInstance = -1;
 	gamepadUsed = qfalse;
 	memset(&stick_state, '\0', sizeof (stick_state));
+
+	// Before any of the early returns below: the controller list has changed,
+	// so whatever the gyro had learned or last sent belongs to a pad that may
+	// no longer be there.
+	IN_GyroReset();
 
 	// SDL 2.0.4 requires SDL_INIT_JOYSTICK to be initialized separately from
 	// SDL_INIT_GAMECONTROLLER for SDL_JoystickOpen() to work correctly,
@@ -710,6 +796,11 @@ static void IN_InitJoystick( void )
 
 	if (SDL_IsGameController(in_joystickNo->integer))
 		gamepad = SDL_GameControllerOpen(in_joystickNo->integer);
+
+	// Remember which physical device this is. SDL announces a controller that
+	// is already open often enough that reopening on every announcement costs
+	// the player real state -- see the device event handler below.
+	openedInstance = SDL_JoystickInstanceID( stick );
 
 	Com_DPrintf( "Joystick %d opened\n", in_joystickNo->integer );
 	Com_DPrintf( "Name:       %s\n", SDL_JoystickNameForIndex(in_joystickNo->integer) );
@@ -880,6 +971,8 @@ static void IN_ShutdownJoystick( void )
 		stick = NULL;
 	}
 
+	openedInstance = -1;
+
 	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
 	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
 }
@@ -966,6 +1059,39 @@ static float IN_NonZero( float value, float fallback )
 	float v = fabs( value );
 
 	return ( v > 0.0001f ) ? v : fallback;
+}
+
+/*
+===============
+IN_AxisScale
+
+How much to multiply a stick reading by so that CL_JoystickMove ends up adding
+exactly `wanted` to the view or to the movement byte at full deflection.
+
+Everything the direct path puts on an axis is multiplied again at the other end
+by the matching j_* cvar, so what goes out has to be divided by that cvar to
+cancel it back out. The cancelling has to take the sign with it, and this is
+where it used not to: IN_NonZero returns a magnitude, so the size cancelled and
+the sign did not, and the direction the sticks moved the view was decided by
+whether j_yaw and j_pitch happened to be negative or positive.
+
+Those two are ordinary archived cvars. Another engine's config, a stale
+wolfconfig.cfg, or anything that writes them for its own reasons could turn the
+pad's vertical upside down without touching a single setting the player would
+think to look at, and the port's own in_invertLook would then read backwards.
+Dividing by the signed value pins the direction here instead, next to
+in_lookPitchSpeed and in_invertLook, which is where a player looks for it.
+
+For the defaults -- and for any config that only changes the size -- this comes
+out at exactly the number the old line produced, so nothing that works today
+moves.
+===============
+*/
+static float IN_AxisScale( float wanted, float cvarValue, float fallback )
+{
+	float magnitude = IN_NonZero( cvarValue, fallback );
+
+	return ( cvarValue < 0.0f ) ? -( wanted / magnitude ) : ( wanted / magnitude );
 }
 
 /*
@@ -1062,19 +1188,28 @@ static void IN_DigitalMove( float x, float y )
 	}
 
 	for ( i = 0; i < 4; i++ ) {
-		if ( want[i] == held[i] ) {
+		if ( !want[i] && !held[i] ) {
 			continue;
 		}
 
 		// Sent as console commands rather than key events because these are not
 		// bindable keys -- the stick is the stick, and routing it through a
 		// binding is what put turn on the left stick in the first place.
+		//
+		// A held direction is re-sent every frame rather than only when it
+		// changes. IN_KeyDown treats a repeat of the same key as a no-op, so
+		// this costs nothing, and it heals the one thing that kept breaking:
+		// Key_ClearStates, which the UI calls whenever a menu closes, wipes the
+		// engine's idea of what is held while this function still believes it is
+		// pressed -- after which the direction stayed dead until the stick was
+		// centred and pushed again.
 		Cbuf_AddText( va( "%c%s %d\n", want[i] ? '+' : '-', commands[i] + 1, keys[i] ) );
-		held[i] = want[i];
 
-		if ( in_debugPad && in_debugPad->integer ) {
+		if ( in_debugPad && in_debugPad->integer && want[i] != held[i] ) {
 			Com_Printf( "pad: stick %c%s\n", want[i] ? '+' : '-', commands[i] + 1 );
 		}
+
+		held[i] = want[i];
 	}
 }
 
@@ -1157,8 +1292,10 @@ static void IN_GamepadSticks( void )
 		IN_QueueMouseDelta( dx, dy );
 
 		// Nothing should reach the movement axes while a menu is up.
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer, 0, 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer, 0, 0, NULL );
 		return;
@@ -1182,18 +1319,40 @@ static void IN_GamepadSticks( void )
 		IN_DigitalMove( lx, ly );
 
 		// The movement axes must be silent, or the analogue path would fight
-		// the keys.
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		// the keys -- unless the on-screen stick is being held, in which case
+		// they are its, and zeroing them here is what stopped touch walking
+		// after a step or two.
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
 
 		{
-			float yawScale   = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
-			float pitchScale = in_lookPitchSpeed->value / IN_NonZero( j_pitch->value, 0.022f );
+			// Negative for yaw because cl.viewangles[YAW] counts anti-clockwise
+			// while the stick is read the mouse's way round: pushing right has
+			// to take the view right. See IN_AxisScale for why the sign is
+			// settled here rather than left to the sign of a j_* cvar.
+			float yawScale   = IN_AxisScale( -in_lookYawSpeed->value,  j_yaw->value,   0.022f );
+			float pitchScale = IN_AxisScale(  in_lookPitchSpeed->value, j_pitch->value, 0.022f );
 
 			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
 				(int)( rx * yawScale ), 0, NULL );
 			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
 				(int)( ry * pitchScale ), 0, NULL );
+
+			if ( in_debugPad && in_debugPad->integer ) {
+				static int nextAxisLog;
+
+				if ( Sys_Milliseconds() >= nextAxisLog ) {
+					nextAxisLog = Sys_Milliseconds() + 250;
+					Com_Printf( "pad: axes side[%d]=%d fwd[%d]=%d yaw[%d]=%d pitch[%d]=%d touchOwns=%d\n",
+						j_side_axis->integer, cl.joystickAxis[j_side_axis->integer],
+						j_forward_axis->integer, cl.joystickAxis[j_forward_axis->integer],
+						j_yaw_axis->integer, (int)( rx * yawScale ),
+						j_pitch_axis->integer, (int)( ry * pitchScale ),
+						IN_TouchOwnsMovement() );
+				}
+			}
 		}
 		return;
 	}
@@ -1213,20 +1372,56 @@ static void IN_GamepadSticks( void )
 	// j_yaw * axis, so the axis value for a wanted rate is just rate / j_yaw.
 	// That lets the speed be expressed in degrees per second, which is a number
 	// a player can reason about, instead of an arbitrary multiplier.
+	//
+	// The wanted values carry the direction with them -- forward is negative
+	// because pushing the stick up reads negative, yaw is negative because the
+	// view angle counts the other way from the mouse -- and IN_AxisScale takes
+	// the sign of the j_* cvar out of the answer, so none of the four depends
+	// on which way round somebody left those cvars.
 	{
-		float sideScale    = 127.0f / IN_NonZero( j_side->value, 0.25f );
-		float forwardScale = 127.0f / IN_NonZero( j_forward->value, 0.25f );
-		float yawScale     = in_lookYawSpeed->value   / IN_NonZero( j_yaw->value, 0.022f );
-		float pitchScale   = in_lookPitchSpeed->value / IN_NonZero( j_pitch->value, 0.022f );
+		float sideScale    = IN_AxisScale(  127.0f, j_side->value,    0.25f );
+		float forwardScale = IN_AxisScale( -127.0f, j_forward->value, 0.25f );
+		float yawScale     = IN_AxisScale( -in_lookYawSpeed->value,   j_yaw->value,   0.022f );
+		float pitchScale   = IN_AxisScale(  in_lookPitchSpeed->value, j_pitch->value, 0.022f );
 
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
-			(int)( lx * sideScale ), 0, NULL );
-		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
-			(int)( ly * forwardScale ), 0, NULL );
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
+				(int)( lx * sideScale ), 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
+				(int)( ly * forwardScale ), 0, NULL );
+		}
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
 			(int)( rx * yawScale ), 0, NULL );
 		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
 			(int)( ry * pitchScale ), 0, NULL );
+
+		// The digital path has had this readout for a while; analogue never did,
+		// and the one report that needed it came from a player in this mode
+		// saying the left stick turned his view. Both sticks are printed beside
+		// what this function queues AND what is actually sitting on the axes,
+		// because those two answer different questions: if the look axes carry a
+		// value while the right stick is at rest, something other than this
+		// function is writing them, and no amount of reading the stick code
+		// would have found it.
+		if ( in_debugPad && in_debugPad->integer ) {
+			static int nextAnalogLog;
+
+			if ( Sys_Milliseconds() >= nextAnalogLog ) {
+				nextAnalogLog = Sys_Milliseconds() + 250;
+				Com_Printf( "pad: analogue L %.2f %.2f R %.2f %.2f | sent side=%d fwd=%d yaw=%d pitch=%d"
+					" | live side=%d fwd=%d yaw=%d pitch=%d gyro=%d,%d touchOwns=%d\n",
+					lx, ly, rx, ry,
+					(int)( lx * sideScale ), (int)( ly * forwardScale ),
+					(int)( rx * yawScale ), (int)( ry * pitchScale ),
+					cl.joystickAxis[j_side_axis->integer],
+					cl.joystickAxis[j_forward_axis->integer],
+					cl.joystickAxis[j_yaw_axis->integer],
+					cl.joystickAxis[j_pitch_axis->integer],
+					cl.joystickAxis[AXIS_GYRO_YAW],
+					cl.joystickAxis[AXIS_GYRO_PITCH],
+					IN_TouchOwnsMovement() );
+			}
+		}
 	}
 }
 
@@ -1264,6 +1459,61 @@ mouse-driven menu normally behaves. The D-pad is also mapped to the arrow keys
 so list-style menus (difficulty, saved games) can be walked without aiming.
 ===============
 */
+/*
+===============
+IN_SkipsCutscene
+
+Which buttons mean "get on with it" while a cutscene is playing.
+
+Needed since the keyboard duplicates iPadOS sends for these buttons started
+being dropped: skipping used to happen by accident, because the duplicate of
+Cross arrived as Return and Options as Escape, and the game skips on those.
+===============
+*/
+/*
+===============
+IN_TouchOwnsMovement
+
+True while the on-screen stick is held. Only ever true on iOS; elsewhere this
+folds away to a constant.
+===============
+*/
+static qboolean IN_TouchOwnsMovement( void )
+{
+#if TARGET_OS_IPHONE
+	extern int IOSTouch_MovementActive( void );
+
+	return IOSTouch_MovementActive() ? qtrue : qfalse;
+#else
+	return qfalse;
+#endif
+}
+
+static qboolean IN_CutsceneActive( void )
+{
+	if ( clc.state == CA_CINEMATIC ) {
+		return qtrue;
+	}
+
+	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
+	// CL_KeyDownEvent itself tests when deciding that a key means "skip".
+	return cl.cameraMode ? qtrue : qfalse;
+}
+
+static qboolean IN_SkipsCutscene( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_A:
+		case SDL_CONTROLLER_BUTTON_B:
+		case SDL_CONTROLLER_BUTTON_START:
+		case SDL_CONTROLLER_BUTTON_BACK:
+			return qtrue;
+		default:
+			return qfalse;
+	}
+}
+
 static int IN_MenuKeyForPadButton( int button )
 {
 	switch ( button )
@@ -1307,6 +1557,18 @@ static void IN_GamepadMove( void )
 	// are translated instead of being sent as PAD0_* keys that no menu binds --
 	// otherwise there is no way to pick a difficulty and start a mission
 	// without putting the iPad down and using the touchscreen.
+	// The sticks are read directly, always, on this platform.
+	//
+	// The alternative is to synthesise a key per stick direction and let the
+	// bindings map it back to an axis -- and default.cfg inside pak0 binds the
+	// left stick's horizontal to turn, so the character walks in circles and
+	// both sticks appear to do the same thing. That is not a layout anyone
+	// would choose, so the cvar is not allowed to select it here; it stays for
+	// the desktop builds, where a player might have a reason.
+#if TARGET_OS_IPHONE
+	Cvar_Set( "in_gamepadDirect", "1" );
+#endif
+
 	menuMode = ( in_gamepadDirect->integer && CL_UIActive() ) ? qtrue : qfalse;
 
 	// check buttons
@@ -1332,7 +1594,9 @@ static void IN_GamepadMove( void )
 		{
 			stick_state.buttonRoute[i] = ROUTE_KEY;
 
-			if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
+			if ( IN_CutsceneActive() && IN_SkipsCutscene( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_SKIP;
+			} else if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
 				stick_state.buttonRoute[i] = ROUTE_MENU;
 			} else if ( in_dpadMove->integer && IN_DpadMoveCommand( i ) ) {
 				stick_state.buttonRoute[i] = ROUTE_DPAD;
@@ -1341,6 +1605,12 @@ static void IN_GamepadMove( void )
 
 		switch ( stick_state.buttonRoute[i] )
 		{
+		case ROUTE_SKIP:
+			// Escape is what the game skips a cutscene on, and CL_KeyDownEvent
+			// turns it into "cameraInterrupt" so the level script knows.
+			Com_QueueEvent(in_eventTime, SE_KEY, K_ESCAPE, pressed, 0, NULL);
+			break;
+
 		case ROUTE_MENU:
 			Com_QueueEvent(in_eventTime, SE_KEY, IN_MenuKeyForPadButton( i ), pressed, 0, NULL);
 			break;
@@ -1628,6 +1898,164 @@ static void IN_GamepadTouchpad( void )
 
 /*
 ===============
+IN_AxisSens
+
+Picks between a sensitivity set for one axis and the one set for both.
+
+Horizontal and vertical want different numbers more often than not -- a player
+who can swing the view across a room comfortably usually finds the same speed
+far too much for the small vertical corrections a shot needs -- but every one of
+these settings started life as a single figure covering both, and there are
+configs out in the world with a number in them that somebody spent an evening
+arriving at.
+
+So the per-axis keys default to zero and zero means "nothing set here". An
+untouched config finds both axes falling through to the figure it already
+carries and plays exactly as it did; a player who wants them apart puts a real
+number on one axis or both, and from that moment that axis stops listening to
+the shared key. Nothing has to be migrated and nothing is silently rescaled.
+===============
+*/
+static float IN_AxisSens( const cvar_t *axis, const cvar_t *both )
+{
+	if ( axis && axis->value > 0.0f ) {
+		return axis->value;
+	}
+
+	return both ? both->value : 1.0f;
+}
+
+/*
+===============
+IN_GyroContribute
+
+Records what one of the two gyros wants the view to do this frame. Nothing
+reaches the axes from here; IN_GyroFlush does that, once both have reported.
+
+Calling this with zeroes is how a source says it has nothing to add -- switched
+off, no sensor on this controller, everything inside the deadzone, or standing
+aside while the other one aims -- and it does have to be said rather than left
+unsaid, because a row keeps its last value until its owner replaces it. That is
+the same latch that used to leave the view turning by itself, moved one step
+back: an abandoned reading now sits in one row of an addition rather than on the
+axis, which is why every early exit in IN_GamepadGyro and in Sys_IOS_GyroFrame
+still comes through here on its way out.
+===============
+*/
+static void IN_GyroContribute( int source, int pitch, int yaw )
+{
+	gyroSource[source][0] = pitch;
+	gyroSource[source][1] = yaw;
+}
+
+/*
+===============
+IN_GyroFlush
+
+Adds the sources up and puts the total on the two joystick axes, but only when
+it has changed.
+
+CL_JoystickEvent latches -- cl.joystickAxis keeps whatever was last written to
+it until something writes again. That is right for a stick, which reports a
+position and reports it every frame, and wrong for anything that can decide it
+has nothing to say: the old code returned early once both axes fell inside the
+deadzone, which left the last non-zero reading latched and the view turning at
+that rate for good. Going quiet has to be sent, exactly once.
+
+The total is clamped again even though each half already clamped itself. Two
+halves that each fill the axis ask for twice it between them, and a player who
+has turned both gyros on and swings the iPad and the pad the same way at the
+same time is asking for precisely that.
+===============
+*/
+static void IN_GyroFlush( void )
+{
+	int pitch = 0, yaw = 0, i;
+
+	for ( i = 0; i < GYRO_SRC_COUNT; i++ ) {
+		pitch += gyroSource[i][0];
+		yaw   += gyroSource[i][1];
+	}
+
+	pitch = (int)Com_Clamp( -32767.0f, 32767.0f, (float)pitch );
+	yaw   = (int)Com_Clamp( -32767.0f, 32767.0f, (float)yaw );
+
+	if ( pitch != gyroAxis[0] ) {
+		gyroAxis[0] = pitch;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH, pitch, 0, NULL );
+	}
+
+	if ( yaw != gyroAxis[1] ) {
+		gyroAxis[1] = yaw;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW, yaw, 0, NULL );
+	}
+}
+
+/*
+===============
+IN_GyroReset
+
+Throws away the resting-bias estimate and puts both axes back to zero.
+
+Called whenever the controller list changes. The estimate describes one physical
+sensor, so carrying it across to the pad that just arrived starts that one off
+with a deliberate error; and a pad unplugged mid-turn has to have its last
+reading cleared, or nothing will ever clear it -- IN_GamepadGyro is only reached
+while a gamepad is open.
+===============
+*/
+static void IN_GyroReset( void )
+{
+	Com_Memset( gyroBias, 0, sizeof( gyroBias ) );
+	gyroRestSince = 0;
+	gyroSampleTime = 0;
+
+	// The controller's row alone. Clearing both would take the aim off a player
+	// who is holding the iPad and steering with its gyro, for the sole reason
+	// that something happened to a controller he is not using.
+	IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+
+	// And out with it here rather than waiting for the end of the frame. This is
+	// reached from IN_ProcessEvents, which is past the point where IN_GamepadGyro
+	// would have spoken, and a pad unplugged mid-turn has to stop turning the view
+	// in the frame it left in. Going through the flush rather than writing zeroes
+	// is what leaves the iPad's own contribution standing.
+	IN_GyroFlush();
+}
+
+/*
+===============
+IN_GyroDeadzone
+
+Takes the deadzone off a rate rather than cutting at it.
+
+A threshold that passes the whole reading once it is exceeded still passes the
+whole of whatever bias is left in that reading, which is why the drift got
+quieter but never went away. Subtracting leaves nothing at the threshold and
+grows smoothly from there, so an offset just outside the deadzone contributes
+almost nothing instead of a full deadzone's worth.
+
+Per axis, unlike the sticks' radial deadzone in IN_ApplyStickCurve: a bias sits
+on one axis and has to come off there whatever the other axis is doing.
+===============
+*/
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+static float IN_GyroDeadzone( float rate, float deadzone )
+{
+	if ( rate > deadzone ) {
+		return rate - deadzone;
+	}
+
+	if ( rate < -deadzone ) {
+		return rate + deadzone;
+	}
+
+	return 0.0f;
+}
+#endif
+
+/*
+===============
 IN_GamepadGyro
 
 Gyro aiming. SDL reports angular velocity in rad/s as
@@ -1643,39 +2071,190 @@ static void IN_GamepadGyro( void )
 {
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
 	float data[3];
-	float pitch, yaw, scale, deadzone;
+	float pitch, yaw, roll, pitchScale, yawScale, deadzone, magnitude;
+	int   now, elapsed, i, yawSource;
 
 	if ( !in_gyro || !in_gyro->integer || !gamepadCaps.hasGyro )
-		return;
-
-	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
 	{
-		// "only while aiming". RTCW has no explicit ADS flag, but cgame scales
-		// cgameSensitivity down whenever the view is zoomed (scope, binoculars,
-		// snooper), which is exactly the state we want gyro for.
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
 		return;
 	}
 
 	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
+	{
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
 		return;
+	}
+
+	now = Sys_Milliseconds();
+	elapsed = gyroSampleTime ? now - gyroSampleTime : 0;
+	gyroSampleTime = now;
+
+	// Take the resting bias out before anything else.
+	//
+	// A gyro at rest does not read zero; it reads a small, slowly wandering
+	// offset. A deadzone can hide it but cannot remove it -- anything just
+	// outside the deadzone still leaks, and the aim creeps across the screen
+	// while the controller sits on a table. So the offset is measured instead:
+	// whenever the readings have been small for a moment the estimate is pulled
+	// gently towards them, and it is subtracted from every sample.
+	//
+	// All three axes, including roll: it is the third axis of the same test for
+	// "is this controller moving at all", a pad being rolled is a pad in
+	// someone's hands, and since in_gyroYawSource it can be the axis the whole
+	// horizontal is read from -- an untracked bias there would creep exactly
+	// the way the other two no longer do.
+	magnitude = 0.0f;
+
+	for ( i = 0; i < 3; i++ ) {
+		data[i] -= gyroBias[i];
+		magnitude += data[i] * data[i];
+	}
+
+	if ( magnitude < GYRO_REST_RATE * GYRO_REST_RATE ) {
+		if ( !gyroRestSince ) {
+			gyroRestSince = now;
+		}
+
+		if ( now - gyroRestSince > GYRO_REST_SETTLE ) {
+			float rate = elapsed * 0.001f / GYRO_BIAS_TAU;
+
+			// A long frame -- a level load, the app coming back from the
+			// background -- must not let one sample become the whole estimate.
+			if ( rate > 1.0f ) {
+				rate = 1.0f;
+			}
+
+			for ( i = 0; i < 3; i++ ) {
+				gyroBias[i] += data[i] * rate;
+			}
+		}
+	} else {
+		gyroRestSince = 0;
+	}
+
+	// The bias is learned above this test on purpose. "Only while aiming" is
+	// the mode where a stale estimate hurts most: the scope comes up, the gyro
+	// starts being read, and it has to be right at that instant rather than
+	// after a quarter of a second of settling that the player spends drifting
+	// off target.
+	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
+	{
+		// RTCW has no explicit ADS flag, but cgame scales cgameSensitivity down
+		// whenever the view is zoomed (scope, binoculars, snooper), which is
+		// exactly the state we want gyro for.
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+		return;
+	}
 
 	deadzone = in_gyroDeadzone->value;
 
-	// data[0] is pitch (tilting the pad up/down), data[1] is yaw (turning it).
-	pitch = ( fabs( data[0] ) > deadzone ) ? -data[0] : 0.0f;
-	yaw   = ( fabs( data[1] ) > deadzone ) ? -data[1] : 0.0f;
+	// data[0] is pitch (tipping the pad's nose up and down), data[1] is yaw
+	// (swinging it left and right while it stays flat) and data[2] is roll
+	// (tilting it one grip up and the other down, around the line that runs
+	// from the PS button out towards the screen).
+	//
+	// The deadzone is taken off all three the same way, and all three have had
+	// their resting bias subtracted above. Roll is no longer a spare reading:
+	// whichever of them ends up steering has to arrive equally clean, or the
+	// player would meet the old drift again just by changing one cvar.
+	pitch = IN_GyroDeadzone( data[0], deadzone );
+	yaw   = IN_GyroDeadzone( data[1], deadzone );
+	roll  = IN_GyroDeadzone( data[2], deadzone );
 
-	if ( pitch == 0.0f && yaw == 0.0f )
-		return;
+	// Where the horizontal comes from.
+	//
+	// Yaw -- swinging the whole pad flat, the way you would turn a wheel lying
+	// on a table -- is the literal reading of the sensor and what this had
+	// wired in. It assumes the pad is held level, and that assumption is what
+	// makes it feel wrong on a sofa: with the pad tilted back in the lap, the
+	// axis the player is swinging about no longer points at the ceiling, so
+	// part of the movement lands in the vertical and the turn comes out weak.
+	//
+	// Roll -- tilting it like a wheel held up in front of you, right grip down
+	// to go right -- does not care how the pad is held, only how it is turned
+	// relative to itself, so it survives any grip. That is why it is the
+	// default.
+	//
+	// Both, added together, is the third setting: either gesture steers, which
+	// suits a player who has not settled on one, at the cost of the two adding
+	// up when he does both at once.
+	//
+	// This is a matter of taste rather than of correctness, which is why it is
+	// a cvar and not a decision made here.
+	yawSource = in_gyroYawSource ? in_gyroYawSource->integer : GYRO_YAW_FROM_ROLL;
 
-	// rad/s -> the +-32767 range the joystick axis path expects, with
-	// in_gyroSens as the user-facing multiplier.
-	scale = in_gyroSens->value * 32767.0f / 4.0f;
+	if ( yawSource == GYRO_YAW_FROM_ROLL ) {
+		yaw = roll;
+	} else if ( yawSource == GYRO_YAW_FROM_BOTH ) {
+		yaw += roll;
+	}
 
-	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH,
-		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * scale ), 0, NULL );
-	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW,
-		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * scale ), 0, NULL );
+	// Direction, decided here rather than left to the signs of j_yaw and
+	// j_pitch. Negating both axes and then multiplying by two cvars of opposite
+	// sign did come out right with the defaults, but only by cancellation: the
+	// vertical was one edit to j_pitch away from running backwards, and nothing
+	// in either file said so.
+	//
+	// SDL's frame, with the pad held in front of you: +x points right, +y up,
+	// +z towards you, and rotation is counter-clockwise seen from the positive
+	// end of each axis. So a positive data[0] lifts the nose and a positive
+	// data[1] swings it to the left; following the pad one for one means the
+	// view goes up and to the left. The axes are in the mouse's convention --
+	// positive yaw right, positive pitch down -- so both are negated once.
+	//
+	// Roll comes out of the same rule and needs the same single negation, which
+	// is why it can be swapped in above without any sign of its own: the
+	// observer sits at +z, that is the player's own eyes, and counter-clockwise
+	// from there lifts the right grip and drops the left. Turning the pad the
+	// other way -- right grip down, the way a wheel is turned to go right --
+	// is negative, and negating it sends the view right, which is where the
+	// hands were pointing.
+	pitch = -pitch;
+	yaw   = -yaw;
+
+	// Inverted look has to reach the gyro as well. It only flipped the stick
+	// before, so switching it on left the two halves of the same aim pulling
+	// against each other: the thumb turned one way, the wrist the other. Pitch
+	// only, exactly as in IN_GamepadSticks.
+	if ( in_invertLook->integer ) {
+		pitch = -pitch;
+	}
+
+	// Last resort for a sensor that does not report in the frame SDL documents.
+	// There is no way to tell from here which way a given pad measures, and no
+	// way for the player to find out except by trying it.
+	if ( in_gyroInvertPitch->integer ) {
+		pitch = -pitch;
+	}
+	if ( in_gyroInvertYaw->integer ) {
+		yaw = -yaw;
+	}
+
+	// rad/s -> view degrees per second -> axis units. The sensitivities are the
+	// only thing in here that a player sets, and nothing else in the chain scales
+	// these two again.
+	//
+	// A scale each, because the two axes are not asking for the same thing: the
+	// horizontal has a whole room to cover and the vertical only the height of a
+	// man, so the number that makes turning feel right usually makes aiming up
+	// and down twitchy. in_gyroSens still sets both unless one of the per-axis
+	// keys is given a value of its own -- see IN_AxisSens.
+	pitchScale = IN_AxisSens( in_gyroPitchSens, in_gyroSens ) *
+		GYRO_VIEW_DEGREES_PER_RAD * GYRO_AXIS_SCALE;
+	yawScale = IN_AxisSens( in_gyroYawSens, in_gyroSens ) *
+		GYRO_VIEW_DEGREES_PER_RAD * GYRO_AXIS_SCALE;
+
+	// Scaled here rather than after the two gyros are added together, and that is
+	// the point of doing it per source: the iPad's own sensor has its own pair of
+	// sensitivities, and a player mixing the two is setting how much each of them
+	// contributes. A single scale applied to the total would make each one's
+	// setting depend on what the other was doing.
+	IN_GyroContribute( GYRO_SRC_PAD,
+		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * pitchScale ),
+		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * yawScale ) );
+#else
+	IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
 #endif
 }
 
@@ -2134,6 +2713,23 @@ static void IN_ProcessEvents( void )
 
 			case SDL_CONTROLLERDEVICEADDED:
 			case SDL_CONTROLLERDEVICEREMOVED:
+				// iPadOS announces the pad that is already connected over and
+				// over -- fifteen times in one session on the device, three of
+				// them mid-firefight. Reopening is not free: it drops the gyro's
+				// resting bias, probes the motors with a real HID write, and
+				// clears the button state, which sends a held button down a
+				// second time. So only react when the device actually changed.
+				//
+				// The two events do not agree on what `which` means: for ADDED
+				// it is a device index, for REMOVED an instance id. Hence the
+				// asymmetry below.
+				if ( e.type == SDL_CONTROLLERDEVICEADDED ) {
+					if ( SDL_JoystickGetDeviceInstanceID( e.cdevice.which ) == openedInstance )
+						break;
+				} else if ( openedInstance != -1 && e.cdevice.which != openedInstance ) {
+					break;
+				}
+
 				if (in_joystick->integer)
 					IN_InitJoystick();
 #if TARGET_OS_IPHONE
@@ -2224,6 +2820,26 @@ void IOSTouch_QueueAxis( int axis, int value )
 	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, axis, value, 0, NULL );
 }
 
+/*
+===============
+IOSTouch_SetTabletGyro
+
+The iPad's own gyro handing in its half of the aim, in the same units and the
+same convention as IN_GamepadGyro produces: view degrees per second times
+GYRO_AXIS_SCALE, positive yaw to the right and positive pitch downwards.
+
+Not IOSTouch_QueueAxis, which is what this used to go through. That writes the
+axis, and writing AXIS_GYRO_PITCH / AXIS_GYRO_YAW erases whatever the
+controller's gyro put there earlier in the same frame instead of adding to it,
+so with both sensors running the last writer won rather than the two being felt
+together. See IN_GyroContribute.
+===============
+*/
+void IOSTouch_SetTabletGyro( int pitch, int yaw )
+{
+	IN_GyroContribute( GYRO_SRC_TABLET, pitch, yaw );
+}
+
 void IOSTouch_QueueMouse( int dx, int dy )
 {
 	// Deliberately mouse rather than joystick: CL_MouseMove is not
@@ -2274,18 +2890,7 @@ this to turn a tap into "skip".
 */
 int IOSTouch_CinematicActive( void )
 {
-	if ( clc.state == CA_CINEMATIC ) {
-		return 1;
-	}
-
-	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
-	// CL_KeyDownEvent itself tests when deciding that a key means "skip", so
-	// using it keeps the two from disagreeing.
-	if ( cl.cameraMode ) {
-		return 1;
-	}
-
-	return 0;
+	return IN_CutsceneActive() ? 1 : 0;
 }
 
 /*
@@ -2305,6 +2910,56 @@ void IOSTouch_SkipCinematic( void )
 {
 	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qtrue, 0, NULL );
 	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
+}
+
+/*
+===============
+IOSTouch_QueueCommand
+
+Run a +command / -command on the overlay's behalf, with its own key number.
+
+The key number is what keeps two sources of the same button apart: a -command
+without one releases every holder, so the on-screen controls and the pad would
+cancel each other.
+===============
+*/
+void IOSTouch_QueueCommand( const char *command, int key )
+{
+	if ( !command || !*command ) {
+		return;
+	}
+
+	Cbuf_AddText( va( "%s %d\n", command, key ) );
+}
+
+/*
+===============
+IOSTouch_LookSensitivity
+
+How fast a finger dragged across the look area turns the view, for one axis.
+
+Takes an axis rather than answering once for both because the overlay applies it
+to the horizontal and the vertical separately, and a thumb sweeping sideways
+across a tablet covers several times the distance it can reach up and down
+without letting go. in_touchLookYawSens and in_touchLookPitchSens override
+in_touchLookSens one axis at a time; see IN_AxisSens.
+
+Zero still means one. Nothing set anywhere has to come out as "unchanged", not
+as "the view does not move" -- that was true when there was one cvar and it is
+true now that a missing per-axis key falls through to a shared key that may be
+missing too.
+===============
+*/
+float IOSTouch_LookSensitivity( int pitch )
+{
+	float sens = IN_AxisSens( pitch ? in_touchLookPitchSens : in_touchLookYawSens,
+		in_touchLookSens );
+
+	if ( sens <= 0.0f ) {
+		return 1.0f;
+	}
+
+	return sens;
 }
 
 int IOSTouch_MovementAxis( int forward )
@@ -2414,7 +3069,16 @@ void IN_Frame( void )
 	// Cheap when nothing changed, and it has to run every frame: the overlay
 	// hides itself whenever a menu, the console or a loading screen takes over.
 	Sys_IOS_TouchOverlayUpdate( );
+	Sys_IOS_PerfFrame( );
+	Sys_IOS_GyroFrame( );
 #endif
+
+	// Both gyros have now had their say -- the controller's inside IN_JoyMove at
+	// the top of this function, the iPad's just above -- so their contributions
+	// can be added and put on the axes as one value. It runs unconditionally: on
+	// every platform but this one the second row is permanently zero and the total
+	// is simply what the controller asked for. See IN_GyroContribute.
+	IN_GyroFlush( );
 
 	// Set event time for next frame to earliest possible time an event could happen
 	in_eventTime = Sys_Milliseconds( );
@@ -2467,6 +3131,37 @@ void IN_Init( void *windowData )
 	in_gyro         = Cvar_Get( "in_gyro",         "0",    CVAR_ARCHIVE );
 	in_gyroSens     = Cvar_Get( "in_gyroSens",     "1.0",  CVAR_ARCHIVE );
 	in_gyroDeadzone = Cvar_Get( "in_gyroDeadzone", "0.02", CVAR_ARCHIVE );
+
+	// Horizontal and vertical separately, zero meaning "leave this axis to
+	// in_gyroSens". Default zero on both so that a config which already carries a
+	// tuned in_gyroSens keeps aiming exactly as it did, without a migration and
+	// without the player being asked to set two numbers where he had settled on
+	// one. See IN_AxisSens.
+	in_gyroYawSens   = Cvar_Get( "in_gyroYawSens",   "0", CVAR_ARCHIVE );
+	in_gyroPitchSens = Cvar_Get( "in_gyroPitchSens", "0", CVAR_ARCHIVE );
+
+	// 0 yaw, 1 roll, 2 both. Roll by default because it steers the same however
+	// the pad is being held, and a pad played on a sofa is never held level;
+	// see the block in IN_GamepadGyro. Only for the controller's own sensor --
+	// the iPad's gyro builds its axes from gravity and has no such choice.
+	in_gyroYawSource = Cvar_Get( "in_gyroYawSource", "1", CVAR_ARCHIVE );
+
+	// Off by default because SDL documents which way a controller's gyro reports,
+	// so it should already be the right way round. They exist because a sensor
+	// that disagrees cannot be detected from here, only felt by the player, and
+	// the alternative to a toggle is a rebuild.
+	//
+	// The controller's alone. ios_gyro.m used to read this same pair, on the
+	// reasoning that one toggle for both gyros keeps them from disagreeing, and
+	// that was wrong: the two sensors do not share a frame of reference. This one
+	// reports in the frame SDL documents for the controller's own body; the iPad
+	// builds its axes out of the gravity vector instead. Which way round each of
+	// them comes out is an independent question, so a player who flipped the
+	// horizontal to suit the pad was flipping the tablet's the wrong way as the
+	// price. It has its own pair now -- in_touchGyroInvertYaw and
+	// in_touchGyroInvertPitch, registered in ios_gyro.m.
+	in_gyroInvertYaw   = Cvar_Get( "in_gyroInvertYaw",   "0", CVAR_ARCHIVE );
+	in_gyroInvertPitch = Cvar_Get( "in_gyroInvertPitch", "0", CVAR_ARCHIVE );
 	in_touchpad     = Cvar_Get( "in_touchpad",     "1",    CVAR_ARCHIVE );
 	in_touchpadSens = Cvar_Get( "in_touchpadSens", "600",  CVAR_ARCHIVE );
 	in_triggerSoft  = Cvar_Get( "in_triggerSoft",  "0.12", CVAR_ARCHIVE );
@@ -2477,6 +3172,12 @@ void IN_Init( void *windowData )
 	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
 	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
 	in_debugPad        = Cvar_Get( "in_debugPad",        "0",  CVAR_ARCHIVE );
+	in_touchLookSens   = Cvar_Get( "in_touchLookSens",   "1.0", CVAR_ARCHIVE );
+
+	// Same arrangement as the gyro's pair above: zero defers to in_touchLookSens,
+	// anything positive takes that axis over.
+	in_touchLookYawSens   = Cvar_Get( "in_touchLookYawSens",   "0", CVAR_ARCHIVE );
+	in_touchLookPitchSens = Cvar_Get( "in_touchLookPitchSens", "0", CVAR_ARCHIVE );
 	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.35",  CVAR_ARCHIVE );
 	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
 	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );
@@ -2495,6 +3196,14 @@ void IN_Init( void *windowData )
 
 	Cvar_CheckRange( in_gyroSens,     0.05f, 10.0f, qfalse );
 	Cvar_CheckRange( in_gyroDeadzone, 0.0f,  1.0f,  qfalse );
+
+	// The per-axis keys start where in_gyroSens does but reach down to zero,
+	// which is not a sensitivity but the word for "this axis has none of its own".
+	Cvar_CheckRange( in_gyroYawSens,       0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroPitchSens,     0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_touchLookYawSens,   0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_touchLookPitchSens, 0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroYawSource, GYRO_YAW_FROM_YAW, GYRO_YAW_FROM_BOTH, qtrue );
 	Cvar_CheckRange( in_triggerHard,  0.05f, 1.0f,  qfalse );
 	Cvar_CheckRange( in_rumble,       0,     100,   qtrue  );
 
