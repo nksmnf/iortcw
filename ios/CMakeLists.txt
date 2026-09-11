@@ -18,7 +18,25 @@
 #         -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 
 cmake_minimum_required(VERSION 3.24)
-project(iortcw_sp LANGUAGES C CXX OBJC)
+
+# Which game this build is: SP is the single-player campaign, MP is Return to
+# Castle Wolfenstein Multiplayer. They are two independent source trees that
+# share an engine lineage but not their symbols, so a build is one or the other
+# -- never both in one binary. Set before project() because the project name,
+# and therefore the .xcodeproj filename, follows it.
+set(IORTCW_TREE "SP" CACHE STRING "Which source tree to build: SP or MP")
+set_property(CACHE IORTCW_TREE PROPERTY STRINGS SP MP)
+if(NOT IORTCW_TREE MATCHES "^(SP|MP)$")
+    message(FATAL_ERROR "IORTCW_TREE must be SP or MP, got '${IORTCW_TREE}'")
+endif()
+
+if(IORTCW_TREE STREQUAL "MP")
+    set(IORTCW_IS_MP ON)
+    project(iortcw_mp LANGUAGES C CXX OBJC)
+else()
+    set(IORTCW_IS_MP OFF)
+    project(iortcw_sp LANGUAGES C CXX OBJC)
+endif()
 
 # Swift is only needed for the launcher UI, and only on iOS.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -28,8 +46,8 @@ endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
 
-set(SP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../SP")
-cmake_path(NORMAL_PATH SP_DIR)
+set(TREE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../${IORTCW_TREE}")
+cmake_path(NORMAL_PATH TREE_DIR)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(IORTCW_IOS ON)
@@ -56,14 +74,18 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     endif()
 endif()
 
-include(cmake/sources.generated.cmake)
+if(IORTCW_IS_MP)
+    include(cmake/sources.generated.mp.cmake)
+else()
+    include(cmake/sources.generated.cmake)
+endif()
 include(cmake/StaticVM.cmake)
 
 # Turn the Makefile-relative paths from the generated file into absolute ones.
 function(iortcw_abs out_var)
     set(_abs "")
     foreach(s ${ARGN})
-        list(APPEND _abs "${SP_DIR}/${s}")
+        list(APPEND _abs "${TREE_DIR}/${s}")
     endforeach()
     set(${out_var} ${_abs} PARENT_SCOPE)
 endfunction()
@@ -71,10 +93,10 @@ endfunction()
 # ---------------------------------------------------------------------------
 # Version string, mirroring the Makefile's PRODUCT_VERSION
 # ---------------------------------------------------------------------------
-file(STRINGS "${SP_DIR}/Makefile" _ver_line REGEX "^VERSION=")
+file(STRINGS "${TREE_DIR}/Makefile" _ver_line REGEX "^VERSION=")
 string(REGEX REPLACE "^VERSION=[ \t]*" "" IORTCW_VERSION "${_ver_line}")
 if(NOT IORTCW_VERSION)
-    set(IORTCW_VERSION "1.51d-SP")
+    set(IORTCW_VERSION "1.51d-${IORTCW_TREE}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -94,10 +116,46 @@ target_compile_definitions(iortcw_common INTERFACE
     PRODUCT_VERSION="${IORTCW_VERSION}"
 )
 
+if(IORTCW_IS_MP)
+    # Lets the shared launcher and bridge sources tell which game they are in.
+    target_compile_definitions(iortcw_common INTERFACE IORTCW_MP_BUILD)
+endif()
+
+# ---------------------------------------------------------------------------
+# Info.plist keys that only the multiplayer build needs.
+#
+# Substituted into Resources/Info.plist.in, which is shared by both apps. Empty
+# for SP: a single-player game that asks for the local network on first launch
+# looks exactly like something to be suspicious of.
+# ---------------------------------------------------------------------------
+if(IORTCW_IS_MP)
+    set(IORTCW_PLIST_MP_KEYS
+"\t<!-- Hosting has to survive the app leaving the screen. There is no
+\t     background mode for a listening socket, so we use the audio one and
+\t     render silence; see Sources/ios_keepalive.m for the full reasoning. -->
+\t<key>UIBackgroundModes</key>
+\t<array>
+\t\t<string>audio</string>
+\t</array>
+
+\t<!-- iOS 14+ gates LAN traffic behind an explicit prompt. Without this key
+\t     the engine's broadcast and IPv6 multicast scan are dropped silently,
+\t     and the LAN tab of the server browser is simply always empty. -->
+\t<key>NSLocalNetworkUsageDescription</key>
+\t<string>Поиск серверов Return to Castle Wolfenstein в локальной сети и размещение своего сервера.</string>
+\t<key>NSBonjourServices</key>
+\t<array>
+\t\t<string>_wolfmp._udp</string>
+\t</array>
+")
+else()
+    set(IORTCW_PLIST_MP_KEYS "")
+endif()
+
 target_include_directories(iortcw_common INTERFACE
-    "${SP_DIR}/code/zlib-1.2.11"
-    "${SP_DIR}/code/jpeg-8c"
-    "${SP_DIR}/code/freetype-2.9/include"
+    "${TREE_DIR}/code/zlib-1.2.11"
+    "${TREE_DIR}/code/jpeg-8c"
+    "${TREE_DIR}/code/freetype-2.9/include"
 )
 
 # Guarded by language: swiftc rejects clang flags outright ("Driver threw
@@ -138,8 +196,8 @@ if(IORTCW_IOS)
     set(IORTCW_SDL_MAIN   SDL2main)
 else()
     # macOS reuses the prebuilt universal dylib the Makefile ships with.
-    target_include_directories(iortcw_common INTERFACE "${SP_DIR}/code/SDL2/include")
-    set(IORTCW_SDL_TARGET "${SP_DIR}/code/libs/macosx/libSDL2-2.0.0.dylib")
+    target_include_directories(iortcw_common INTERFACE "${TREE_DIR}/code/SDL2/include")
+    set(IORTCW_SDL_TARGET "${TREE_DIR}/code/libs/macosx/libSDL2-2.0.0.dylib")
     set(IORTCW_SDL_MAIN "")
 endif()
 
@@ -166,7 +224,7 @@ if(IORTCW_IOS)
     # is the tidy way to inherit them from FetchContent.
     target_link_libraries(iortcw_renderer PRIVATE ${IORTCW_SDL_TARGET})
 else()
-    target_include_directories(iortcw_renderer PRIVATE "${SP_DIR}/code/SDL2/include")
+    target_include_directories(iortcw_renderer PRIVATE "${TREE_DIR}/code/SDL2/include")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -179,16 +237,17 @@ if(IORTCW_IOS)
     list(FILTER ENGINE_SRC EXCLUDE REGEX "code/sys/sys_osx\\.m$")
     list(FILTER ENGINE_SRC EXCLUDE REGEX "code/sys/con_tty\\.c$")
     list(APPEND ENGINE_SRC
-        "${SP_DIR}/code/sys/con_passive.c"
+        "${TREE_DIR}/code/sys/con_passive.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
         "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_keepalive.m"
     )
 endif()
 
 # vm_static.c is new and therefore not in the Makefile-derived list.
-list(APPEND ENGINE_SRC "${SP_DIR}/code/qcommon/vm_static.c")
+list(APPEND ENGINE_SRC "${TREE_DIR}/code/qcommon/vm_static.c")
 
 # botlib only compiles with -DBOTLIB (its headers key their type definitions off
 # it), so it needs its own target rather than riding along with the engine.
@@ -207,9 +266,9 @@ target_compile_definitions(iortcw_engine PRIVATE
     USE_BLOOM
 )
 target_include_directories(iortcw_engine PRIVATE
-    "${SP_DIR}/code/libvorbis-1.3.6/include"
-    "${SP_DIR}/code/libvorbis-1.3.6/lib"
-    "${SP_DIR}/code/libogg-1.3.3/include"
+    "${TREE_DIR}/code/libvorbis-1.3.6/include"
+    "${TREE_DIR}/code/libvorbis-1.3.6/lib"
+    "${TREE_DIR}/code/libogg-1.3.3/include"
 )
 if(IORTCW_IOS)
     target_link_libraries(iortcw_engine PRIVATE ${IORTCW_SDL_TARGET})
@@ -218,7 +277,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Game modules, linked in rather than dlopen'd
 # ---------------------------------------------------------------------------
-set(VM_INCLUDES "${SP_DIR}/code/SDL2/include")
+set(VM_INCLUDES "${TREE_DIR}/code/SDL2/include")
 if(IORTCW_IOS)
     set(VM_INCLUDES "")
 endif()
@@ -259,7 +318,11 @@ endif()
 # The application
 # ---------------------------------------------------------------------------
 if(IORTCW_IOS)
-    set(APP_NAME iORTCW)
+    if(IORTCW_IS_MP)
+        set(APP_NAME "iORTCW MP")
+    else()
+        set(APP_NAME iORTCW)
+    endif()
     # The asset catalogue carries the app icon. It has to be a source of the
     # target, not just a bundle resource, so Xcode runs actool over it.
     set(ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets")
@@ -270,7 +333,12 @@ if(IORTCW_IOS)
         ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ}
         ${ASSET_CATALOG})
 
-    set(IORTCW_BUNDLE_ID "com.iortcw.sp" CACHE STRING
+    if(IORTCW_IS_MP)
+        set(IORTCW_DEFAULT_BUNDLE_ID "com.iortcw.mp")
+    else()
+        set(IORTCW_DEFAULT_BUNDLE_ID "com.iortcw.sp")
+    endif()
+    set(IORTCW_BUNDLE_ID "${IORTCW_DEFAULT_BUNDLE_ID}" CACHE STRING
         "Bundle identifier. Keep it stable: AltStore preserves the app's
          container -- and therefore the game data and saves -- only while the
          bundle ID and signing team stay the same.")
@@ -288,7 +356,11 @@ if(IORTCW_IOS)
         XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
     )
 else()
-    set(APP_NAME iowolfsp_cmake)
+    if(IORTCW_IS_MP)
+        set(APP_NAME iowolfmp_cmake)
+    else()
+        set(APP_NAME iowolfsp_cmake)
+    endif()
     add_executable(${APP_NAME}
         ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ})
 endif()

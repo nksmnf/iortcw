@@ -98,5 +98,9 @@
 
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+
+	<!-- Multiplayer-only keys, empty in the SP build. See IORTCW_PLIST_MP_KEYS
+	     in ios/CMakeLists.txt. -->
+${IORTCW_PLIST_MP_KEYS}
 </dict>
 </plist>

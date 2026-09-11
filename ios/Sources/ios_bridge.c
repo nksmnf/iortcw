@@ -46,6 +46,7 @@ static int            numLauncherBinds;
 static qboolean launcherDone;
 static char     launcherCommandLine[1024];
 static char     launcherStartupCommand[256];
+static char     launcherExtraArgs[512];
 static char     bridgeScratch[MAX_OSPATH];
 
 /*
@@ -76,15 +77,66 @@ Bit per expected pk3, so the launcher can show a checklist rather than a single
 yes/no -- the common failure is copying some of the files but not all.
 ==============
 */
+// The retail pk3s each build needs. pak0.pk3 is shared; everything after it is
+// specific to the game. The multiplayer paks shipped with the 1.4 point release
+// rather than on the disc, which is why a copy that plays the campaign fine can
+// still be missing every one of them.
+#ifdef IORTCW_MP_BUILD
+static const char *gameDataFiles[] = {
+	"pak0.pk3", "mp_pak0.pk3", "mp_pak1.pk3", "mp_pak2.pk3",
+	"mp_pak3.pk3", "mp_pak4.pk3", "mp_pak5.pk3"
+};
+#else
+static const char *gameDataFiles[] = {
+	"pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3", "sp_pak3.pk3", "sp_pak4.pk3"
+};
+#endif
+
+/*
+==============
+IOSBridge_IsMultiplayer
+==============
+*/
+bool IOSBridge_IsMultiplayer( void )
+{
+#ifdef IORTCW_MP_BUILD
+	return true;
+#else
+	return false;
+#endif
+}
+
+/*
+==============
+IOSBridge_GameDataFileCount
+==============
+*/
+int IOSBridge_GameDataFileCount( void )
+{
+	return (int)ARRAY_LEN( gameDataFiles );
+}
+
+/*
+==============
+IOSBridge_GameDataFileName
+==============
+*/
+const char *IOSBridge_GameDataFileName( int index )
+{
+	if ( index < 0 || index >= (int)ARRAY_LEN( gameDataFiles ) ) {
+		return "";
+	}
+
+	return gameDataFiles[index];
+}
+
 int IOSBridge_GameDataMask( void )
 {
-	static const char *files[] = {
-		"pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3", "sp_pak3.pk3", "sp_pak4.pk3"
-	};
+	const char **files = gameDataFiles;
 	int mask = 0;
 	int i;
 
-	for ( i = 0; i < (int)ARRAY_LEN( files ); i++ ) {
+	for ( i = 0; i < (int)ARRAY_LEN( gameDataFiles ); i++ ) {
 		char path[MAX_OSPATH];
 
 		Com_sprintf( path, sizeof( path ), "%s/main/%s",
@@ -320,8 +372,23 @@ const char *IOSBridge_BuildCommandLine( void )
 	// with no debugger attached, Documents/main/rtcwconsole.log is the only way
 	// to see what the engine did, and it is readable from Files.app.
 	Com_sprintf( launcherCommandLine, sizeof( launcherCommandLine ),
-		"+set com_hunkMegs %s +set net_enabled 0 +set logfile 2",
-		( hunk && hunk[0] ) ? hunk : "512" );
+		"+set com_hunkMegs %s +set net_enabled %s +set logfile 2",
+		( hunk && hunk[0] ) ? hunk : "512",
+#ifdef IORTCW_MP_BUILD
+		// 1 is IPv4 only, which is what every master and nearly every server
+		// speaks; the masters have no AAAA records at all.
+		"1"
+#else
+		"0"
+#endif
+		);
+
+	// Values the config cannot carry because they are read before any exec.
+	if ( launcherExtraArgs[0] ) {
+		Q_strcat( launcherCommandLine, sizeof( launcherCommandLine ), " " );
+		Q_strcat( launcherCommandLine, sizeof( launcherCommandLine ),
+			launcherExtraArgs );
+	}
 
 	// Appended last so it runs after everything else is configured.
 	if ( launcherStartupCommand[0] ) {
@@ -331,6 +398,17 @@ const char *IOSBridge_BuildCommandLine( void )
 	}
 
 	return launcherCommandLine;
+}
+
+/*
+==============
+IOSBridge_SetExtraArgs
+==============
+*/
+void IOSBridge_SetExtraArgs( const char *args )
+{
+	Q_strncpyz( launcherExtraArgs, args ? args : "",
+		sizeof( launcherExtraArgs ) );
 }
 
 /*

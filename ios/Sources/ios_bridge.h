@@ -38,11 +38,24 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern "C" {
 #endif
 
+// --- build flavour ---------------------------------------------------------
+
+// True in the multiplayer build. SP and MP are separate applications -- two
+// source trees that share no symbols -- so this is fixed at compile time and
+// exists purely so one launcher source can serve both.
+bool IOSBridge_IsMultiplayer( void );
+
 // --- game data -------------------------------------------------------------
 
 // <container>/Documents -- where the user drops their pk3s. Shown in the UI so
 // they can find it in Files.app.
 const char *IOSBridge_DataPath( void );
+
+// The pk3s this build needs, in the order IOSBridge_GameDataMask reports them.
+// Read from here rather than hardcoded in Swift, because SP and MP need
+// different files and the checklist has to follow the binary it is part of.
+int IOSBridge_GameDataFileCount( void );
+const char *IOSBridge_GameDataFileName( int index );
 
 // Is main/pak0.pk3 there yet? The launcher polls this so the Play button lights
 // up as soon as the files land, without needing a relaunch.
@@ -85,6 +98,22 @@ void IOSBridge_SetStartupCommand( const char *command );
 // the launcher's choices for the values that must be set before the configs are
 // read.
 const char *IOSBridge_BuildCommandLine( void );
+
+// Additional "+set name value" arguments to append to the command line, for
+// cvars the generated config cannot carry: "dedicated" is CVAR_INIT and
+// net_port is CVAR_LATCH, so both are already fixed by the time any exec runs.
+// Pass "" to clear.
+void IOSBridge_SetExtraArgs( const char *args );
+
+// --- background hosting ----------------------------------------------------
+//
+// iOS suspends an ordinary app a few seconds after it leaves the screen, which
+// would kill a listening socket. Turning this on keeps the process scheduled
+// while it is hosting a game; see ios_keepalive.m for what it costs and why it
+// is done this way.
+
+void IOSBridge_SetKeepAwake( bool on );
+bool IOSBridge_IsKeepAwake( void );
 
 // --- launcher lifecycle ----------------------------------------------------
 
