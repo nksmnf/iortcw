@@ -164,6 +164,10 @@ enum Loc {
         "Музыка": "Music",
         "Игра": "Game",
         "Переключаться на подобранное оружие": "Switch to picked-up weapons",
+        "Только новое": "Only new",
+        "Новое или лучше": "New or better",
+        "Подбирать предметы на ходу": "Pick things up by walking over them",
+        "Менять оружие, когда кончились патроны": "Switch weapon when out of ammo",
         "Покачивание камеры при ходьбе": "View bob while walking",
         "Размер прицела": "Crosshair size",
         "Диагностика": "Diagnostics",
@@ -342,6 +346,24 @@ enum Loc {
                 controller" is what it always did: with a pad connected its gyro \
                 takes over and this one stays quiet. "Always" keeps both running \
                 and adds what each of them asks for.
+                """),
+
+        "note.pickup": (
+            ru: """
+                Оружие с земли подбирается в любом случае — выбор лишь в том, \
+                брать ли его сразу в руки. «Только новое» — правило самой \
+                игры: в руках остаётся то, чем вы стреляли, пока не попадётся \
+                то, чего у вас ещё нет. «Всегда» — правило Quake III: любой \
+                подобранный ствол, даже второй такой же, вытесняет текущий, и \
+                с набором оружия от лаунчера это происходит на каждом шагу.
+                """,
+            en: """
+                A weapon on the ground is picked up either way; this only \
+                decides whether it goes straight into your hands. "Only new" is \
+                the game's own rule: what you were firing stays up until \
+                something you do not already carry turns up. "Always" is Quake \
+                III's -- any gun picked up, a duplicate included, takes over, \
+                which with the launcher's loadout happens constantly.
                 """),
 
         "note.diag": (
