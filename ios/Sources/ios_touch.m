@@ -48,12 +48,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern void IOSTouch_QueueKey( int key, int down );
 extern void IOSTouch_QueueAxis( int axis, int value );
 extern void IOSTouch_QueueMouse( int dx, int dy );
-extern void IOSTouch_QueueMouseTo( int x, int y );
+extern void IOSTouch_QueueCommand( const char *command, int key );
+extern float IOSTouch_LookSensitivity( int pitch );
 extern int  IOSTouch_ControllerConnected( void );
 extern int  IOSTouch_DebugEnabled( void );
 extern int  IOSTouch_MovementAxis( int forward );
 extern int  IOSTouch_CinematicActive( void );
 extern void IOSTouch_SkipCinematic( void );
+
+// Implemented in cl_keys.c. Which module owns the keyboard also decides where a
+// mouse delta ends up, and the cursor work below has to know: CL_MouseEvent only
+// gives one to the UI while KEYCATCH_UI is set.
+extern int  Key_GetCatcher( void );
 
 #define STICK_RADIUS      110.0f
 #define STICK_DEADZONE    0.15f
@@ -61,6 +67,23 @@ extern void IOSTouch_SkipCinematic( void );
 #define BUTTON_GAP        16.0f
 #define EDGE_MARGIN       40.0f
 #define MENU_BUTTON_SIZE  64.0f
+
+// How far the movement stick has to go before it means "run". Past the point a
+// thumb reaches without deciding to.
+#define SPRINT_THRESHOLD  0.85f
+
+// How long the on-screen controls stay up after the last touch when a
+// controller is also in use. Long enough to cross the screen and press
+// something, short enough that they are gone by the time it matters.
+#define TOUCH_IDLE_HIDE   5.0
+
+// How far a finger may travel in a menu and still be a tap rather than a slide,
+// in points. Measured from where the finger went down rather than between
+// events, because the two answer different questions: a careful slide moves a
+// point or two per event and was being called a tap when it ended, which threw
+// away the aim it had just been used to build.
+#define MENU_TAP_SLOP     6.0f
+
 
 // A button on the overlay: a circle with a label, bound to one key.
 @interface IORTCWTouchButton : UIView
@@ -135,6 +158,15 @@ extern void IOSTouch_SkipCinematic( void );
 @property (nonatomic, strong) UITouch *lookTouch;
 @property (nonatomic, strong) UITouch *stickTouch;
 @property (nonatomic, strong) UITouch *menuTouch;   // the finger acting as the mouse
+@property (nonatomic) CFTimeInterval lastTouchTime; // for the automatic hide
+@property (nonatomic) CGPoint menuTouchLast;
+@property (nonatomic) CGPoint menuTouchOrigin; // where the finger went down
+@property (nonatomic) BOOL menuTouchMoved;
+@property (nonatomic) BOOL menuTwoFinger;
+@property (nonatomic) CGPoint menuCursorRemainder;
+@property (nonatomic) BOOL sprinting;
+@property (nonatomic) CGPoint lookRemainder;
+- (void)releaseTouch:(UITouch *)touch;
 @end
 
 @implementation IORTCWTouchOverlay
@@ -172,12 +204,23 @@ extern void IOSTouch_SkipCinematic( void );
 
 	// Right-hand cluster: the things needed to actually play a level.
 	struct { const char *label; int key; int col; int row; } layout[] = {
+		// The keys are the game's own: these go through the normal bindings, so
+		// they follow whatever the player has set in the Controls menu.
 		{ "FIRE",   K_MOUSE1,  0, 0 },
 		{ "JUMP",   K_SPACE,   1, 0 },
+		{ "RELOAD", 'r',       2, 0 },
+
+		// Kick earns a button: it opens doors, breaks crates and finishes
+		// people without spending ammunition, and touch had no way to do it.
+		{ "KICK",   'g',       3, 0 },
+
 		{ "USE",    'f',       0, 1 },
 		{ "CROUCH", 'c',       1, 1 },
-		{ "RELOAD", 'r',       2, 0 },
-		{ "NEXT",   ']',       2, 1 },
+
+		// '[' is weapnext and ']' is weapprev in default.cfg. The single button
+		// here was labelled NEXT and bound to ']', so it cycled backwards.
+		{ "NEXT",   '[',       2, 1 },
+		{ "PREV",   ']',       3, 1 },
 	};
 
 	// Escape, where it can be found. A three-finger tap does the same and still
@@ -253,14 +296,34 @@ extern void IOSTouch_SkipCinematic( void );
  * The engine's cursor lives in the virtual 640x480 space its menus are laid out
  * in, which is why the touch position is scaled into that rather than used in
  * screen pixels.
+ *
+ * It starts on the origin because that is where the UI leaves its own cursor
+ * when it starts -- _UI_Init sets it there and CL_InitUI tells the input layer
+ * so. This used to start in the middle of the screen, which was a claim about a
+ * position nothing had ever put the cursor in.
  */
-static CGPoint menuCursor = { 320.0f, 240.0f };
+static CGPoint menuCursor = { 0.0f, 0.0f };
 
 - (BOOL)menuActive
 {
 	// Includes the loading screen and the pregame briefing, neither of which is
 	// gameplay even though only one of them sets the key catcher.
 	return CL_UIActive() ? YES : NO;
+}
+
+/*
+ * Whether the UI will actually accept a cursor, which is narrower than
+ * -menuActive above.
+ *
+ * A loading screen, the pregame briefing and the console all count as the UI
+ * owning the screen, but CL_MouseEvent only hands a delta to the UI while
+ * KEYCATCH_UI is set; at any of those it falls through to the branch that adds
+ * the delta to the player's view angles instead. Driving a cursor there moves
+ * nothing that can be seen and quietly turns the player's head.
+ */
+- (BOOL)menuTakesCursor
+{
+	return ( Key_GetCatcher() & KEYCATCH_UI ) ? YES : NO;
 }
 
 - (CGPoint)virtualPointFor:(CGPoint)p
@@ -283,15 +346,55 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	return CGPointMake( ( p.x / w ) * 640.0f, ( p.y / h ) * 480.0f );
 }
 
+/*
+ * Put the cursor on a point exactly, whatever state anything else has left it
+ * in. This is what a tap in a menu comes down to, and it is where taps were
+ * landing somewhere other than the finger.
+ *
+ * The obvious route was to ask the engine for the difference between the point
+ * and where the cursor already is, which IOSTouch_QueueMouseTo does against the
+ * shadow position IN_QueueMouseDelta keeps. That shadow is not the UI's cursor
+ * and cannot be: IN_QueueMouseDelta sees every mouse delta the game produces,
+ * while the UI's cursor only moves when KEYCATCH_UI is set. Looking around by
+ * touch pushes hundreds of deltas through that same function during play -- one
+ * swipe is enough to drive the shadow into a corner, where it clamps -- so by
+ * the time the menu is opened the two have drifted apart and the difference the
+ * engine reports is wrong by exactly that drift. It is the same drift wherever
+ * the finger lands, which is why it reads as the cursor sitting a fixed distance
+ * from the touch rather than as the screen being scaled wrongly, and why it gets
+ * reported against one menu entry: a constant offset simply presses the item
+ * next to the one that was aimed at, and it is the item you meant to press that
+ * you remember.
+ *
+ * So the difference is not asked for; it is made irrelevant. Both the shadow and
+ * the UI's cursor clamp to the same 640x480 box, so one deliberately impossible
+ * move puts both of them on the origin no matter where either of them was, and
+ * the second move then travels from a position the two sides agree on.
+ *
+ * IN_MenuCursorTo rather than the queue, for two reasons. The queue folds
+ * consecutive mouse events into one by adding them together, which would turn
+ * the pair below back into a single relative move and undo the whole point of
+ * it. And the click follows immediately: moving the cursor now means the queued
+ * mouse button is read against the item under the finger rather than against
+ * whatever the cursor was on before.
+ */
 - (void)moveMenuCursorTo:(CGPoint)target
 {
 	menuCursor = target;
-	IOSTouch_QueueMouseTo( (int)lround( target.x ), (int)lround( target.y ) );
+
+	if ( [self menuTakesCursor] ) {
+		IN_MenuCursorTo( -SCREEN_WIDTH * 2, -SCREEN_HEIGHT * 2 );
+		IN_MenuCursorTo( (int)lround( target.x ), (int)lround( target.y ) );
+	}
 
 	if ( IOSTouch_DebugEnabled() ) {
-		Com_Printf( "touch: menu cursor -> %.0f,%.0f (view %.0fx%.0f)\n",
+		// The catcher is here because it decides whether the two lines above ran
+		// at all: a tap that reports a cursor and does not move one is a tap that
+		// arrived while something other than a menu owned the screen.
+		Com_Printf( "touch: menu cursor -> %.0f,%.0f (view %.0fx%.0f, catcher %d)\n",
 			target.x, target.y,
-			self.bounds.size.width, self.bounds.size.height );
+			self.bounds.size.width, self.bounds.size.height,
+			Key_GetCatcher() );
 	}
 }
 
@@ -312,6 +415,8 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		return;
 	}
 
+	self.lastTouchTime = CACurrentMediaTime();
+
 	// One line, once, so a report of "touch does nothing" can be separated from
 	// "touch never reaches us" without a debugger.
 	static BOOL loggedFirstTouch = NO;
@@ -331,10 +436,27 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	if ( [self menuActive] ) {
 		UITouch *touch = touches.anyObject;
 
+		// Two fingers press whatever the cursor is already on, without moving
+		// it. That is the one thing the other two gestures cannot do: a slide
+		// aims and a tap jumps, so a carefully aimed cursor had no way to be
+		// clicked without being moved first.
+		if ( count == 2 ) {
+			self.menuTwoFinger = YES;
+			self.menuTouch = nil;
+			return;
+		}
+
 		if ( touch && !self.menuTouch ) {
+			// Two gestures, because neither alone is enough on a screen this
+			// size. A slide nudges the cursor, the way a trackpad does, which is
+			// how you land on something small. A tap puts the cursor where the
+			// finger is and presses, which is how you reach the other side of
+			// the screen without three strokes to get there.
 			self.menuTouch = touch;
-			[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
-			IOSTouch_QueueKey( K_MOUSE1, 1 );
+			self.menuTouchLast = [touch locationInView:self];
+			self.menuTouchOrigin = self.menuTouchLast;
+			self.menuTouchMoved = NO;
+			self.menuCursorRemainder = CGPointZero;
 		}
 		return;
 	}
@@ -351,9 +473,22 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 			continue;
 		}
 
-		if ( !self.stickTouch && p.x < self.bounds.size.width * 0.5f ) {
+		if ( !self.stick.hidden && !self.stickTouch && p.x < self.bounds.size.width * 0.5f ) {
 			// Left half drives movement. The stick recentres on the touch so it
 			// does not matter exactly where the thumb lands.
+			//
+			// Only while the stick is actually drawn, for the same reason
+			// buttonAtPoint skips a hidden button: with a controller in hand the
+			// iPad is lying in front of the player, and a palm or a stray finger
+			// on the left half was taking the movement axes off the pad -- both
+			// by writing them itself and by making IN_TouchOwnsMovement true,
+			// which stops the pad clearing them again. The character then walked
+			// on his own, which is not a fault anyone would look for in the
+			// stick code.
+			//
+			// The first touch on a hidden overlay still brings the controls back
+			// -- lastTouchTime above sees to that -- it simply does not also
+			// count as a shove on a stick that was not there.
 			self.stickTouch = touch;
 			self.stick.origin = p;
 			self.stick.current = p;
@@ -372,12 +507,74 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	self.lastTouchTime = CACurrentMediaTime();
+
 	if ( [self menuActive] ) {
-		// Dragging keeps the cursor under the finger, which is what sliders and
-		// the save-game list need.
+		CGFloat w = self.bounds.size.width;
+		CGFloat h = self.bounds.size.height;
+
 		for ( UITouch *touch in touches ) {
-			if ( touch == self.menuTouch ) {
-				[self moveMenuCursorTo:[self virtualPointFor:[touch locationInView:self]]];
+			CGPoint p;
+			CGFloat dx, dy;
+
+			if ( touch != self.menuTouch ) {
+				continue;
+			}
+
+			p = [touch locationInView:self];
+			dx = p.x - self.menuTouchLast.x;
+			dy = p.y - self.menuTouchLast.y;
+			self.menuTouchLast = p;
+
+			// Against where the finger went down, not against the last event.
+			// Judging each event on its own called a slow slide a tap, and a tap
+			// throws the cursor to the finger -- so the gesture meant for fine
+			// aim was the one gesture guaranteed to lose it.
+			if ( fabs( p.x - self.menuTouchOrigin.x ) > MENU_TAP_SLOP ||
+				 fabs( p.y - self.menuTouchOrigin.y ) > MENU_TAP_SLOP ) {
+				self.menuTouchMoved = YES;
+			}
+
+			// Exactly the ratio between the screen and the 640x480 the menus are
+			// laid out in, per axis. A round number here is what made the cursor
+			// outrun the finger: 0.70 against the 0.465 this screen actually
+			// needs is half again too fast, and the gap grows with the stroke,
+			// which reads as the cursor being scaled rather than dragged.
+			if ( w > 0.0f && h > 0.0f ) {
+				self.menuCursorRemainder = CGPointMake(
+					self.menuCursorRemainder.x + dx * ( 640.0f / w ),
+					self.menuCursorRemainder.y + dy * ( 480.0f / h ) );
+
+				// Nothing is sent until the gesture is known to be a slide.
+				// A finger rolls a point or two on its way up, and that wobble
+				// would be queued while the placement a tap ends with is
+				// immediate -- so the wobble would be applied after the
+				// placement and drag the cursor back off the item it had just
+				// been put on. The fraction keeps accumulating either way, so a
+				// slide loses nothing by starting late.
+				if ( self.menuTouchMoved && [self menuTakesCursor] ) {
+					int qx = (int)( self.menuCursorRemainder.x );
+					int qy = (int)( self.menuCursorRemainder.y );
+
+					if ( qx || qy ) {
+						// The engine's cursor is whole units, so keep the
+						// fraction rather than throwing it away on every small
+						// movement -- otherwise a slow drag never moves the
+						// cursor at all.
+						self.menuCursorRemainder = CGPointMake(
+							self.menuCursorRemainder.x - qx,
+							self.menuCursorRemainder.y - qy );
+						IOSTouch_QueueMouse( qx, qy );
+
+						// Clamped the way _UI_MouseEvent clamps, or a slide that
+						// runs off the edge of the screen would leave this copy
+						// claiming a position outside the box the real cursor is
+						// held inside.
+						menuCursor = CGPointMake(
+							Com_Clamp( 0.0f, SCREEN_WIDTH, menuCursor.x + qx ),
+							Com_Clamp( 0.0f, SCREEN_HEIGHT, menuCursor.y + qy ) );
+					}
+				}
 			}
 		}
 		return;
@@ -409,15 +606,58 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 			IOSTouch_QueueAxis( IOSTouch_MovementAxis( 0 ), (int)( nx * 32767 ) );
 			IOSTouch_QueueAxis( IOSTouch_MovementAxis( 1 ), (int)( ny * 32767 ) );
+
+			// Sprint on a full push, rather than another button.
+			//
+			// Stamina is part of how RTCW plays and there was no way to spend it
+			// by touch. A thumb already tells the difference between walking the
+			// stick over and shoving it to the edge, so the gesture is free --
+			// and it cannot be held by accident, because holding the edge is
+			// exactly what running is.
+			[self setSprint:( sqrt( nx * nx + ny * ny ) > SPRINT_THRESHOLD )];
 			continue;
 		}
 
 		if ( touch == self.lookTouch ) {
-			IOSTouch_QueueMouse( (int)( p.x - self.lookLast.x ),
-								 (int)( p.y - self.lookLast.y ) );
+			// Carry the fraction, or a slow drag is rounded away to nothing and
+			// fine aim by touch becomes impossible.
+			//
+			// A sensitivity per axis. The thumb has room to sweep the width of the
+			// screen sideways and barely an inch up and down before the wrist runs
+			// out, so the two directions were never asking for the same number; the
+			// horizontal one is applied to x and the vertical one to y, each to its
+			// own half of the remainder, which keeps the carried fractions apart
+			// exactly as they already were.
+			float yawSens = IOSTouch_LookSensitivity( 0 );
+			float pitchSens = IOSTouch_LookSensitivity( 1 );
+			int dx, dy;
+
+			self.lookRemainder = CGPointMake(
+				self.lookRemainder.x + ( p.x - self.lookLast.x ) * yawSens,
+				self.lookRemainder.y + ( p.y - self.lookLast.y ) * pitchSens );
+
+			dx = (int)self.lookRemainder.x;
+			dy = (int)self.lookRemainder.y;
+
+			if ( dx || dy ) {
+				self.lookRemainder = CGPointMake( self.lookRemainder.x - dx,
+												  self.lookRemainder.y - dy );
+				IOSTouch_QueueMouse( dx, dy );
+			}
+
 			self.lookLast = p;
 		}
 	}
+}
+
+- (void)setSprint:(BOOL)on
+{
+	if ( on == self.sprinting ) {
+		return;
+	}
+
+	self.sprinting = on;
+	IOSTouch_QueueCommand( on ? "+sprint" : "-sprint", K_PAD0_LEFTSTICK_CLICK );
 }
 
 - (void)releaseTouch:(UITouch *)touch
@@ -438,6 +678,7 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 		[self.stick setNeedsDisplay];
 		IOSTouch_QueueAxis( IOSTouch_MovementAxis( 0 ), 0 );
 		IOSTouch_QueueAxis( IOSTouch_MovementAxis( 1 ), 0 );
+		[self setSprint:NO];
 	}
 
 	if ( touch == self.lookTouch ) {
@@ -447,10 +688,26 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+	if ( self.menuTwoFinger && event.allTouches.count <= touches.count ) {
+		// The last of the two came up: press where the cursor is.
+		self.menuTwoFinger = NO;
+		IOSTouch_QueueKey( K_MOUSE1, 1 );
+		IOSTouch_QueueKey( K_MOUSE1, 0 );
+		return;
+	}
+
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
+			BOOL tapped = !self.menuTouchMoved;
+			CGPoint p = [touch locationInView:self];
+
 			self.menuTouch = nil;
-			IOSTouch_QueueKey( K_MOUSE1, 0 );
+
+			if ( tapped ) {
+				[self moveMenuCursorTo:[self virtualPointFor:p]];
+				IOSTouch_QueueKey( K_MOUSE1, 1 );
+				IOSTouch_QueueKey( K_MOUSE1, 0 );
+			}
 			continue;
 		}
 
@@ -463,7 +720,6 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 	for ( UITouch *touch in touches ) {
 		if ( touch == self.menuTouch ) {
 			self.menuTouch = nil;
-			IOSTouch_QueueKey( K_MOUSE1, 0 );
 			continue;
 		}
 
@@ -473,43 +729,95 @@ static CGPoint menuCursor = { 320.0f, 240.0f };
 
 @end
 
+/*
+ * The overlay lives in its own window, and that window's root view controller.
+ *
+ * A subview of SDL's window is not good enough. It worked in the simulator and
+ * received nothing at all on a device: the launcher puts up its own UIWindow
+ * before the engine starts, and between that and SDL's own view management the
+ * overlay ends up somewhere touches do not reach. A separate window above
+ * SDL's cannot be reordered by anything SDL does.
+ *
+ * It is deliberately never made key -- SDL keeps that, and with it the keyboard
+ * and the rest of its event handling. A visible window still receives touches
+ * without being key.
+ */
+@interface IORTCWTouchController : UIViewController
+@end
+
+@implementation IORTCWTouchController
+
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+	return UIInterfaceOrientationMaskLandscape;
+}
+
+@end
+
 static IORTCWTouchOverlay *touchOverlay = nil;
+static UIWindow *touchWindow = nil;
 static cvar_t *in_touchControls = NULL;
 
 /*
 ==============
 Sys_IOS_TouchOverlayInit
-
-Attached to the window rather than to SDL's view.
-
-Adding it as a subview of the GL view looked tidier, but SDL owns that view and
-reorders its own subviews, so the overlay ended up underneath and never saw a
-touch -- and since SDL's touch-to-mouse synthesis is off (it was firing the
-weapon on every tap), that left no touch input at all. Sitting directly on the
-window, above SDL's view, is the arrangement that cannot be undone from
-underneath.
 ==============
 */
 void Sys_IOS_TouchOverlayInit( void *sdlWindowHandle )
 {
-	UIWindow *window = (__bridge UIWindow *)sdlWindowHandle;
+	UIWindow *sdlWindow = (__bridge UIWindow *)sdlWindowHandle;
+	IORTCWTouchController *controller;
 
-	if ( touchOverlay || !window ) {
+	if ( touchOverlay || !sdlWindow ) {
 		return;
 	}
 
-	in_touchControls = Cvar_Get( "in_touchControls", "0", CVAR_ARCHIVE );
+	in_touchControls = Cvar_Get( "in_touchControls", "1", CVAR_ARCHIVE );
 	Cvar_CheckRange( in_touchControls, 0, 2, qtrue );
 
-	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:window.bounds];
+	touchOverlay = [[IORTCWTouchOverlay alloc] initWithFrame:sdlWindow.bounds];
 	touchOverlay.autoresizingMask =
 		UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-	[window addSubview:touchOverlay];
-	[window bringSubviewToFront:touchOverlay];
+	touchOverlay.backgroundColor = [UIColor clearColor];
+	touchOverlay.opaque = NO;
 
-	Com_Printf( "Touch overlay: attached to window %.0fx%.0f, in_touchControls %d\n",
-		window.bounds.size.width, window.bounds.size.height,
-		in_touchControls->integer );
+	controller = [[IORTCWTouchController alloc] init];
+	controller.view = touchOverlay;
+
+	if ( sdlWindow.windowScene ) {
+		touchWindow = [[UIWindow alloc] initWithWindowScene:sdlWindow.windowScene];
+	} else {
+		touchWindow = [[UIWindow alloc] initWithFrame:sdlWindow.bounds];
+	}
+
+	touchWindow.frame = sdlWindow.bounds;
+	touchWindow.backgroundColor = [UIColor clearColor];
+	touchWindow.opaque = NO;
+	touchWindow.rootViewController = controller;
+
+	// Above the game, below anything the system or the launcher puts up.
+	touchWindow.windowLevel = UIWindowLevelNormal + 1;
+
+	// Visible, but never key: makeKeyAndVisible here would take the keyboard
+	// and the rest of the event handling away from SDL.
+	touchWindow.hidden = NO;
+
+	Com_Printf( "Touch overlay: own window %.0fx%.0f level %.0f, in_touchControls %d\n",
+		touchWindow.bounds.size.width, touchWindow.bounds.size.height,
+		(double)touchWindow.windowLevel, in_touchControls->integer );
+
+	// This window sits above the game's, so it is the one the system is most
+	// likely to consult about who handles the controller. Saying it here as
+	// well as on SDL's window costs nothing and removes the question.
+	Sys_IOS_ClaimControllerEvents( (__bridge void *)touchOverlay );
+
+	// The readout lives in the same window: it is already above the game and
+	// already knows about the safe area.
+	Sys_IOS_PerfInit( (__bridge void *)touchOverlay );
+	Sys_IOS_GyroInit();
 
 	Sys_IOS_TouchOverlayUpdate();
 }
@@ -541,7 +849,21 @@ void Sys_IOS_TouchOverlayUpdate( void )
 	switch ( in_touchControls ? in_touchControls->integer : 0 ) {
 		case 1:  visible = YES; break;
 		case 2:  visible = NO;  break;
-		default: visible = !IOSTouch_ControllerConnected(); break;
+
+		default:
+			// Automatic: the pad and the screen take turns rather than one
+			// locking the other out. With no controller in use the controls are
+			// simply there. With one in use they stay out of the way, and come
+			// back the moment a finger touches the screen -- then fade out again
+			// once the screen has been left alone for a while.
+			if ( !IOSTouch_ControllerConnected() ) {
+				visible = YES;
+			} else {
+				visible = ( touchOverlay.lastTouchTime &&
+							CACurrentMediaTime() - touchOverlay.lastTouchTime
+								< TOUCH_IDLE_HIDE ) ? YES : NO;
+			}
+			break;
 	}
 
 	// Menus, loading screens and cutscenes are all times when there is nothing
@@ -550,22 +872,21 @@ void Sys_IOS_TouchOverlayUpdate( void )
 		visible = NO;
 	}
 
-	// Before anything else, and on every frame rather than only when something
-	// changed: SDL reorders its own views -- on a layout pass, on a rotation, on
-	// vid_restart -- and a buried overlay receives no touches at all. Nothing
-	// else would notice, because SDL's touch-to-mouse synthesis is off, so the
-	// symptom is the whole screen going dead rather than anything degrading.
-	if ( touchOverlay.superview &&
-		 touchOverlay.superview.subviews.lastObject != touchOverlay ) {
-		[touchOverlay.superview bringSubviewToFront:touchOverlay];
-		Com_Printf( "Touch overlay: raised back above SDL's view\n" );
+	// A touch that never reported its end would leave the stick held, and with
+	// it the pad locked out of the movement axes. UIKit keeps the object alive
+	// and its phase truthful, so this is cheap insurance against a lost event.
+	if ( touchOverlay.stickTouch &&
+		 ( touchOverlay.stickTouch.phase == UITouchPhaseEnded ||
+		   touchOverlay.stickTouch.phase == UITouchPhaseCancelled ) ) {
+		[touchOverlay releaseTouch:touchOverlay.stickTouch];
 	}
 
-	// Autoresizing normally keeps up, but a zero or stale frame would make every
-	// touch land at the same place, so take the window's word for it.
-	if ( touchOverlay.superview &&
-		 !CGRectEqualToRect( touchOverlay.frame, touchOverlay.superview.bounds ) ) {
-		touchOverlay.frame = touchOverlay.superview.bounds;
+	// Keep the window over the whole screen. Nothing should move it, but a zero
+	// or stale frame would send every touch to the same place, which reads as
+	// touch being dead rather than as a layout problem.
+	if ( touchWindow && touchWindow.screen &&
+		 !CGRectEqualToRect( touchWindow.frame, touchWindow.screen.bounds ) ) {
+		touchWindow.frame = touchWindow.screen.bounds;
 	}
 
 	if ( everSet && visible == wasVisible ) {
@@ -593,10 +914,31 @@ void Sys_IOS_TouchOverlayUpdate( void )
 Sys_IOS_TouchOverlayShutdown
 ==============
 */
+/*
+==============
+IOSTouch_MovementActive
+
+Whether the on-screen stick is being held.
+
+The pad's own movement handling writes the movement axes every frame -- zeroing
+them when it is using the digital path -- which wiped whatever the on-screen
+stick had just put there. Walking by touch stopped after a step or two unless
+the thumb kept moving, because only the frames between the touch event and the
+next pad update survived.
+==============
+*/
+int IOSTouch_MovementActive( void )
+{
+	return ( touchOverlay && touchOverlay.stickTouch ) ? 1 : 0;
+}
+
 void Sys_IOS_TouchOverlayShutdown( void )
 {
-	if ( touchOverlay ) {
-		[touchOverlay removeFromSuperview];
-		touchOverlay = nil;
+	if ( touchWindow ) {
+		touchWindow.hidden = YES;
+		touchWindow.rootViewController = nil;
+		touchWindow = nil;
 	}
+
+	touchOverlay = nil;
 }

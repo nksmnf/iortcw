@@ -36,6 +36,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../../SP/code/qcommon/qcommon.h"
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 
 /*
@@ -138,6 +139,97 @@ qboolean Sys_IOS_HasAdaptiveTriggers( void )
 {
 	if ( @available( iOS 14.5, * ) ) {
 		return IOS_FindDualSense() != nil ? qtrue : qfalse;
+	}
+
+	return qfalse;
+}
+
+/*
+==============
+Sys_IOS_ClaimControllerEvents
+
+Says, to the system, that the view given here reads the controller itself.
+
+Without it iPadOS delivers a connected controller twice: once through
+GameController, which is what SDL reads, and again through UIKit, which turns
+the D-pad and the sticks into arrow key presses and pushes the system pointer
+about. RTCW's stock bindings put +left and +right on the arrows -- turn, not
+strafe -- and a key turns at a fixed cl_yawspeed however gently the stick is
+leaning, so the second copy walked the player and span his view at full speed
+at the same time, from either stick, identically. That is the fault this is
+here to end.
+
+GCEventInteraction is the switch for it. Declared on a view rather than on the
+app, and it does not depend on who is first responder or which window is key --
+which matters, because the older switch, GCEventViewController, does, and on
+this port it only took hold once the player happened to touch the screen. Until
+then the game was being played entirely through the echo.
+
+Called for SDL's window and again for the touch overlay's, since they are two
+windows and the system need only find one of them.
+==============
+*/
+void Sys_IOS_ClaimControllerEvents( void *windowOrView )
+{
+	if ( @available( iOS 18.0, * ) ) {
+		id object = (__bridge id)windowOrView;
+		UIView *view = nil;
+
+		if ( [object isKindOfClass:[UIWindow class]] ) {
+			view = ( (UIWindow *)object ).rootViewController.view;
+		} else if ( [object isKindOfClass:[UIView class]] ) {
+			view = (UIView *)object;
+		}
+
+		if ( !view ) {
+			return;
+		}
+
+		for ( id<UIInteraction> existing in view.interactions ) {
+			if ( [existing isKindOfClass:[GCEventInteraction class]] ) {
+				return;
+			}
+		}
+
+		{
+			GCEventInteraction *interaction = [[GCEventInteraction alloc] init];
+
+			// receivesEventsInView defaults to NO, which is the half that
+			// matters: the gamepad is then delivered *exclusively* through
+			// GameController and UIKit never sees it. Set explicitly, because a
+			// default that quiet is worth writing down.
+			interaction.handledEventTypes = GCUIEventTypeGamepad;
+
+			if ( @available( iOS 26.0, * ) ) {
+				interaction.receivesEventsInView = NO;
+			}
+
+			[view addInteraction:interaction];
+
+			Com_Printf( "Controller events claimed for %s\n",
+				[object isKindOfClass:[UIWindow class]] ? "the game window" : "the touch overlay" );
+		}
+	}
+}
+
+/*
+==============
+Sys_IOS_HasHardwareKeyboard
+
+Whether there is a real keyboard attached.
+
+Asked because of what it rules out. iPadOS synthesises arrow key presses from a
+game controller, and SDL delivers them as ordinary keys; the engine cannot tell
+those from a player's own arrow keys by looking at the key. It can tell by
+looking for the keyboard: SDL only takes the synthesised path when GameController
+reports no keyboard, so with a pad open and no keyboard attached, an arrow is
+the pad's echo and nothing else.
+==============
+*/
+qboolean Sys_IOS_HasHardwareKeyboard( void )
+{
+	if ( @available( iOS 14.0, * ) ) {
+		return GCKeyboard.coalescedKeyboard != nil ? qtrue : qfalse;
 	}
 
 	return qfalse;

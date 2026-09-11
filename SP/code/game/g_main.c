@@ -80,6 +80,8 @@ vmCvar_t g_debugMove;
 vmCvar_t g_debugDamage;
 vmCvar_t g_debugAlloc;
 vmCvar_t g_debugBullets;
+vmCvar_t g_debugAI;
+vmCvar_t g_missionLoadout;
 vmCvar_t g_debugAudibleEvents;      //----(SA)	added
 vmCvar_t g_headshotMaxDist;     //----(SA)	added
 vmCvar_t g_weaponRespawn;
@@ -209,6 +211,8 @@ cvarTable_t gameCvarTable[] = {
 	{ &g_debugDamage, "g_debugDamage", "0", 0, 0, qfalse },
 	{ &g_debugAlloc, "g_debugAlloc", "0", 0, 0, qfalse },
 	{ &g_debugBullets, "g_debugBullets", "0", CVAR_CHEAT, 0, qfalse}, //----(SA)	added
+	{ &g_debugAI, "g_debugAI", "0", 0, 0, qfalse},
+	{ &g_missionLoadout, "g_missionLoadout", "0", 0, 0, qfalse},
 	{ &g_debugAudibleEvents, "g_debugAudibleEvents", "0", CVAR_CHEAT, 0, qfalse}, //----(SA)	added
 
 	{ &g_headshotMaxDist, "g_headshotMaxDist", "1024", CVAR_CHEAT, 0, qfalse},    //----(SA)	added
