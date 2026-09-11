@@ -4,7 +4,12 @@ Return to Castle Wolfenstein — the single-player campaign — on iPadOS, with 
 DualSense support.
 
 Built and verified against Xcode 26.6 / iOS SDK 26.5, targeting an iPad Pro 13"
-(M5). Multiplayer is out of scope; only the `SP/` tree is used.
+(M5).
+
+Multiplayer is a second application built from the same directory: see
+**Multiplayer** below. The two are separate apps with separate bundle
+identifiers, because `SP/` and `MP/` are separate copies of the engine that
+share no symbols and cannot be linked into one binary.
 
 ---
 
@@ -13,9 +18,13 @@ Built and verified against Xcode 26.6 / iOS SDK 26.5, targeting an iPad Pro 13"
 You need Xcode (not just the Command Line Tools). If `xcode-select` points at
 the CLT, the scripts set `DEVELOPER_DIR` for you.
 
+Every script takes `IORTCW_TREE=MP` to build the multiplayer application
+instead; each tree has its own build directory, so the two never collide.
+
 ```sh
 # An .ipa for AltStore
 ios/scripts/build-ipa.sh            # -> build/ipa/iORTCW.ipa
+IORTCW_TREE=MP ios/scripts/build-ipa.sh   # -> build/ipa-mp/iORTCW-MP.ipa
 
 # An Xcode project, to build and run from the IDE
 ios/scripts/gen-xcode.sh device     # -> build/ios/iortcw_sp.xcodeproj
@@ -88,6 +97,90 @@ activates whatever it was already over.
 `in_debugTouch 1` logs every touch and the state it arrived in. There is no
 console on a tablet, and that log is what found the above.
 
+## Multiplayer
+
+`IORTCW_TREE=MP` builds **iORTCW MP** (`com.iortcw.mp`) from the `MP/` tree. It
+needs `pak0.pk3` and `mp_pak0.pk3` … `mp_pak5.pk3`; the campaign paks are not
+used and the multiplayer ones did not ship on the disc, so a copy that plays the
+campaign perfectly can still be missing every file this build wants.
+
+The launcher grows three tabs, and drops the Campaign one:
+
+| Tab | What it does |
+|---|---|
+| **Серверы** | Queries the three live masters directly and lists what answers: name, map, humans/slots, ping, engine family and mod. Tap a row to join, or type an address. |
+| **Мультиплеер** | Player name, network rates, crosshair, HUD, map downloads. |
+| **Свой сервер** | Runs a server from the tablet: game type, map rotation, slots, limits, passwords, rcon, port, and how visible it is. |
+
+Graphics and Controls are shared with the campaign build, so stick feel, gyro
+and the DualSense layout carry over.
+
+### Finding servers
+
+The browser speaks the Quake 3 out-of-band protocol itself
+(`ios/Launcher/ServerBrowser.swift`) rather than going through the engine,
+because the launcher runs before `Com_Init` and there is no engine yet. Two
+things about the masters are worth knowing, both of them measured rather than
+assumed (`docs/RU/server.md`):
+
+- `wolfmaster.idsoftware.com` — the official master, still alive — answers only
+  the short `getservers <protocol>` form. Send it a game name and it says
+  nothing at all.
+- Protocol 61, iortcw's own, is **empty on every master**. Every public server,
+  iortcw ones included, registers as 60, because `com_legacyprotocol` defaults
+  to 60. Asking only for 61 finds nothing and looks like a bug.
+
+Bots are counted separately from players: a bot always reports a ping of zero,
+and without that split most of the network looks full when nobody is playing.
+
+### Hosting, and the background problem
+
+iOS suspends an ordinary app seconds after it leaves the screen, and a suspended
+process stops reading its socket — every client times out and the master stops
+hearing the heartbeat. There is no background mode for "keep listening on a
+socket"; the list is fixed and a game server is not on it.
+
+So hosting starts an audio graph that renders silence
+(`ios/Sources/ios_keepalive.m`), which is a real, documented background mode.
+Three things follow from that, and they are in the file as well:
+
+- App Review would reject it, because the app is not an audio app. This build is
+  sideloaded through AltStore, where there is no review — but anyone taking it
+  further needs to know.
+- It costs battery. The CPU never sleeps and the server keeps simulating. Host
+  from a tablet that is plugged in.
+- The session mixes with others, so it never silences the user's music.
+
+The **Режим** control is the `dedicated` cvar, and it decides more than
+visibility:
+
+| Mode | `dedicated` | Picture on the tablet | In the master list |
+|---|---|---|---|
+| Играю сам | 0 | yes — you play on it | no (LAN broadcast only) |
+| Локальный | 1 | no, the screen stays dark | no |
+| Интернет | 2 | no | yes, heartbeat every 5 min |
+
+Only `dedicated 2` reports to a master (`MP/code/server/sv_main.c:259`), and
+only mode 0 draws anything. "Play on it" and "visible on the internet" are
+therefore mutually exclusive. Hosting publicly also needs a UDP port forward:
+incoming connections never arrive over mobile data, which is behind CGNAT.
+
+### What is not there yet
+
+- **Pad navigation inside the three new tabs.** L1/R1 still move between tabs,
+  and everything works by touch, but the cursor model the campaign and graphics
+  tabs use is built around a fixed set of rows and the server list is neither
+  fixed nor static.
+- **HTTP map downloads.** `USE_CURL=0` for iOS, so downloads fall back to the
+  engine's UDP path: slower, but it works, and over half the populated servers
+  run custom maps that cannot be joined without it.
+- **Per-weapon haptics.** `cg_haptics.c` is a campaign file; the MP game modules
+  do not drive the DualSense's adaptive triggers or light bar. Buttons, sticks,
+  gyro and rumble all work — they are engine-side.
+- **IPv6-only networks.** The masters have no AAAA records and hand back literal
+  IPv4 addresses, which DNS64 cannot translate. On a 464XLAT carrier (most of
+  them) this never comes up.
+
 ## How it is put together
 
 `SP/Makefile` remains the authority for the macOS build. This directory adds
@@ -158,5 +251,9 @@ ios/
   for players who have already set everything up.
 - **`qconsole.log`** — set `logfile 2`. It lands in Documents, so it is readable
   in Files.app, which on a sideloaded build is the only window into the engine.
-- Multiplayer is not built: `USE_CURL=0`, and `+set net_enabled 0` is passed so
-  iOS never raises the Local Network permission prompt for a single-player game.
+- **The campaign build passes `+set net_enabled 0`**, so iOS never raises the
+  Local Network permission prompt for a game with no network. The multiplayer
+  build passes `1` (IPv4 only, which is all the masters speak) and declares
+  `NSLocalNetworkUsageDescription`; without that key the engine's broadcast and
+  IPv6 multicast scan are dropped silently and the LAN list is simply always
+  empty.

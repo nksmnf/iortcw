@@ -52,6 +52,7 @@ enum Loc {
         // Tabs and chrome
         "Данные": "Data",
         "Кампания": "Campaign",
+        "Играть": "Play",
         "Графика": "Graphics",
         "Управление": "Controls",
         "Нет контроллера": "No controller",
@@ -405,6 +406,18 @@ enum Loc {
                 On the iPad: Files -> On My iPad -> iORTCW.
 
                 The list updates as they copy. The large ones take a few minutes.
+                """),
+
+        "note.mpdata.mp": (
+            ru: """
+                Это мультиплеерная сборка: нужны pak0.pk3 и mp_pak0..mp_pak5. \
+                Паки mp_pakmaps* необязательны — это официальные бонусные карты, \
+                без них можно играть, но не на всех серверах.
+                """,
+            en: """
+                This is the multiplayer build: it needs pak0.pk3 and \
+                mp_pak0..mp_pak5. The mp_pakmaps* paks are optional -- official \
+                bonus maps, playable without them but not on every server.
                 """),
 
         "note.mpdata": (

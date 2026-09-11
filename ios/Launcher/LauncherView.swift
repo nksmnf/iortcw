@@ -56,7 +56,11 @@ struct LauncherView: View {
         // The Picker's tags, in the order the tabs are written below. In the MP
         // application the set that matters is the multiplayer one, and tab 1 is
         // the server browser rather than the campaign.
-        if IOSBridge_IsMultiplayer() {
+        // Debug aid: a script driving the simulator has no way to tap a tab, so
+        // it can name one instead. Unset in normal use.
+        if let forced = UserDefaults.standard.object(forKey: "IORTCWStartTab") as? Int {
+            _tab = State(initialValue: forced)
+        } else if IOSBridge_IsMultiplayer() {
             let mpReady = model.dataSet(.multiplayer)?.isPlayable ?? false
             _tab = State(initialValue: mpReady ? 1 : 0)
         } else {
@@ -468,7 +472,7 @@ struct LauncherView: View {
             // the wordmark's 1: capitals want more air the smaller they are set,
             // and this lands the label between the wordmark's tight lock-up and
             // the wide-spaced line above it, which is where a button belongs.
-            Text(L("Кампания"))
+            Text(L(model.isMultiplayer ? "Играть" : "Кампания"))
                 .font(.system(size: 20, weight: .heavy))
                 .fontWidth(.condensed)
                 .textCase(.uppercase)
@@ -1080,7 +1084,7 @@ private struct DataView: View {
             }
 
             if kind == .multiplayer {
-                Text(L("note.mpdata"))
+                Text(L(model.isMultiplayer ? "note.mpdata.mp" : "note.mpdata"))
                     .font(TypeScale.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
