@@ -144,6 +144,14 @@ void Weapon_Knife( gentity_t *ent ) {
 		}
 	}
 
+	// count the hit before the damage lands, the way the bullet and kick code
+	// does: LogAccuracyHit wants the target still alive, and the knife is the
+	// one weapon that routinely drops a man in a single blow -- asking after
+	// the fact would throw away the stealth kill, the hit most worth feeling
+	if ( LogAccuracyHit( traceEnt, ent ) ) {
+		ent->client->ps.persistant[PERS_ACCURACY_HITS]++;
+	}
+
 	G_Damage( traceEnt, ent, ent, vec3_origin, tr.endpos, ( damage + rand() % 5 ) * s_quadFactor, 0, mod );
 }
 

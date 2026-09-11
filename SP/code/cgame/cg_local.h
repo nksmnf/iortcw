@@ -982,6 +982,13 @@ typedef struct {
 	qboolean portalFogInited;
 	// Duffy end
 
+	// Another function-local static moved here for the same reason. It throttles
+	// blood marks to one every 100ms, and the test only lets one through once
+	// cg.time has passed it -- but cg.time starts again at zero with each map,
+	// so a value carried over from the last one sits far in the future and stops
+	// every blood mark until the level has run as long as the previous one did.
+	int lastBloodMarkTime;
+
 	unsigned int cld;
 	qboolean limboMenu;
 
@@ -1769,6 +1776,11 @@ extern vmCvar_t cg_expectedhunkusage;
 
 extern vmCvar_t cg_showAIState;
 
+// Controller rumble. The master volume lives engine side in in_rumble; these
+// only decide what is worth rumbling for.
+extern vmCvar_t cg_rumbleImpact;
+extern vmCvar_t cg_rumbleImpactScale;
+
 extern vmCvar_t cg_notebook;
 extern vmCvar_t cg_notebookpages;           // bitflags for the currently accessable pages.  if they wanna cheat, let 'em.  Most won't, or will wait 'til they actually play it.
 
@@ -2464,6 +2476,7 @@ void        CG_StopCamera( void );
 int         CG_LoadCamera( const char *name );
 void        CG_FreeCamera( int camNum );
 //----(SA)	end
+void        CG_ClearCameras( void );
 
 void CG_StartShakeCamera( float p, int duration, vec3_t src, float radius );
 
@@ -2481,5 +2494,6 @@ void        trap_HapticTrigger( int side, int mode, float start, float end, floa
 // cg_haptics.c
 void        CG_HapticsInit( void );
 void        CG_HapticDamage( int damage );
+void        CG_HapticEnemyHit( int hits );
 void        CG_HapticsFrame( void );
 void        CG_HapticWeaponChanged( int weapon );

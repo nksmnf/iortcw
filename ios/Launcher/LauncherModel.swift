@@ -23,6 +23,7 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "weapnext",   title: "Следующее оружие",   group: "Бой"),
         GameAction(id: "weapprev",   title: "Предыдущее оружие",  group: "Бой"),
         GameAction(id: "+quickgren", title: "Быстрая граната",    group: "Бой"),
+        GameAction(id: "weapalt",    title: "Режим оружия",       group: "Бой"),
         GameAction(id: "+moveup",    title: "Прыжок",             group: "Движение"),
         GameAction(id: "+movedown",  title: "Присесть",           group: "Движение"),
         GameAction(id: "+sprint",    title: "Спринт",             group: "Движение"),
@@ -102,7 +103,7 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .maximum:
-            return "Полное разрешение, анизотропная фильтрация, динамический свет и тени. M5 тянет это с запасом."
+            return "Полное разрешение, анизотропная фильтрация, динамический свет и тени."
         case .balanced:
             return "То же, но без стенсильных теней — самой дорогой настройки на таком разрешении."
         case .battery:
@@ -120,6 +121,14 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
             "r_texturebits": "32",
             "r_colorbits": "32",
             "r_depthbits": "24",
+            // Without this the pixel format comes back with no stencil at
+            // all, and cg_shadows 2 -- what "Максимум" asks for -- draws
+            // nothing: tr_shadows.c bails when stencilBits < 4, and
+            // cg_players.c only draws the cheap blob at exactly 1. So the
+            // top preset was the one setting with no character shadows of
+            // any kind, worse than the preset below it. The device reports
+            // GL_OES_stencil8, so eight bits is there for the asking.
+            "r_stencilbits": "8",
             "r_textureMode": "GL_LINEAR_MIPMAP_LINEAR",
             "r_detailtextures": "1",
             // No S3TC on Apple hardware, and the ES path does not implement the
@@ -128,10 +137,17 @@ enum GraphicsPreset: Int, CaseIterable, Identifiable {
             "r_ext_texture_filter_anisotropic": "1",
             "r_ext_max_anisotropy": "16",
 
-            // Geometry. Lower subdivisions means finer curves.
-            "r_subdivisions": "1",
+            // Geometry. Lower subdivisions means finer curves -- and a lot more
+            // of them. 1 is the finest the engine allows and multiplies the
+            // triangles on every arch, rail and stairwell in the game for a
+            // difference nobody can see at arm's length on a tablet; 2 is
+            // already past the point of diminishing returns.
+            "r_subdivisions": "2",
             "r_lodbias": "0",
-            "r_lodCurveError": "999",
+            // 999 switches curve level of detail off outright, so a curved
+            // surface across the map costs what it costs up close. 250 is the
+            // engine's own default and keeps the detail where it is looked at.
+            "r_lodCurveError": "250",
 
             // World
             "r_fastsky": "0",
@@ -179,6 +195,20 @@ struct CampaignMission: Identifiable, Hashable {
     let id: String      // map name
     let title: String
 
+    /// Which quarter of the campaign this mission sits in, used to decide what
+    /// the player arrives carrying. Starting a map from here has no savegame
+    /// behind it, and single player normally carries weapons forward inside
+    /// one, so without this the player spawns with empty hands.
+    var chapter: Int {
+        guard let index = CampaignMission.all.firstIndex(where: { $0.id == id }) else { return 1 }
+        switch index {
+        case 0...2:   return 1
+        case 3...7:   return 2
+        case 8...16:  return 3
+        default:      return 4
+        }
+    }
+
     static let all: [CampaignMission] = [
         CampaignMission(id: "escape1",   title: "1. Побег"),
         CampaignMission(id: "escape2",   title: "2. Замок Вольфенштайн"),
@@ -209,10 +239,58 @@ struct CampaignMission: Identifiable, Hashable {
     ]
 }
 
+/// Which of the two sets of game data something belongs to.
+///
+/// The raw values are the engine side's IOS_DATA_SET_*, and they are written
+/// out here rather than imported from the bridge: a bare C enum and a typedef'd
+/// one arrive in Swift as two different kinds of thing, and the launcher should
+/// not have to be edited because the header changed its mind about which it is.
+enum DataSetKind: Int32, CaseIterable, Identifiable {
+    case campaign = 0
+    case multiplayer = 1
+
+    var id: Int32 { rawValue }
+}
+
+/// One file a set expects, and whether it is on the device.
+struct DataFileState: Identifiable, Hashable {
+    let name: String
+    let present: Bool
+    /// The set cannot be played without it. pak0.pk3 is the case that matters:
+    /// its absence is a fatal error inside FS_Startup rather than a level the
+    /// player never reaches.
+    let required: Bool
+
+    var id: String { name }
+}
+
+/// A whole set: the files it wants, and what the ones that are there add up to.
+///
+/// The numbers are read from the pk3 directories rather than worked out from
+/// the filenames, so they describe what the engine will actually find.
+struct DataSetState: Identifiable, Hashable {
+    let kind: DataSetKind
+    let files: [DataFileState]
+    let maps: Int
+    let entries: Int
+    let megabytes: Double
+    /// The files the engine cannot start without are all there.
+    let isPlayable: Bool
+    /// What the player has is what they should have: the complete set at the
+    /// last official patch level, nothing missing and nothing wearing an id
+    /// pak's name. Stricter than `isPlayable`, which asks only whether it runs.
+    let isRecommended: Bool
+
+    var id: Int32 { kind.rawValue }
+
+    /// Everything the set lists is present -- stricter than `isPlayable`, which
+    /// asks only for the files without which there is nothing to start.
+    var isComplete: Bool { !files.isEmpty && files.allSatisfy(\.present) }
+}
+
 @MainActor
 final class LauncherModel: ObservableObject {
     // Game data
-    @Published var dataMask: Int = 0
     @Published var dataPath: String = ""
 
     // Graphics
@@ -230,27 +308,201 @@ final class LauncherModel: ObservableObject {
     @Published var stickDeadzone: Double = 0.12
     @Published var gyroMode: Int = 0
     @Published var gyroSens: Double = 1.0
+    // Per-axis overrides for the figure above. Zero is not a sensitivity here,
+    // it is the absence of one: the engine reads it as "this axis has nothing
+    // of its own, use the common number" (IN_AxisSens). So zero must never be
+    // something a slider can be dragged to -- see `gyroSplitAxes`.
+    @Published var gyroYawSens: Double = 0
+    @Published var gyroPitchSens: Double = 0
+    // Whether a sensor hands its axes over the way the documentation says is
+    // not something any code here can find out: a driver that has one mirrored
+    // looks exactly like one that does not until somebody turns and watches the
+    // view go the other way. So the player decides. These two are the
+    // controller's alone now: the iPad's sensor is read through a different
+    // path and carries its own pair, `touchGyroInvert*`.
+    @Published var gyroInvertYaw: Bool = false
+    @Published var gyroInvertPitch: Bool = false
+    // Where the horizontal half of the gyro comes from: 0 the pad turning flat,
+    // 1 the pad tipping left and right, 2 the two added together. Roll is the
+    // default because it is the wrists that do it, and the wrists are steadier
+    // than the arm the flat turn comes from.
+    @Published var gyroYawSource: Int = 1
     @Published var rumble: Double = 100
+    // A kick when a shot lands on someone, which is a different thing from the
+    // vibration for damage taken and is switched separately: one is information
+    // the player needs, the other is the weapon having weight.
+    @Published var rumbleImpact: Bool = true
+    // How hard that kick is, as a multiplier on it and on nothing else: the
+    // vibration for damage taken keeps its own strength. A player who wants to
+    // feel their shots land without being shaken by them turns this down rather
+    // than turning the motors down, which would take the damage warning with it.
+    @Published var rumbleImpactScale: Double = 1.0
     @Published var adaptiveTriggers: Bool = true
     @Published var triggerHard: Double = 0.75
-    @Published var touchControls: Int = 1   // shown always; the pad does not replace touch
+    @Published var touchControls: Int = 0   // automatic: follows the hand, see ios_touch.m
+    @Published var touchLookSens: Double = 1.0
+    @Published var touchLookYawSens: Double = 0
+    @Published var touchLookPitchSens: Double = 0
+    // Three states, not two: 0 off, 1 only while no controller is connected --
+    // which is all it ever used to do, and what a config already carrying
+    // `in_touchGyro 1` still means -- and 2 always, adding to the controller's
+    // gyro instead of standing in for it. It was carried here as a Bool for a
+    // while after the engine grew the third state, and that quietly turned a
+    // player's 2 back into a 1 the first time the launcher saved anything.
+    @Published var touchGyro: Int = 0
+    @Published var touchGyroSens: Double = 1.0
+    @Published var touchGyroYawSens: Double = 0
+    @Published var touchGyroPitchSens: Double = 0
+    @Published var touchGyroInvertYaw: Bool = false
+    @Published var touchGyroInvertPitch: Bool = false
+    @Published var moveExpo: Double = 0.15
+
+    // Sound
+    @Published var volume: Double = 0.8
+    @Published var musicVolume: Double = 0.5
+
+    // Game
+    //
+    // cg_autoswitch is a mode rather than a flag: 0 never, 1 always, 2 when the
+    // weapon is new to the arsenal, 3 when it sits in a better bank, 4 either,
+    // 5 both. 2 is the game's own default and what the campaign is built
+    // around; the launcher used to write 1, Quake III's rule, which hands the
+    // player a duplicate of a gun they already carry.
+    @Published var autoSwitch: Int = 2
+    @Published var autoActivate: Bool = true
+    @Published var emptySwitch: Bool = false
+    @Published var viewBob: Bool = true
+    @Published var crosshairSize: Double = 48
+
+    // Diagnostics
+    @Published var perfHud: Bool = false
+    @Published var perfLog: Bool = false
+    @Published var padLog: Bool = false
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
+
+    // MARK: - Раздельные оси
+
+    /// Whether a group of sensitivities has its two axes set apart, and the
+    /// switch that sets them apart. Three groups have the pair: the
+    /// controller's gyro, the iPad's, and looking about with a finger.
+    ///
+    /// There is no engine key behind these and there must not be one. The
+    /// engine already answers the question -- a per-axis key holding zero means
+    /// that axis has nothing of its own and falls through to the common figure
+    /// (IN_AxisSens) -- so "are they apart" is exactly "is either of them
+    /// non-zero", and it reads back out of the config on the next launch
+    /// without anything having to be stored to say so. A key of our own would
+    /// be a second copy of that answer, free to drift out of step with it.
+    ///
+    /// Turning the switch on seeds both axes from the common figure rather than
+    /// from some default, so what changes at that moment is the screen and not
+    /// the way the game feels under the hands. Turning it off cannot do the
+    /// same in reverse -- two numbers do not collapse into one without throwing
+    /// one of them away -- so it clears the pair, and the common slider comes
+    /// back showing, as it always did, the figure that is now in force. Nothing
+    /// is hidden either way: whatever slider is on screen is what is applied.
+    var gyroSplitAxes: Bool {
+        get { splitAxes(gyroYawSens, gyroPitchSens) }
+        set { setSplitAxes(newValue, common: \.gyroSens,
+                           yaw: \.gyroYawSens, pitch: \.gyroPitchSens) }
+    }
+
+    var touchGyroSplitAxes: Bool {
+        get { splitAxes(touchGyroYawSens, touchGyroPitchSens) }
+        set { setSplitAxes(newValue, common: \.touchGyroSens,
+                           yaw: \.touchGyroYawSens, pitch: \.touchGyroPitchSens) }
+    }
+
+    var touchLookSplitAxes: Bool {
+        get { splitAxes(touchLookYawSens, touchLookPitchSens) }
+        set { setSplitAxes(newValue, common: \.touchLookSens,
+                           yaw: \.touchLookYawSens, pitch: \.touchLookPitchSens) }
+    }
+
+    private func splitAxes(_ yaw: Double, _ pitch: Double) -> Bool {
+        yaw > 0 || pitch > 0
+    }
+
+    private func setSplitAxes(_ on: Bool,
+                              common: ReferenceWritableKeyPath<LauncherModel, Double>,
+                              yaw: ReferenceWritableKeyPath<LauncherModel, Double>,
+                              pitch: ReferenceWritableKeyPath<LauncherModel, Double>) {
+        guard on else {
+            self[keyPath: yaw] = 0
+            self[keyPath: pitch] = 0
+            return
+        }
+
+        // Only an axis that has nothing of its own is seeded. Coming back to a
+        // group that was already split has to find the numbers that were left
+        // there, not the common figure written over them.
+        let seed = self[keyPath: common]
+        if self[keyPath: yaw] <= 0 { self[keyPath: yaw] = seed }
+        if self[keyPath: pitch] <= 0 { self[keyPath: pitch] = seed }
+    }
 
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
 
     @Published var controllerName: String? = nil
 
+    // What is actually in the pk3s, read from their directories rather than
+    // taken on faith from the filenames being present. Both sets, in the order
+    // DataSetKind lists them.
+    @Published private(set) var dataSets: [DataSetState] = []
+
+    func dataSet(_ kind: DataSetKind) -> DataSetState? {
+        dataSets.first { $0.kind == kind }
+    }
+
+    /// "0.4.0" -- the port's version, not the engine's.
+    var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    /// The build number, which only ever goes up. It replaced the build time in
+    /// this readout: a timestamp says when a binary was made and nothing about
+    /// which one it is, and the one a player reads out when something is wrong
+    /// has to be a number two people can compare.
+    var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+    }
+
+    /// The commit the build came from, short form, with "-dirty" on it when the
+    /// tree had uncommitted work in it. Missing when git was not there to ask,
+    /// and then nothing is shown rather than a placeholder that looks like a
+    /// hash.
+    var buildCommit: String? {
+        guard let hash = Bundle.main.infoDictionary?["IORTCWGitHash"] as? String,
+              !hash.isEmpty else { return nil }
+        return hash
+    }
+
+    /// "iortcw 1.51d-SP ios-arm64", the engine's own version string.
+    var engineVersion: String { String(cString: IOSBridge_EngineVersion()) }
+
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
 
-    static let dataFiles = ["pak0.pk3", "sp_pak1.pk3", "sp_pak2.pk3",
-                            "sp_pak3.pk3", "sp_pak4.pk3"]
-
-    var hasAllData: Bool { dataMask == (1 << LauncherModel.dataFiles.count) - 1 }
-    var canPlay: Bool { IOSBridge_HasGameData() }
+    /// The launcher used to carry the campaign's five filenames as a list of
+    /// its own, and to work out from a bitmask over them whether the set was
+    /// complete. The bridge owns both lists now -- it is the side that knows
+    /// which files an engine build refuses to start without -- and each section
+    /// of the Data tab asks its own set. What is left here is the one question
+    /// the rest of the launcher asks: can the game be started at all.
+    ///
+    /// The campaign set answers it, not IOSBridge_HasGameData(). That one only
+    /// opens main/pak0.pk3, which is enough for the engine to boot and not
+    /// enough for there to be a campaign -- FS_CheckSPPaks raises a fatal error
+    /// unless sp_pak1 through sp_pak4 are all there, so offering Play with pak0
+    /// alone offers a crash on startup. The Data tab already refuses to call
+    /// that set complete; the footer and the Play block now agree with it.
+    /// The fallback keeps the old answer for the moment before the first scan.
+    var canPlay: Bool {
+        dataSet(.campaign)?.isPlayable ?? IOSBridge_HasGameData()
+    }
 
     init() {
         dataPath = String(cString: IOSBridge_DataPath())
@@ -283,7 +535,43 @@ final class LauncherModel: ObservableObject {
             importedCount += moved
         }
 
-        dataMask = Int(IOSBridge_GameDataMask())
+        // Forced on every pass, because forcing it is what this poll is for:
+        // the files are being copied in with this screen open and the lists
+        // have to tick over as they land, rather than making the player relaunch
+        // for them. The bridge is built to be polled -- a forced rescan reopens
+        // only the pk3s whose size or timestamp moved, so a pass over an
+        // unchanged folder costs a stat per file. The scan also covers the
+        // multiplayer set, which the old campaign-only mask never saw.
+        _ = IOSBridge_ScanData(true)
+
+        // Assigned only when something differs. This runs once a second, and a
+        // published value handed identical contents still redraws the tab.
+        let fresh = DataSetKind.allCases.map { snapshot(of: $0) }
+        if fresh != dataSets {
+            dataSets = fresh
+        }
+    }
+
+    /// One pass over a set, straight from the bridge.
+    private func snapshot(of kind: DataSetKind) -> DataSetState {
+        let set = kind.rawValue
+        var files: [DataFileState] = []
+        for index in 0..<IOSBridge_SetFileCount(set) {
+            // A name that came back empty would be a bridge that disagrees with
+            // its own count; skip it rather than putting a blank row on screen.
+            guard let name = IOSBridge_SetFileName(set, index) else { continue }
+            files.append(DataFileState(name: String(cString: name),
+                                       present: IOSBridge_SetFilePresent(set, index),
+                                       required: IOSBridge_SetFileRequired(set, index)))
+        }
+
+        return DataSetState(kind: kind,
+                            files: files,
+                            maps: Int(IOSBridge_SetMaps(set)),
+                            entries: Int(IOSBridge_SetFiles(set)),
+                            megabytes: IOSBridge_SetMegabytes(set),
+                            isPlayable: IOSBridge_SetIsPlayable(set),
+                            isRecommended: IOSBridge_SetIsRecommended(set))
     }
 
     private func observeControllers() {
@@ -303,20 +591,43 @@ final class LauncherModel: ObservableObject {
     /// game ships with. Applied on first run and by the Reset button.
     func applyDefaultBindings() {
         bindings = [
-            // Triggers do the shooting, shoulders change weapon -- the layout
-            // every console shooter uses, so it needs no learning.
+            // Triggers do the shooting. Above them the shoulders move the
+            // player, and the face buttons change the weapon -- the opposite
+            // way round from the usual console layout, and on purpose.
+            //
+            // Of the two shoulders R1 is the one under the stronger finger,
+            // the one already lying over the fire trigger, and it goes to jump.
+            // Jump is the timed action of the pair: it has to land on an exact
+            // moment -- a gap, a ledge, a grenade at the feet -- and a jump a
+            // beat late is a jump that did not happen. Crouch is held rather
+            // than aimed. It goes down before the shooting starts and stays
+            // down, which is what a finger resting on L1 does well, and the
+            // right hand is left free to keep firing while it is held. This is
+            // the way round it was played on the device; the first pass had the
+            // two swapped, on the reasoning that crouch belongs under the
+            // trigger finger, and that turned out to be the wrong half of the
+            // pair to spend the good finger on.
+            //
+            // Changing weapon is the opposite kind of act -- it happens between
+            // fights, not during one -- so it goes to the face buttons, where
+            // the thumb has time to leave the stick for it.
             "PAD0_RIGHTTRIGGER":      "+attack",
             "PAD0_LEFTTRIGGER":       "+zoom",
-            "PAD0_RIGHTSHOULDER":     "weapnext",
-            "PAD0_LEFTSHOULDER":      "weapprev",
+            "PAD0_RIGHTSHOULDER":     "+moveup",     // R1 -- jump, over the trigger
+            "PAD0_LEFTSHOULDER":      "+movedown",   // L1 -- crouch, over the aim
 
-            "PAD0_A":                 "+moveup",     // Cross  -- jump
-            "PAD0_B":                 "+movedown",   // Circle -- crouch
+            "PAD0_A":                 "weapprev",    // Cross  -- previous weapon
+            "PAD0_B":                 "weapnext",    // Circle -- next weapon
             "PAD0_X":                 "+reload",     // Square -- reload
             "PAD0_Y":                 "+activate",   // Triangle -- use/open
 
-            "PAD0_LEFTSTICK_CLICK":   "+sprint",
-            "PAD0_RIGHTSTICK_CLICK":  "+kick",
+            // Sprint is held down for as long as the player is running, and
+            // clicking the stick that is being shoved into a corner at the same
+            // time is both awkward and easy to set off by accident. So it sits
+            // on the aiming stick, and the kick -- one deliberate tap, never
+            // held -- takes the movement stick.
+            "PAD0_LEFTSTICK_CLICK":   "+kick",
+            "PAD0_RIGHTSTICK_CLICK":  "+sprint",
 
             "PAD0_START":             "togglemenu",
             "PAD0_BACK":              "notebook",
@@ -342,47 +653,196 @@ final class LauncherModel: ObservableObject {
         ]
     }
 
-    /// Bumped when the shipped control feel changes. A settings file written by
-    /// an older build is ignored once, so a retune actually reaches the player
-    /// instead of being overwritten by their stored copy of the old numbers.
-    private static let tuningVersion = 2
+    /// Bumped when a shipped default changes in a way that has to reach players
+    /// who already have a config. Their stored value wins over a default, as it
+    /// should -- so without this a retune would only ever be seen on a fresh
+    /// install.
+    ///
+    /// It used to work by ignoring a stale config wholesale. That cost the
+    /// player every unrelated setting they had -- brightness, volume, field of
+    /// view, difficulty -- for the sake of one retuned number, and because
+    /// `in_tuningVersion` could not be read back before the engine was up it
+    /// fired on every single launch instead of once. Each bump now names the
+    /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
+    private static let tuningVersion = 6
+
+    /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
+    /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
+    /// the ten shipped shapes this is the only one that is a cross with a centre
+    /// dot; the alternatives are either a solid plus that hides what is behind
+    /// it, or a faint disc that covers a good part of the screen once
+    /// cg_crosshairSize is turned up for a tablet.
+    private static let defaultCrosshair = 8
+
+    /// Whether the crosshair shape still has to be handed to the player. See
+    /// `migrate(from:)` for why it is written once rather than every launch.
+    private var seedsCrosshair = false
 
     private func loadDefaults() {
         applyDefaultBindings()
 
+        let stored = Int(cvar("in_tuningVersion") ?? "") ?? 0
+
         // Anything already set (a previous run) overrides the defaults.
+        //
+        // From version 3 the config lists every button the launcher knows,
+        // cleared ones included as an empty bind, so an empty value means the
+        // player took that button off -- moved its action elsewhere, most
+        // likely -- and the default must not walk back in behind them. An older
+        // config only lists what was bound, and there an empty value is
+        // genuinely "no idea", so the default is the better answer.
         for pad in PadButton.all {
             let current = String(cString: IOSBridge_GetBinding(pad.id))
             if !current.isEmpty {
                 bindings[pad.id] = current
+            } else if stored >= 3 {
+                bindings.removeValue(forKey: pad.id)
             }
         }
 
         // Settings used to be write-only: every launch wrote these defaults over
         // whatever the player had chosen, so nothing they changed here survived.
-        let stored = Int(cvar("in_tuningVersion") ?? "") ?? 0
-        guard stored >= LauncherModel.tuningVersion else { return }
-
+        // They are read back from the config the engine is about to exec, which
+        // ios_bridge.c now parses when the engine is not up yet -- before that
+        // every value below came back empty and fell through to its default.
         sensitivity      = cvarValue("sensitivity", sensitivity)
         lookYawSpeed     = cvarValue("in_lookYawSpeed", lookYawSpeed)
         lookPitchSpeed   = cvarValue("in_lookPitchSpeed", lookPitchSpeed)
         stickExpo        = cvarValue("in_stickExpo", stickExpo)
         stickDeadzone    = cvarValue("joy_threshold", stickDeadzone)
         gyroSens         = cvarValue("in_gyroSens", gyroSens)
+        gyroYawSens      = cvarValue("in_gyroYawSens", gyroYawSens)
+        gyroPitchSens    = cvarValue("in_gyroPitchSens", gyroPitchSens)
         rumble           = cvarValue("in_rumble", rumble)
         triggerHard      = cvarValue("in_triggerHard", triggerHard)
         fov              = cvarValue("cg_fov", fov)
         brightness       = cvarValue("r_gamma", brightness)
 
         gyroMode         = Int(cvarValue("in_gyro", Double(gyroMode)))
+        gyroYawSource    = Int(cvarValue("in_gyroYawSource", Double(gyroYawSource)))
         touchControls    = Int(cvarValue("in_touchControls", Double(touchControls)))
+        // Three states since the iPad's gyro stopped standing down for the
+        // controller's. Read as a number, or a config saying 2 comes back as a
+        // 1 and the next save writes the player's choice away.
+        touchGyro        = Int(cvarValue("in_touchGyro", Double(touchGyro)))
         maxFPS           = Int(cvarValue("com_maxfps", Double(maxFPS)))
         skill            = Int(cvarValue("g_gameskill", Double(skill)))
 
+        touchLookSens    = cvarValue("in_touchLookSens", touchLookSens)
+        touchLookYawSens = cvarValue("in_touchLookYawSens", touchLookYawSens)
+        touchLookPitchSens = cvarValue("in_touchLookPitchSens", touchLookPitchSens)
+        touchGyroSens    = cvarValue("in_touchGyroSens", touchGyroSens)
+        touchGyroYawSens = cvarValue("in_touchGyroYawSens", touchGyroYawSens)
+        touchGyroPitchSens = cvarValue("in_touchGyroPitchSens", touchGyroPitchSens)
+        moveExpo         = cvarValue("in_moveExpo", moveExpo)
+        volume           = cvarValue("s_volume", volume)
+        musicVolume      = cvarValue("s_musicvolume", musicVolume)
+        crosshairSize    = cvarValue("cg_crosshairSize", crosshairSize)
+
+        autoSwitch       = Int(cvarValue("cg_autoswitch", Double(autoSwitch)))
+        autoActivate     = cvarValue("cg_autoactivate", autoActivate ? 1 : 0) != 0
+        emptySwitch      = cvarValue("cg_emptyswitch", emptySwitch ? 1 : 0) != 0
+        viewBob          = cvarValue("cg_bobup", viewBob ? 1 : 0) != 0
+        perfHud          = cvarValue("r_perfHud", perfHud ? 1 : 0) != 0
+        perfLog          = cvarValue("r_perfLog", perfLog ? 1 : 0) != 0
+        padLog           = cvarValue("in_debugPad", padLog ? 1 : 0) != 0
+
         invertLook       = cvarValue("in_invertLook", invertLook ? 1 : 0) != 0
+        gyroInvertYaw    = cvarValue("in_gyroInvertYaw", gyroInvertYaw ? 1 : 0) != 0
+        gyroInvertPitch  = cvarValue("in_gyroInvertPitch", gyroInvertPitch ? 1 : 0) != 0
+        touchGyroInvertYaw   = cvarValue("in_touchGyroInvertYaw", touchGyroInvertYaw ? 1 : 0) != 0
+        touchGyroInvertPitch = cvarValue("in_touchGyroInvertPitch", touchGyroInvertPitch ? 1 : 0) != 0
         moveDigital      = cvarValue("in_moveDigital", moveDigital ? 1 : 0) != 0
         adaptiveTriggers = cvarValue("in_adaptiveTriggers", adaptiveTriggers ? 1 : 0) != 0
+        rumbleImpact     = cvarValue("cg_rumbleImpact", rumbleImpact ? 1 : 0) != 0
+        rumbleImpactScale = cvarValue("cg_rumbleImpactScale", rumbleImpactScale)
         hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
+
+        migrate(from: stored)
+    }
+
+    /// One-off fixes for a config written by an older build, applied on the
+    /// launch that first sees it.
+    ///
+    /// Deliberately surgical. A migration overrides a stored value only when
+    /// that value is the default the older build shipped: if the player has
+    /// chosen something of their own it stays, because a change of mind on our
+    /// side is not a reason to overrule them. Nothing here may write a default
+    /// over a setting it does not name.
+    private func migrate(from stored: Int) {
+        // 3: kick and sprint changed places on the stick clicks. Anyone who has
+        // played before is carrying the old pair, and a stored binding wins over
+        // a default, so without this the new layout would never arrive.
+        if stored < 3,
+           bindings["PAD0_LEFTSTICK_CLICK"] == "+sprint",
+           bindings["PAD0_RIGHTSTICK_CLICK"] == "+kick" {
+            bindings["PAD0_LEFTSTICK_CLICK"] = "+kick"
+            bindings["PAD0_RIGHTSTICK_CLICK"] = "+sprint"
+        }
+
+        // 4: the shoulders took over movement and the face buttons took over
+        // weapons, for the reasons written out in applyDefaultBindings(). Moved
+        // only for a player still carrying exactly the old four: anyone who put
+        // something else on any of them arranged it that way on purpose, and a
+        // change of mind here is not a reason to overrule it. It touches no
+        // button the bump above does, so a config still on version 2 takes both
+        // in turn and gets the same layout a fresh install would.
+        if stored < 4,
+           bindings["PAD0_RIGHTSHOULDER"] == "weapnext",
+           bindings["PAD0_LEFTSHOULDER"] == "weapprev",
+           bindings["PAD0_A"] == "+moveup",
+           bindings["PAD0_B"] == "+movedown" {
+            bindings["PAD0_RIGHTSHOULDER"] = "+movedown"
+            bindings["PAD0_LEFTSHOULDER"] = "+moveup"
+            bindings["PAD0_A"] = "weapprev"
+            bindings["PAD0_B"] = "weapnext"
+        }
+
+        // 5: jump and crouch changed places on the shoulders, after the pair
+        // was played on the device the way version 4 shipped it. Only for a
+        // player carrying exactly that pair -- anyone who put something else on
+        // either shoulder chose it, and this is a change of our mind, not
+        // theirs. A config older than 4 takes the bump above first, which leaves
+        // it holding exactly the pair this one looks for, so it arrives at the
+        // same layout a fresh install would.
+        if stored < 5,
+           bindings["PAD0_RIGHTSHOULDER"] == "+movedown",
+           bindings["PAD0_LEFTSHOULDER"] == "+moveup" {
+            bindings["PAD0_RIGHTSHOULDER"] = "+moveup"
+            bindings["PAD0_LEFTSHOULDER"] = "+movedown"
+        }
+
+        // 6: the weapon switch was a checkbox, and "on" wrote cg_autoswitch 1
+        // -- "always", which is Quake III's rule and not Wolfenstein's. Walking
+        // over a rifle already in the arsenal took the gun out of the player's
+        // hands for a duplicate, which is what a mission started from the
+        // launcher, with a loadout, does constantly. 2 switches only for a
+        // weapon that is genuinely new. Moved only for a config still holding
+        // exactly what the old checkbox wrote: 0 was a deliberate "off", and
+        // anything else was chosen in the control that replaced it.
+        if stored < 6, autoSwitch == 1 {
+            autoSwitch = 2
+        }
+
+        // The crosshair shape is seeded, not owned. There is no crosshair
+        // control in the launcher, so leaving cg_drawCrosshair in the generated
+        // config would re-apply it after wolfconfig.cfg on every launch and
+        // quietly undo anything the player picked in the game's own options --
+        // the very thing this pass exists to stop. It is written on the launch
+        // that migrates the config, and dropped from the set afterwards: the
+        // engine archives it within the frame (Com_Frame calls
+        // Com_WriteConfiguration) and it is the player's from then on.
+        //
+        // The bound is the version this seeding was introduced at, not the
+        // current one. Written as `stored < tuningVersion` it would fire again
+        // on every later bump, and a player who is only being handed a new
+        // button layout would silently lose the crosshair they had chosen in
+        // the game's own options -- the exact overruling this pass exists to
+        // stop.
+        seedsCrosshair = stored < 3
+        if !seedsCrosshair {
+            IOSBridge_ForgetCvar("cg_drawCrosshair")
+        }
     }
 
     private func cvar(_ name: String) -> String? {
@@ -413,13 +873,19 @@ final class LauncherModel: ObservableObject {
     }
 
     /// Push everything to the engine and write the config it will exec.
-    func commit() {
+    func commit(missionLoadout: Int = 0) {
         for (name, value) in preset.cvars {
             IOSBridge_SetCvar(name, value)
         }
 
         IOSBridge_SetCvar("com_maxfps", "\(maxFPS)")
         IOSBridge_SetCvar("r_hidpi", hiDPI ? "1" : "0")
+
+        // -2 is "whatever the screen is", which is the only honest answer on a
+        // device with one fixed panel. default.cfg inside pak0 sets r_mode 3 --
+        // 640x480 in the mode table -- and that is what the game's own System
+        // menu was reporting.
+        IOSBridge_SetCvar("r_mode", "-2")
         IOSBridge_SetCvar("cg_fov", String(format: "%.0f", fov))
         IOSBridge_SetCvar("r_gamma", String(format: "%.2f", brightness))
 
@@ -434,23 +900,63 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_lookYawSpeed", String(format: "%.0f", lookYawSpeed))
         IOSBridge_SetCvar("in_lookPitchSpeed", String(format: "%.0f", lookPitchSpeed))
         IOSBridge_SetCvar("in_stickExpo", String(format: "%.2f", stickExpo))
-        IOSBridge_SetCvar("in_moveExpo", "0.15")
+        IOSBridge_SetCvar("in_moveExpo", String(format: "%.2f", moveExpo))
+        IOSBridge_SetCvar("in_touchLookSens", String(format: "%.2f", touchLookSens))
+        IOSBridge_SetCvar("in_touchLookYawSens", String(format: "%.2f", touchLookYawSens))
+        IOSBridge_SetCvar("in_touchLookPitchSens", String(format: "%.2f", touchLookPitchSens))
+        IOSBridge_SetCvar("in_touchGyro", "\(touchGyro)")
+        IOSBridge_SetCvar("in_touchGyroSens", String(format: "%.2f", touchGyroSens))
+        IOSBridge_SetCvar("in_touchGyroYawSens", String(format: "%.2f", touchGyroYawSens))
+        IOSBridge_SetCvar("in_touchGyroPitchSens", String(format: "%.2f", touchGyroPitchSens))
+        IOSBridge_SetCvar("in_touchGyroInvertYaw", touchGyroInvertYaw ? "1" : "0")
+        IOSBridge_SetCvar("in_touchGyroInvertPitch", touchGyroInvertPitch ? "1" : "0")
+
+        IOSBridge_SetCvar("s_volume", String(format: "%.2f", volume))
+        IOSBridge_SetCvar("s_musicvolume", String(format: "%.2f", musicVolume))
+
+        IOSBridge_SetCvar("cg_autoswitch", "\(autoSwitch)")
+        IOSBridge_SetCvar("cg_autoactivate", autoActivate ? "1" : "0")
+        IOSBridge_SetCvar("cg_emptyswitch", emptySwitch ? "1" : "0")
+        IOSBridge_SetCvar("cg_bobup", viewBob ? "0.005" : "0")
+        IOSBridge_SetCvar("cg_bobpitch", viewBob ? "0.002" : "0")
+        IOSBridge_SetCvar("cg_bobroll", viewBob ? "0.002" : "0")
+        IOSBridge_SetCvar("cg_crosshairSize", String(format: "%.0f", crosshairSize))
+
+        // Shape, once, and only when it is still owed. See migrate(from:).
+        if seedsCrosshair {
+            IOSBridge_SetCvar("cg_drawCrosshair", "\(LauncherModel.defaultCrosshair)")
+        }
+
+        IOSBridge_SetCvar("r_perfHud", perfHud ? "1" : "0")
+        IOSBridge_SetCvar("r_perfLog", perfLog ? "1" : "0")
+        IOSBridge_SetCvar("in_debugPad", padLog ? "1" : "0")
         IOSBridge_SetCvar("joy_threshold", String(format: "%.2f", stickDeadzone))
         IOSBridge_SetCvar("in_invertLook", invertLook ? "1" : "0")
         IOSBridge_SetCvar("in_gyro", "\(gyroMode)")
         IOSBridge_SetCvar("in_gyroSens", String(format: "%.2f", gyroSens))
+        IOSBridge_SetCvar("in_gyroYawSens", String(format: "%.2f", gyroYawSens))
+        IOSBridge_SetCvar("in_gyroPitchSens", String(format: "%.2f", gyroPitchSens))
+        IOSBridge_SetCvar("in_gyroYawSource", "\(gyroYawSource)")
+        IOSBridge_SetCvar("in_gyroInvertYaw", gyroInvertYaw ? "1" : "0")
+        IOSBridge_SetCvar("in_gyroInvertPitch", gyroInvertPitch ? "1" : "0")
         IOSBridge_SetCvar("in_rumble", String(format: "%.0f", rumble))
+        IOSBridge_SetCvar("cg_rumbleImpact", rumbleImpact ? "1" : "0")
+        IOSBridge_SetCvar("cg_rumbleImpactScale", String(format: "%.2f", rumbleImpactScale))
         IOSBridge_SetCvar("in_adaptiveTriggers", adaptiveTriggers ? "1" : "0")
         IOSBridge_SetCvar("in_triggerHard", String(format: "%.2f", triggerHard))
         IOSBridge_SetCvar("in_touchControls", "\(touchControls)")
         IOSBridge_SetCvar("in_joystick", "1")
 
-        // Framerate-independent movement. Q3-lineage physics is tied to the
-        // frame rate (the classic 125fps jump), and RTCW's default com_maxfps of
-        // 76 exists to dodge that. Since this is single player, fixing pmove is
-        // the cleaner answer and it makes 120Hz safe.
-        IOSBridge_SetCvar("pmove_fixed", "1")
-        IOSBridge_SetCvar("pmove_msec", "8")
+        // pmove_fixed is deliberately left alone.
+        //
+        // It makes movement frame-rate independent, which is tempting at 120Hz,
+        // but g_active.c applies it to every client -- there is no per-client
+        // switch in this tree, pers.pmoveFixed is read and never set. So turning
+        // it on also runs every AI cast's physics in 8ms steps instead of the
+        // stock single step per think, which is a change to how the game's
+        // characters move that the original never had. Not a trade worth making
+        // for a single-player nicety.
+        IOSBridge_SetCvar("pmove_fixed", "0")
 
         IOSBridge_SetCvar("in_tuningVersion", "\(LauncherModel.tuningVersion)")
 
@@ -458,9 +964,28 @@ final class LauncherModel: ObservableObject {
         // campaign maps and an iPad has plenty.
         IOSBridge_SetCvar("com_hunkMegs", "512")
 
-        for (key, action) in bindings {
-            IOSBridge_SetBinding(key, action)
+        // Every button the launcher knows, not only the bound ones. A button the
+        // player has cleared has to be written as an empty bind: leave it out
+        // and the config says nothing about it, so the next launch fills it back
+        // in from the defaults -- and whatever wolfconfig.cfg still has on that
+        // key survives, which is exactly what this file is exec'd last to stop.
+        for pad in PadButton.all {
+            IOSBridge_SetBinding(pad.id, bindings[pad.id] ?? "")
         }
+
+        // Difficulty and the mission loadout have to reach the table before the
+        // config is written. On a cold start the launcher runs before Com_Init,
+        // so IOSBridge_SetCvar can only stash the pair -- there is no engine to
+        // set it on -- and anything stashed after WriteConfig lands in neither
+        // the file nor the engine and is simply lost. Both of these were set
+        // after the write, so the difficulty chosen here never took effect and a
+        // mission started from the launcher was played with no loadout at all.
+        //
+        // The loadout is written on every commit, zero unless a mission is being
+        // started, so a chapter left in the file by a previous session cannot
+        // hand the player the wrong weapons on the next cold start.
+        IOSBridge_SetCvar("g_gameskill", "\(skill)")
+        IOSBridge_SetCvar("g_missionLoadout", "\(missionLoadout)")
 
         IOSBridge_WriteConfig()
     }
@@ -473,8 +998,7 @@ final class LauncherModel: ObservableObject {
 
     /// Start a mission directly, skipping the game's own menus.
     func startMission(_ mission: CampaignMission) {
-        commit()
-        IOSBridge_SetCvar("g_gameskill", "\(skill)")
+        commit(missionLoadout: mission.chapter)
         IOSBridge_SetStartupCommand("spmap \(mission.id)")
         IOSBridge_LauncherFinished()
     }

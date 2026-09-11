@@ -39,9 +39,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // which is where anything we ship (as opposed to what the user copies in)
 // lives.
 
-#include "../../SP/code/qcommon/q_shared.h"
-#include "../../SP/code/qcommon/qcommon.h"
-#include "../../SP/code/sys/sys_local.h"
+#include "ios_engine.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>

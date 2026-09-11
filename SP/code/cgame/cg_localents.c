@@ -220,15 +220,13 @@ void CG_FragmentBounceMark( localEntity_t *le, trace_t *trace ) {
 	int radius;
 
 	if ( le->leMarkType == LEMT_BLOOD ) {
-		static int lastBloodMark;
-
 		// don't drop too many blood marks
-		if ( !( lastBloodMark > cg.time || lastBloodMark > cg.time - 100 ) ) {
+		if ( !( cg.lastBloodMarkTime > cg.time || cg.lastBloodMarkTime > cg.time - 100 ) ) {
 			radius = 16 + ( rand() & 31 );
 			CG_ImpactMark( cgs.media.bloodDotShaders[rand() % 5], trace->endpos, trace->plane.normal, random() * 360,
 						   1,1,1,1, qtrue, radius, qfalse, cg_bloodTime.integer * 1000 );
 
-			lastBloodMark = cg.time;
+			cg.lastBloodMarkTime = cg.time;
 		}
 	}
 

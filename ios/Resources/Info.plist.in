@@ -18,8 +18,17 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+	<!-- The commit count behind HEAD, not a date: it grows on its own, and iOS
+	     reads it as the build number when installing over an existing copy. -->
 	<key>CFBundleVersion</key>
 	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+
+	<!-- The commit that build number came from, with -dirty when the tree had
+	     changes that are in no commit. iOS makes no use of it; the launcher
+	     shows it, so that the about line alone is enough to find the code a
+	     build was made from. Empty when built without git. -->
+	<key>IORTCWGitHash</key>
+	<string>${IORTCW_GIT_HASH}</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>

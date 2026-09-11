@@ -51,11 +51,14 @@ typedef struct {
 static edgeDef_t edgeDefs[SHADER_MAX_VERTEXES][MAX_EDGE_DEFS];
 static int numEdgeDefs[SHADER_MAX_VERTEXES];
 static int facing[SHADER_MAX_INDEXES / 3];
-static vec3_t shadowXyz[SHADER_MAX_VERTEXES];
-
 #ifdef USE_OPENGLES
+// The ES path draws the whole volume in one indexed call straight out of
+// tess.xyz, holding the extruded copy of vertex i at i + tess.numVertexes, so
+// there is no separate array of projected positions for it to read.
 static unsigned short indexes[6*MAX_EDGE_DEFS*SHADER_MAX_VERTEXES];
 static int idx = 0;
+#else
+static vec3_t shadowXyz[SHADER_MAX_VERTEXES];
 #endif
 
 void R_AddEdgeDef( int i1, int i2, int facing ) {
@@ -193,11 +196,29 @@ void RB_ShadowTessEnd( void ) {
 		return;
 	}
 
+#ifdef USE_OPENGLES
+	// The extruded vertices are appended to tess.xyz, so the surface has to
+	// have room for a second copy of itself -- and has to stay clear of the
+	// last slot, which RB_EndSurface reads as its overflow sentinel.
+	if ( tess.numVertexes * 2 >= SHADER_MAX_VERTEXES ) {
+		return;
+	}
+#endif
+
 	VectorCopy( backEnd.currentEntity->lightDir, lightDir );
 
 	// project vertexes away from light direction
 	for ( i = 0 ; i < tess.numVertexes ; i++ ) {
+#ifdef USE_OPENGLES
+		// Where R_RenderShadowEdges' indexes expect to find it. Projecting
+		// into a side array instead left the far cap of every volume reading
+		// whatever the previous surface had put in those slots, which turned
+		// the stencil pass into garbage and painted the darkening quad over
+		// large slabs of the screen.
+		VectorMA( tess.xyz[i], -512, lightDir, tess.xyz[i + tess.numVertexes] );
+#else
 		VectorMA( tess.xyz[i], -512, lightDir, shadowXyz[i] );
+#endif
 	}
 
 	// decide which triangles face the light

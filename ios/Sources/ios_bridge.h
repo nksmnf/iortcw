@@ -38,24 +38,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern "C" {
 #endif
 
-// --- build flavour ---------------------------------------------------------
-
-// True in the multiplayer build. SP and MP are separate applications -- two
-// source trees that share no symbols -- so this is fixed at compile time and
-// exists purely so one launcher source can serve both.
-bool IOSBridge_IsMultiplayer( void );
-
 // --- game data -------------------------------------------------------------
 
 // <container>/Documents -- where the user drops their pk3s. Shown in the UI so
 // they can find it in Files.app.
 const char *IOSBridge_DataPath( void );
-
-// The pk3s this build needs, in the order IOSBridge_GameDataMask reports them.
-// Read from here rather than hardcoded in Swift, because SP and MP need
-// different files and the checklist has to follow the binary it is part of.
-int IOSBridge_GameDataFileCount( void );
-const char *IOSBridge_GameDataFileName( int index );
 
 // Is main/pak0.pk3 there yet? The launcher polls this so the Play button lights
 // up as soon as the files land, without needing a relaunch.
@@ -78,9 +65,20 @@ int IOSBridge_ImportLooseData( void );
 // after default.cfg and wolfconfig.cfg -- so these always win. Values that are
 // CVAR_INIT or are read before the configs run (com_hunkMegs, fs_*) go through
 // the command line instead; see IOSBridge_BuildCommandLine.
+//
+// The getters answer from that file when the engine is not up yet, which is the
+// usual case: the launcher runs before Com_Init. So what a cold start reads
+// back is what the player last chose, not a set of empty strings that the
+// launcher would mistake for a first run.
 
 void IOSBridge_SetCvar( const char *name, const char *value );
 const char *IOSBridge_GetCvar( const char *name );
+
+// Stop writing a setting, leaving its value to the engine and to the player.
+// For defaults the launcher seeds once and then offers no control for: left in
+// the generated config they would be re-applied over the player's own choice on
+// every launch, which is not what a default is.
+void IOSBridge_ForgetCvar( const char *name );
 
 // Replace one binding. action is a console command such as "+attack".
 void IOSBridge_SetBinding( const char *keyName, const char *action );
@@ -99,21 +97,93 @@ void IOSBridge_SetStartupCommand( const char *command );
 // read.
 const char *IOSBridge_BuildCommandLine( void );
 
-// Additional "+set name value" arguments to append to the command line, for
+// Additional "+set name value" arguments to append to that command line, for
 // cvars the generated config cannot carry: "dedicated" is CVAR_INIT and
 // net_port is CVAR_LATCH, so both are already fixed by the time any exec runs.
 // Pass "" to clear.
 void IOSBridge_SetExtraArgs( const char *args );
 
+// --- build flavour ---------------------------------------------------------
+
+// True in the multiplayer build. SP and MP are separate applications built from
+// two source trees that share no symbols, so this is fixed at compile time; it
+// exists so one launcher source can serve both.
+bool IOSBridge_IsMultiplayer( void );
+
 // --- background hosting ----------------------------------------------------
 //
-// iOS suspends an ordinary app a few seconds after it leaves the screen, which
-// would kill a listening socket. Turning this on keeps the process scheduled
-// while it is hosting a game; see ios_keepalive.m for what it costs and why it
-// is done this way.
+// iOS suspends an ordinary app seconds after it leaves the screen, which would
+// kill a listening socket and end a hosted game. Turning this on keeps the
+// process scheduled; see ios_keepalive.m for how, and what it costs.
 
 void IOSBridge_SetKeepAwake( bool on );
 bool IOSBridge_IsKeepAwake( void );
+
+// --- what is in the game data ----------------------------------------------
+
+// Reads the pk3 directories -- not their contents -- and reports what is there,
+// for both sets of data below. Cached, so the launcher's once-a-second refresh
+// is free after the first call; pass true to force a rescan after files have
+// been added. Even a forced rescan only reopens pk3s whose size or timestamp
+// has changed, so polling while the user copies costs a stat per file.
+//
+// Returns false if nothing could be read yet.
+bool IOSBridge_ScanData( bool rescan );
+
+// The campaign, as they always have been. The Play button and everything below
+// it is written against these three.
+int    IOSBridge_DataMaps( void );      // maps/*.bsp across every pak
+int    IOSBridge_DataFiles( void );     // entries in total
+double IOSBridge_DataMegabytes( void ); // uncompressed size of the lot
+
+// --- the two sets of data ---------------------------------------------------
+//
+// RTCW ships its single-player campaign and its multiplayer as separate pk3s,
+// and a player may have one and not the other, so the launcher shows them as
+// two lists. The bridge owns what each list contains: it is the side that knows
+// which files the engine refuses to start without.
+//
+// Every getter below scans on first use, so they can be called in any order.
+// index runs 0 .. IOSBridge_SetFileCount(set) - 1; out-of-range arguments
+// answer 0, "" or false rather than trapping.
+
+#define IOS_DATA_SET_CAMPAIGN     0
+#define IOS_DATA_SET_MULTIPLAYER  1
+#define IOS_DATA_SET_COUNT        2
+
+int         IOSBridge_SetFileCount( int set );
+const char *IOSBridge_SetFileName( int set, int index );
+bool        IOSBridge_SetFilePresent( int set, int index );
+
+// Required files are the ones the engine calls Com_Error over. The optional
+// ones -- multiplayer's bonus map packs and mp_bin.pk3 -- cost the player
+// nothing to skip beyond the servers they can join, but they are part of the
+// complete set, so IOSBridge_SetIsRecommended does count them.
+bool        IOSBridge_SetFileRequired( int set, int index );
+
+// Statistics over the files of the set that are present. pak0.pk3 is retail
+// media that both halves of the game load, so it is in both sets and counted
+// in both -- the two totals deliberately do not add up to what is on disk.
+//
+// SetMaps counts maps/mp_*.bsp for multiplayer and every maps/*.bsp for the
+// campaign, because pak0.pk3's 32 maps are all campaign maps and none of them
+// is a level any server runs.
+int         IOSBridge_SetMaps( int set );
+int         IOSBridge_SetFiles( int set );      // entries inside its pk3s
+double      IOSBridge_SetMegabytes( int set );  // uncompressed size of the set
+
+// Will the engine start on this? Every required file present, and readable as
+// a zip -- a pk3 halfway through being copied is not yet in place.
+bool        IOSBridge_SetIsPlayable( int set );
+
+// Has the player exactly what they should have: the complete set at the last
+// official patch level (1.41 for multiplayer, the Game of the Year files for
+// the campaign), with nothing missing and nothing extra wearing an id pak's
+// name. Stricter than IOSBridge_SetIsPlayable, which only asks whether it runs.
+bool        IOSBridge_SetIsRecommended( int set );
+
+// "iortcw 1.51d-SP ios-arm64", the same string the engine prints on startup.
+const char *IOSBridge_EngineVersion( void );
 
 // --- launcher lifecycle ----------------------------------------------------
 

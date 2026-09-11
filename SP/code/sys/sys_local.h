@@ -69,6 +69,21 @@ qboolean    Sys_IOS_HasAdaptiveTriggers( void );
 
 // ios_touch.m -- on-screen controls, shown only when no controller is attached
 void        Sys_IOS_TouchOverlayInit( void *sdlWindowHandle );
+
+// Tell iPadOS that this part of the interface reads the controller itself, so
+// it stops delivering the same input a second time through UIKit. Takes a
+// UIWindow or a UIView; safe to call more than once on the same one.
+void        Sys_IOS_ClaimControllerEvents( void *windowOrView );
+
+// Whether a real keyboard is attached, as opposed to the arrow keys iPadOS
+// synthesises from a game controller.
+qboolean    Sys_IOS_HasHardwareKeyboard( void );
+void        Sys_IOS_PerfInit( void *parentView );
+void        Sys_IOS_PerfFrame( void );
+void        Sys_IOS_PerfNoteSwap( double ms );
+void        Sys_IOS_GyroInit( void );
+void        Sys_IOS_GyroFrame( void );
+void        Sys_IOS_GyroShutdown( void );
 void        Sys_IOS_TouchOverlayUpdate( void );
 void        Sys_IOS_TouchOverlayShutdown( void );
 

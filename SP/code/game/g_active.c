@@ -102,6 +102,19 @@ void P_DamageFeedback( gentity_t *player ) {
 
 
 
+// Flame damage below is dealt every frame for as long as the target burns, and
+// the burn outlives the trigger pull by seconds. One accuracy hit per tick
+// would keep the client's impact queue permanently full and turn a hit into a
+// wound-length buzz, so hits are counted at this interval at most.
+#define FLAME_ACCURACY_HIT_INTERVAL 300
+
+// level.time of the last flame hit counted against each client. The game module
+// is linked into the engine, so this outlives the level that filled it while
+// level.time starts over with the next map: a stamp from ahead of us is a
+// leftover, not a recent hit, and is dropped below rather than gagging the
+// counter until the clock catches up.
+static int flameAccuracyHitTime[MAX_CLIENTS];
+
 /*
 =============
 P_WorldEffects
@@ -205,6 +218,25 @@ void P_WorldEffects( gentity_t *ent ) {
 
 		if ( ent->health > 0 ) {
 			attacker = g_entities + ent->flameBurnEnt;
+
+			// count the hit here rather than at each G_Damage below, and only while
+			// fresh flame is still landing: the client refreshes flameQuotaTime
+			// through Cmd_ClientDamage_f while its flame chunks touch this entity
+			// and stops the moment they miss, so this ties the pulse to the trigger
+			// instead of to a burn that runs on by itself. It is also what keeps the
+			// hit honest: a burn lit any other way (the zombie's own flame attack,
+			// the CatchFire script action) never touches flameQuota, and those leave
+			// flameBurnEnt at zero -- which is the player in single player.
+			if ( level.time < flameAccuracyHitTime[ent->s.number] ) {
+				flameAccuracyHitTime[ent->s.number] = 0;
+			}
+			if ( ent->flameQuotaTime > flameAccuracyHitTime[ent->s.number]
+				 && level.time - flameAccuracyHitTime[ent->s.number] >= FLAME_ACCURACY_HIT_INTERVAL
+				 && LogAccuracyHit( ent, attacker ) ) {
+				flameAccuracyHitTime[ent->s.number] = level.time;
+				attacker->client->ps.persistant[PERS_ACCURACY_HITS]++;
+			}
+
 			if ( g_gametype.integer == GT_SINGLE_PLAYER ) { // JPW NERVE
 				if ( ent->r.svFlags & SVF_CASTAI ) {
 					G_Damage( ent, attacker, attacker, NULL, NULL, 2, DAMAGE_NO_KNOCKBACK, MOD_FLAMETHROWER );
@@ -847,6 +879,52 @@ void ClientThink_real( gentity_t *ent ) {
 	}
 	if ( msec > 200 ) {
 		msec = 200;
+	}
+
+	// How much simulated time this client is actually getting against how much
+	// real time passed. An AI that is only updated every few hundred
+	// milliseconds loses whatever the clamp above cuts off, and moves at that
+	// fraction of its proper speed -- which is what "the guards behind the bars
+	// walk in slow motion until they see you" looks like from the inside.
+	//
+	// Logged as a ratio because that is the number that says how wrong it is:
+	// 1.00 is correct, 0.67 is two thirds speed.
+	if ( g_debugAI.integer && ( ent->r.svFlags & SVF_CASTAI ) ) {
+		static int  lastReport;
+		static int  granted[MAX_CLIENTS];
+		static int  wallStart;
+
+		// The game module is linked into the app rather than reloaded per map,
+		// so these keep last map's values while level.time starts over. Left
+		// alone, the window would begin in the future and the report would stay
+		// silent until the clock caught up with the map before it.
+		if ( level.time < wallStart || level.time < lastReport ) {
+			memset( granted, 0, sizeof( granted ) );
+			wallStart = 0;
+			lastReport = level.time;
+		}
+
+		granted[ent->s.number] += msec;
+
+		if ( !wallStart ) {
+			wallStart = level.time;
+		}
+
+		if ( level.time - lastReport > 2000 ) {
+			int i;
+			int wall = level.time - wallStart;
+
+			for ( i = 0; i < level.maxclients; i++ ) {
+				if ( granted[i] && wall > 0 ) {
+					G_Printf( "ai %2d: %4d of %4d ms  ratio %.2f\n",
+						i, granted[i], wall, (float)granted[i] / (float)wall );
+				}
+				granted[i] = 0;
+			}
+
+			lastReport = level.time;
+			wallStart = level.time;
+		}
 	}
 
 	if ( pmove_msec.integer < 8 ) {

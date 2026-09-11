@@ -24,6 +24,17 @@ final class ControllerProbe: ObservableObject {
     @Published var hasAdaptiveTriggers = false
     @Published var hasHaptics = false
 
+    /// How long Circle has been held, as 0...1 of `holdToClose`.
+    ///
+    /// This screen is the one place where a tap on Circle must not close
+    /// anything: Circle is one of the buttons being tested, and a page that
+    /// leaves the moment it is pressed can never show it working. Holding it is
+    /// the way out instead, and the bar filling up says so without words.
+    @Published var backHold: Double = 0
+
+    static let holdToClose: TimeInterval = 0.7
+
+    private var backSince: TimeInterval?
     private var timer: Timer?
 
     init() {
@@ -41,6 +52,8 @@ final class ControllerProbe: ObservableObject {
             pressed = []
             leftX = 0; leftY = 0; rightX = 0; rightY = 0
             leftTrigger = 0; rightTrigger = 0
+            backSince = nil
+            backHold = 0
             return
         }
 
@@ -80,14 +93,26 @@ final class ControllerProbe: ObservableObject {
         }
         pressed = down
 
+        if pad.buttonB.isPressed {
+            let now = Date().timeIntervalSinceReferenceDate
+            let since = backSince ?? now
+            backSince = since
+            backHold = min(1, (now - since) / ControllerProbe.holdToClose)
+        } else {
+            backSince = nil
+            backHold = 0
+        }
+
         hasGyro = pad.controller?.motion != nil
         hasHaptics = pad.controller?.haptics != nil
     }
 }
 
 struct ControllerTestView: View {
+    @ObservedObject var pad: PadInput
     @StateObject private var probe = ControllerProbe()
     @Environment(\.dismiss) private var dismiss
+    @State private var scope = PadScope()
 
     var body: some View {
         NavigationStack {
@@ -100,6 +125,7 @@ struct ControllerTestView: View {
                         triggers
                         buttons
                         capabilities
+                        closeHint
                         hint
                     }
                 }
@@ -113,7 +139,13 @@ struct ControllerTestView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        // Claimed but never acted on: while this page is up every press belongs
+        // to the readout below, and the launcher's cursor underneath must not
+        // wander off while the player works through the buttons.
+        .padScope(pad, scope)
+        .onChange(of: probe.backHold) { held in
+            if held >= 1 { dismiss() }
+        }
     }
 
     private var status: some View {
@@ -137,13 +169,13 @@ struct ControllerTestView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                    .stroke(Theme.fill(0.30), lineWidth: 1)
                     .frame(width: 130, height: 130)
                 Circle()
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    .stroke(Theme.fill(0.15), lineWidth: 1)
                     .frame(width: 40, height: 40)     // deadzone, roughly
                 Circle()
-                    .fill(Color.orange)
+                    .fill(Theme.accent)
                     .frame(width: 18, height: 18)
                     // GameController's Y is up-positive; flip it so the dot
                     // moves the way the thumb does on screen.
@@ -168,8 +200,8 @@ struct ControllerTestView: View {
             Text(label).frame(width: 120, alignment: .leading).font(.callout)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.12))
-                    Capsule().fill(Color.orange)
+                    Capsule().fill(Theme.fill(0.15))
+                    Capsule().fill(Theme.accent)
                         .frame(width: geo.size.width * CGFloat(value))
                 }
             }
@@ -192,9 +224,11 @@ struct ControllerTestView: View {
                         .font(.caption)
                         .padding(.vertical, 6)
                         .frame(maxWidth: .infinity)
-                        .background(on ? Color.orange : Color.white.opacity(0.08),
+                        .background(on ? Theme.accent : Theme.fill(0.10),
                                     in: RoundedRectangle(cornerRadius: 6))
-                        .foregroundStyle(on ? Color.black : Color.primary)
+                        // Black on orange reads in either theme; the unpressed
+                        // chip carries the theme's own text colour.
+                        .foregroundStyle(on ? Theme.onAccent : Color.primary)
                 }
             }
         }
@@ -214,6 +248,20 @@ struct ControllerTestView: View {
                 .foregroundStyle(probe.hasAdaptiveTriggers ? Color.green : Color.secondary)
         }
         .font(.callout)
+    }
+
+    private var closeHint: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "xmark.circle")
+            Text(L("Держите Circle, чтобы закрыть")).font(.callout)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.fill(0.15))
+                Capsule().fill(Theme.accent)
+                    .frame(width: CGFloat(90 * probe.backHold))
+            }
+            .frame(width: 90, height: 8)
+        }
+        .foregroundStyle(.secondary)
     }
 
     private var hint: some View {
