@@ -1384,6 +1384,12 @@ static void IN_GamepadSticks( void )
 		float speed = in_menuCursorSpeed->value;
 		int dx, dy;
 
+		// Nobody is walking while a menu is up, and a direction the digital
+		// path is holding is held by a key that only that path ever releases.
+		// Leaving it would have the player set off in that direction the
+		// moment the menu closed.
+		IN_DigitalMoveRelease();
+
 		// Either stick, so it does not matter which one the player reaches for.
 		if ( rx == 0.0f && ry == 0.0f ) {
 			rx = lx;
@@ -1460,6 +1466,17 @@ static void IN_GamepadSticks( void )
 		}
 		return;
 	}
+
+	// Analogue movement from here down, which means the digital path is not
+	// going to run this frame and will not be releasing anything.
+	//
+	// in_moveDigital is a setting the player changes while the game is running
+	// -- the launcher writes it and it takes effect immediately -- and a
+	// direction that was held at that moment had nothing left alive to let go
+	// of it. That is a character who walks sideways into a wall for the rest of
+	// the session, from a switch in a menu, which is a long way from anything
+	// the player would connect it to.
+	IN_DigitalMoveRelease();
 
 	// Scaling, and this is the part that was making the sticks feel broken.
 	//
@@ -3453,6 +3470,11 @@ typedef struct
 	// is positive upwards. See IN_PadEmuMeasure for where the engine's signs
 	// are turned back into these.
 	int forward, right, turn, look;
+
+	// Switch in_moveDigital over while this step's direction is being held.
+	// Not a thing the step itself checks -- the row after it is what catches
+	// what goes wrong.
+	qboolean flip;
 } padEmuStep_t;
 
 static const padEmuStep_t padEmuScript[] =
@@ -3484,9 +3506,20 @@ static const padEmuStep_t padEmuScript[] =
 	// Both at once, which is how the game is actually played.
 	{ "left forward + right right",      0.00f, -1.00f,  1.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,   PADEMU_FULL, PADEMU_ZERO },
 
+	// The movement setting changed while a direction was held, which is what a
+	// player does when he opens the launcher mid-mission and switches movement
+	// from digital to analogue. The digital path holds a direction with a key
+	// that only it ever releases, and from the moment the setting changes it is
+	// not running -- so the key stayed down and the character walked sideways
+	// for the rest of the session. This row is not the test; the row after it
+	// is.
+	{ "left stick right, mode switched under it",
+	                                     1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ANY,   PADEMU_ANY,   PADEMU_ZERO, PADEMU_ZERO, qtrue },
+
 	// And nothing at all, which has to come out as nothing at all. A row that
-	// fails here is something else writing the axes -- a gyro, a stuck touch --
-	// and every other row in the table is worth less until it passes.
+	// fails here is something else writing the axes -- a gyro, a stuck touch,
+	// a direction nobody let go of -- and every other row in the table is worth
+	// less until it passes.
 	{ "both sticks centred",             0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_ZERO },
 };
 
@@ -3504,6 +3537,7 @@ static qboolean padEmuQuitWhenDone;   // padtest quit -- for scripted runs
 static int   padEmuAttachCount;       // how many times the device has been put in
 static int   padEmuAttachAtStart;     // what it was when the current run began
 static qboolean padEmuAutoAttached;   // padtest brought the virtual pad in itself
+static int      padEmuMoveDigital;    // in_moveDigital as the run found it
 
 /*
 ===============
@@ -3852,6 +3886,11 @@ static void IN_PadEmuFrame( void )
 		padEmuStepIndex = -1;
 		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
 
+		// The run borrowed this; give it back.
+		if ( in_moveDigital->integer != padEmuMoveDigital ) {
+			Cvar_Set( "in_moveDigital", padEmuMoveDigital ? "1" : "0" );
+		}
+
 		// A scripted run leaves by the front door. Killing the process instead
 		// leaves the pid file behind, and the next start stops on a modal
 		// "did not exit properly" dialog that no script can answer.
@@ -3874,6 +3913,12 @@ static void IN_PadEmuFrame( void )
 	step = &padEmuScript[padEmuStepIndex];
 
 	padEmuFrame++;
+
+	// Halfway through settling: the direction has been held for a few frames by
+	// now, which is the state this is meant to change out from under.
+	if ( step->flip && padEmuFrame == PADEMU_SETTLE_FRAMES / 2 ) {
+		Cvar_Set( "in_moveDigital", in_moveDigital->integer ? "0" : "1" );
+	}
 
 	if ( padEmuFrame == PADEMU_SETTLE_FRAMES ) {
 		// The step has taken hold; start the clock.
@@ -3951,6 +3996,7 @@ static void IN_PadTest_f( void )
 	padEmuFailed = 0;
 	padEmuQuitWhenDone = ( Cmd_Argc() > 1 && !Q_stricmp( Cmd_Argv( 1 ), "quit" ) ) ? qtrue : qfalse;
 	padEmuAttachAtStart = padEmuAttachCount;
+	padEmuMoveDigital = in_moveDigital->integer;
 }
 
 
