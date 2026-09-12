@@ -1092,6 +1092,24 @@ void IOSBridge_WriteConfig( void )
 	fprintf( f, "// Exec'd after wolfconfig.cfg, so these settings win.\n\n" );
 
 	for ( i = 0; i < numLauncherSettings; i++ ) {
+		// Settings the command line owns are left out, whatever is in the table.
+		//
+		// They are read before any config is exec'd -- net_enabled and net_port
+		// are latched, dedicated is CVAR_INIT -- so a line here can never take
+		// effect. It can only disagree with the running engine for the rest of
+		// the session, which is exactly what the self-test reports as a fault,
+		// and it would be right to. IOSBridge_LauncherCommandLine is the one
+		// place these are decided.
+		//
+		// Filtered on the way out rather than on the way in, so a value stored
+		// by an older build is dropped the first time this runs.
+		if ( !Q_stricmp( launcherSettings[i].name, "net_enabled" ) ||
+		     !Q_stricmp( launcherSettings[i].name, "net_port" ) ||
+		     !Q_stricmp( launcherSettings[i].name, "dedicated" ) ||
+		     !Q_stricmp( launcherSettings[i].name, "com_hunkMegs" ) ) {
+			continue;
+		}
+
 		fprintf( f, "seta %s \"%s\"\n", launcherSettings[i].name, launcherSettings[i].value );
 	}
 

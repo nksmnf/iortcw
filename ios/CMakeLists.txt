@@ -209,11 +209,28 @@ target_compile_definitions(iortcw_common INTERFACE
     FT2_BUILD_LIBRARY
     USE_LOCAL_HEADERS
     USE_STATIC_VM           # game modules are linked in, see StaticVM.cmake
-    PRODUCT_VERSION="${IORTCW_VERSION}"
 )
 
-if(IORTCW_IS_MP)
+# The version string belongs to a tree, not to the app. On iOS both trees are in
+# one binary and Engine.cmake gives each its own; defining it here as well put a
+# second, primary-tree copy on the command line of both, so the campaign engine
+# reported itself as 1.51d-MP -- in its own console, in its report, and to any
+# server it spoke to.
+if(NOT IORTCW_IOS)
+    target_compile_definitions(iortcw_common INTERFACE
+        PRODUCT_VERSION="${IORTCW_VERSION}")
+endif()
+
+if(IORTCW_IS_MP AND NOT IORTCW_IOS)
     # Lets the shared launcher and bridge sources tell which game they are in.
+    #
+    # Never on iOS, where this target is common to BOTH engines: the app carries
+    # a campaign engine and a multiplayer engine side by side, and the flag is
+    # put on the per-tree targets in Engine.cmake instead. Set here it followed
+    # IORTCW_TREE, which in a unified build only names which tree the version
+    # string comes from -- so a build configured with -DIORTCW_TREE=MP compiled
+    # the campaign engine as multiplayer, and it took the multiplayer arm of
+    # every #ifdef in the files the two trees share.
     target_compile_definitions(iortcw_common INTERFACE IORTCW_MP_BUILD)
 endif()
 
@@ -224,7 +241,15 @@ endif()
 # for SP: a single-player game that asks for the local network on first launch
 # looks exactly like something to be suspicious of.
 # ---------------------------------------------------------------------------
-if(IORTCW_IS_MP)
+# Always on iOS, for the same reason: one app, two engines, and which one a
+# launch is only gets decided at launch. Keyed off IORTCW_TREE these were
+# missing from the shipped build entirely -- which is not a cosmetic loss. No
+# UIBackgroundModes means a hosted server dies the moment the app leaves the
+# screen, which is the whole of what Sources/ios_keepalive.m exists to prevent;
+# no NSLocalNetworkUsageDescription means iOS drops the browser's broadcast
+# scan without a word, so the LAN tab is always empty and looks like a bug in
+# the scan.
+if(IORTCW_IS_MP OR IORTCW_IOS)
     set(IORTCW_PLIST_MP_KEYS
 "\t<!-- Hosting has to survive the app leaving the screen. There is no
 \t     background mode for a listening socket, so we use the audio one and
