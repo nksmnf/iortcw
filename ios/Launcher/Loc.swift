@@ -271,7 +271,6 @@ enum Loc {
 
 
         // --- диагностика ---
-        "Диагностика": "Diagnostics",
         "Подробный лог": "Verbose log",
         "Счётчики на экране": "On-screen counters",
         "Профайлинг в лог": "Profiling to log",
@@ -326,7 +325,6 @@ enum Loc {
         "Докачивать карты с сервера": "Download maps from the server",
         "Экран боя": "Heads-up display",
         "Вид прицела": "Crosshair",
-        "Размер прицела": "Crosshair size",
         "Счётчик кадров": "Frame counter",
         "Лагометр": "Lagometer",
         "Кровь": "Blood",
@@ -348,12 +346,10 @@ enum Loc {
         "Сервер": "Server",
         "Название": "Title",
         "Как сервер называется в списке.": "How the server is named in the list.",
-        "Режим": "Mode",
         "Играю сам": "I play",
         "Локальный": "LAN",
         "Интернет": "Internet",
         "Работать при скрытом приложении": "Keep running when hidden",
-        "Игра": "Game",
         "Режим игры": "Game type",
         "Задание": "Objective",
         "Секундомер": "Stopwatch",
@@ -363,7 +359,6 @@ enum Loc {
         "Карты игры": "Stock maps",
         "В ротации": "In rotation",
         "не задана": "not set",
-        "карт": "maps",
         "Слотов": "Slots",
         "Лимит времени, мин": "Time limit, min",
         "Огонь по своим": "Friendly fire",
