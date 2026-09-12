@@ -509,7 +509,15 @@ final class LauncherModel: ObservableObject {
     /// that set complete; the footer and the Play block now agree with it.
     /// The fallback keeps the old answer for the moment before the first scan.
     var canPlay: Bool {
-        dataSet(.campaign)?.isPlayable ?? IOSBridge_HasGameData()
+        dataSet(primarySet)?.isPlayable ?? IOSBridge_HasGameData()
+    }
+
+    /// The set this application is actually about. The campaign build needs
+    /// sp_pak1..4 and does not care about the multiplayer paks; the multiplayer
+    /// build is the other way round, and judging it by the campaign's files
+    /// would grey out Play on a copy that can join every server on the network.
+    var primarySet: DataSetKind {
+        isMultiplayer ? .multiplayer : .campaign
     }
 
     init() {

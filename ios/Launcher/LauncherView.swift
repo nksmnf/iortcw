@@ -393,10 +393,10 @@ struct LauncherView: View {
     /// open the page they are looking at is worse than saying nothing, so it
     /// counts what is missing instead.
     private var readinessDetail: String {
-        if model.canPlay, let set = model.dataSet(.campaign), set.maps > 0 {
+        if model.canPlay, let set = model.dataSet(model.primarySet), set.maps > 0 {
             return String(format: L("%ld карт · %.0f МБ"), set.maps, set.megabytes)
         }
-        guard tab == 0, let set = model.dataSet(.campaign) else {
+        guard tab == 0, let set = model.dataSet(model.primarySet) else {
             return L("Откройте вкладку «Данные»")
         }
         return String(format: L("Не хватает файлов: %ld"),

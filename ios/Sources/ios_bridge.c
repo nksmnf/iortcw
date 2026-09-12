@@ -24,12 +24,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "ios_engine.h"
 #include "ios_bridge.h"
 
-#ifdef IORTCW_MP_BUILD
-#include "../../MP/code/zlib-1.2.11/unzip.h"
-#else
-#include "../../SP/code/zlib-1.2.11/unzip.h"
-#endif
-
 #include <dirent.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -163,58 +157,167 @@ IOSBridge_ScanPak
 Counts one pk3 by walking its central directory.
 ==============
 */
+static unsigned IOSBridge_LE16( const unsigned char *p )
+{
+	return (unsigned)p[0] | ( (unsigned)p[1] << 8 );
+}
+
+static unsigned IOSBridge_LE32( const unsigned char *p )
+{
+	return (unsigned)p[0] | ( (unsigned)p[1] << 8 )
+		| ( (unsigned)p[2] << 16 ) | ( (unsigned)p[3] << 24 );
+}
+
 static void IOSBridge_ScanPak( const char *path, dataFileScan_t *scan )
 {
-	unzFile uf = unzOpen( path );
-	unz_global_info gi;
-	int i;
+	// The zip central directory, read with stdio rather than through the
+	// engine's unzip.
+	//
+	// unzOpen allocates with Z_Malloc, and the launcher runs before Com_Init,
+	// so in the multiplayer engine -- where Z_Malloc really is the zone
+	// allocator -- that dereferences a mainzone that does not exist yet and
+	// takes the process down on the first pk3 it looks at. (The campaign engine
+	// gets away with it only because its Z_Malloc is a plain malloc.)
+	//
+	// Everything wanted here is in the central directory: how many entries,
+	// what each is called, and how big it is uncompressed. That is a short
+	// read, so doing it directly is both the fix and less work than opening
+	// the archive properly.
+	// 64k of comment plus the record itself, off the stack rather than on it.
+	enum { TAIL_MAX = 66000 };
+	unsigned char *buf;
+	FILE *f = fopen( path, "rb" );
+	long size, tailLen, i;
+	long eocd = -1;
+	unsigned entries, cdOffset;
+	unsigned char *cd = NULL;
+	unsigned pos;
 
-	if ( !uf ) {
+	if ( !f ) {
+		return;
+	}
+
+	if ( fseek( f, 0, SEEK_END ) != 0 || ( size = ftell( f ) ) < 22 ) {
+		fclose( f );
+		return;
+	}
+
+	buf = (unsigned char *)malloc( TAIL_MAX );
+	if ( !buf ) {
+		fclose( f );
+		return;
+	}
+
+	// The end-of-central-directory record is last, but a trailing comment of up
+	// to 64k may follow it, so the search window is that plus the record.
+	tailLen = size < (long)TAIL_MAX ? size : (long)TAIL_MAX;
+	if ( fseek( f, size - tailLen, SEEK_SET ) != 0
+		|| fread( buf, 1, (size_t)tailLen, f ) != (size_t)tailLen ) {
+		free( buf );
+		fclose( f );
+		return;
+	}
+
+	for ( i = tailLen - 22; i >= 0; i-- ) {
+		if ( IOSBridge_LE32( buf + i ) == 0x06054b50u ) {
+			eocd = i;
+			break;
+		}
+	}
+
+	if ( eocd < 0 ) {
 		// No end-of-central-directory record yet, which is what a pk3 halfway
 		// through being copied looks like. Left unscanned so the next pass
 		// tries again rather than believing a count of zero.
+		free( buf );
+		fclose( f );
 		return;
 	}
 
-	if ( unzGetGlobalInfo( uf, &gi ) != UNZ_OK ) {
-		unzClose( uf );
+	entries  = IOSBridge_LE16( buf + eocd + 10 );
+	cdOffset = IOSBridge_LE32( buf + eocd + 16 );
+
+	if ( !entries || cdOffset >= (unsigned)size ) {
+		free( buf );
+		fclose( f );
 		return;
 	}
 
-	for ( i = 0; i < (int)gi.number_entry; i++ ) {
-		char name[256];   // MAX_ZPATH, which files.c keeps to itself
-		unz_file_info info;
+	{
+		long cdLen = (long)IOSBridge_LE32( buf + eocd + 12 );
 
-		if ( unzGetCurrentFileInfo( uf, &info, name, sizeof( name ),
-				NULL, 0, NULL, 0 ) != UNZ_OK ) {
-			break;
+		if ( cdLen <= 0 || cdOffset + (unsigned)cdLen > (unsigned)size ) {
+			free( buf );
+			fclose( f );
+			return;
 		}
 
-		scan->entries++;
-		scan->megabytes += (double)info.uncompressed_size / ( 1024.0 * 1024.0 );
+		cd = (unsigned char *)malloc( (size_t)cdLen );
+		if ( !cd ) {
+			free( buf );
+			fclose( f );
+			return;
+		}
 
-		if ( !Q_stricmpn( name, "maps/", 5 ) ) {
-			const char *ext = strrchr( name, '.' );
+		if ( fseek( f, (long)cdOffset, SEEK_SET ) != 0
+			|| fread( cd, 1, (size_t)cdLen, f ) != (size_t)cdLen ) {
+			free( cd );
+			free( buf );
+			fclose( f );
+			return;
+		}
 
-			if ( ext && !Q_stricmp( ext, ".bsp" ) ) {
-				scan->maps++;
+		pos = 0;
+		for ( i = 0; i < (long)entries; i++ ) {
+			char name[256];   // MAX_ZPATH, which files.c keeps to itself
+			unsigned uncompressed, nameLen, extraLen, commentLen, copy;
 
-				// Every multiplayer map id shipped is called mp_something and no
-				// campaign map is. pak0.pk3 belongs to both sets and holds 32
-				// campaign maps; counted under "multiplayer" they would promise
-				// the player three times the maps they can join a server on.
-				if ( !Q_stricmpn( name + 5, "mp_", 3 ) ) {
-					scan->mpMaps++;
+			if ( pos + 46 > (unsigned)cdLen
+				|| IOSBridge_LE32( cd + pos ) != 0x02014b50u ) {
+				break;
+			}
+
+			uncompressed = IOSBridge_LE32( cd + pos + 24 );
+			nameLen      = IOSBridge_LE16( cd + pos + 28 );
+			extraLen     = IOSBridge_LE16( cd + pos + 30 );
+			commentLen   = IOSBridge_LE16( cd + pos + 32 );
+
+			if ( pos + 46 + nameLen > (unsigned)cdLen ) {
+				break;
+			}
+
+			copy = nameLen < sizeof( name ) - 1 ? nameLen : sizeof( name ) - 1;
+			memcpy( name, cd + pos + 46, copy );
+			name[copy] = '\0';
+
+			scan->entries++;
+			scan->megabytes += (double)uncompressed / ( 1024.0 * 1024.0 );
+
+			if ( !Q_stricmpn( name, "maps/", 5 ) ) {
+				const char *ext = strrchr( name, '.' );
+
+				if ( ext && !Q_stricmp( ext, ".bsp" ) ) {
+					scan->maps++;
+
+					// Every multiplayer map id shipped is called mp_something and
+					// no campaign map is. pak0.pk3 belongs to both sets and holds
+					// 32 campaign maps; counted under "multiplayer" they would
+					// promise the player three times the maps they can join a
+					// server on.
+					if ( !Q_stricmpn( name + 5, "mp_", 3 ) ) {
+						scan->mpMaps++;
+					}
 				}
 			}
+
+			pos += 46 + nameLen + extraLen + commentLen;
 		}
 
-		if ( unzGoToNextFile( uf ) != UNZ_OK ) {
-			break;
-		}
+		free( cd );
 	}
 
-	unzClose( uf );
+	free( buf );
+	fclose( f );
 
 	scan->scanned = qtrue;
 }
