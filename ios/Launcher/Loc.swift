@@ -282,6 +282,7 @@ enum Loc {
         "Подключиться": "Connect",
         "Подключиться по адресу": "Connect by address",
         "ботов": "bots",
+        "нужен свой клиент": "needs its own client",
         "Список собирается напрямую с трёх живых мастер-серверов. Боты не считаются за игроков: на большинстве серверов их два-три десятка, и без этого пустой сервер выглядит полным.":
             "The list is gathered straight from the three masters that still answer. Bots are not counted as players: most servers run twenty or thirty, and without that an empty server looks full.",
         "Если вы знаете адрес сервера, его не обязательно искать в списке. Формат: 192.168.1.10:27960":

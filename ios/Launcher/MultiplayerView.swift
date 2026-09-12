@@ -112,6 +112,7 @@ private struct ServerRow: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text(server.name.isEmpty ? server.address : server.name)
                         .font(TypeScale.row)
+                        .foregroundStyle(server.refusesForeignClients ? .secondary : .primary)
                         .lineLimit(1)
 
                     HStack(spacing: Space.s) {
@@ -129,6 +130,12 @@ private struct ServerRow: View {
                         if server.needsPassword {
                             Image(systemName: "lock.fill")
                                 .font(.caption2)
+                        }
+                        if server.refusesForeignClients {
+                            Text("·")
+                            Text(L("нужен свой клиент"))
+                                .font(TypeScale.caption)
+                                .foregroundStyle(.orange)
                         }
                     }
                     .foregroundStyle(.secondary)
