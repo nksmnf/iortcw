@@ -117,8 +117,14 @@ hiding the controls on that leaves a tablet with no way to play at all.
 
 Two gestures work whether or not the controls are shown:
 
-- **three-finger tap** — Escape, the same as the MENU button
+- **three-finger tap** — Escape, the same as the menu button
 - **four-finger tap** — console
+
+The buttons carry glyphs rather than words. They used to be labelled FIRE,
+JUMP, RELOAD and so on, which is English on a port that otherwise speaks
+Russian, and which has to be read where a control over the game has to be
+recognised. The set is drawn in `ios/Sources/ios_icons.c`; `ios/tools/` renders
+it to a contact sheet so it can be looked at without an iPad.
 
 The overlay owns every touch and drives the game's own cursor to the finger.
 Letting SDL synthesise mouse events from touches, which is the obvious way and
