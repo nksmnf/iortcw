@@ -1346,6 +1346,25 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 					if(strstr(filename, "ui.mp.qvm"))
 						pak->referenced |= FS_UI_REF;
 
+					// The game modules as every other platform ships them.
+					//
+					// RTCW multiplayer never shipped QVM modules -- mp_bin.pk3
+					// and every mod pak carry native libraries only, built for
+					// x86. A platform that cannot load those still has to name
+					// the pak they came from, or a pure server sees a client
+					// with no game code and drops it. Opening one of these is
+					// how the statically linked build says which pak its cgame
+					// and ui correspond to; see VM_Create.
+					if(strstr(filename, "cgame_mp_x86.dll")
+						|| strstr(filename, "cgame.mp.i386.so")
+						|| strstr(filename, "cgame.mp.x86_64.so"))
+						pak->referenced |= FS_CGAME_REF;
+
+					if(strstr(filename, "ui_mp_x86.dll")
+						|| strstr(filename, "ui.mp.i386.so")
+						|| strstr(filename, "ui.mp.x86_64.so"))
+						pak->referenced |= FS_UI_REF;
+
 					// DHM -- Nerve :: Don't allow singleplayer maps to be loaded from pak0
 					if ( Q_stricmp( filename + len - 4, ".bsp" ) == 0 &&
 						 Q_stricmp( pak->pakBasename, "pak0" ) == 0 ) {

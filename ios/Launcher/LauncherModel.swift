@@ -446,6 +446,13 @@ final class LauncherModel: ObservableObject {
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
 
+    // Diagnostics. On by default for now: the port is new enough that the next
+    // fix usually starts with a log, and a log nobody switched on is a log
+    // nobody has.
+    @Published var diagVerboseLog: Bool = true
+    @Published var diagPerfHud: Bool = false
+    @Published var diagPerfLog: Bool = true
+
     @Published var controllerName: String? = nil
 
     /// Multiplayer settings, hosting included. Built in both applications so the
@@ -782,6 +789,10 @@ final class LauncherModel: ObservableObject {
         rumbleImpactScale = cvarValue("cg_rumbleImpactScale", rumbleImpactScale)
         hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
 
+        diagVerboseLog   = cvarValue("developer", diagVerboseLog ? 1 : 0) != 0
+        diagPerfHud      = cvarValue("r_perfHud", diagPerfHud ? 1 : 0) != 0
+        diagPerfLog      = cvarValue("r_perfLog", diagPerfLog ? 1 : 0) != 0
+
         migrate(from: stored)
     }
 
@@ -1013,9 +1024,31 @@ final class LauncherModel: ObservableObject {
 
         // Before the write, for the reason spelled out above: a pair stashed
         // after it reaches neither the file nor the engine.
-        if isMultiplayer {
-            mp.commitClient()
-        }
+        //
+        // The multiplayer settings are written on every commit, including a
+        // campaign launch. They are harmless there -- the campaign engine reads
+        // none of them -- and writing them unconditionally means the file is
+        // the same whichever button was pressed.
+        mp.commitClient()
+
+        // Both games keep the statically linked modules. Loading them from the
+        // pk3s is not an option on this platform and never was: RTCW shipped
+        // its multiplayer modules as x86 libraries, not as QVM bytecode, so
+        // there is nothing here an arm64 device could run. Pure servers are
+        // satisfied a different way -- VM_Create names the pak the module
+        // corresponds to, which is what they actually ask for.
+        IOSBridge_SetCvar("vm_static", "1")
+
+        // Diagnostics.
+        //
+        // logfile 2 flushes every line, which is what makes a log survive a
+        // crash -- on a sideloaded build with no debugger that is the only
+        // account of what happened. developer 1 adds the engine's own running
+        // commentary, including why a server was dropped from the browser.
+        IOSBridge_SetCvar("developer", diagVerboseLog ? "1" : "0")
+        IOSBridge_SetCvar("logfile", "2")
+        IOSBridge_SetCvar("r_perfHud", diagPerfHud ? "1" : "0")
+        IOSBridge_SetCvar("r_perfLog", diagPerfLog ? "1" : "0")
 
         IOSBridge_WriteConfig()
     }
@@ -1024,6 +1057,40 @@ final class LauncherModel: ObservableObject {
         IOSDispatch_SetGame(Int32(IORTCW_GAME_CAMPAIGN))
         commit()
         IOSBridge_SetStartupCommand("")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Multiplayer, from the footer button: the game's own menus, nothing
+    /// joined yet.
+    ///
+    /// Goes through commit() like the campaign does, so graphics, stick feel and
+    /// the pad layout are applied to multiplayer too -- they are one set of
+    /// settings for one application.
+    func playMultiplayer() {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
+        commit()
+        mp.save()
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_SetStartupCommand("")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Join a server picked in the browser, or typed in by hand.
+    func connect(to address: String) {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
+        commit()
+        mp.save()
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_SetStartupCommand("connect \(address)")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Start hosting. The server settings themselves are the multiplayer
+    /// model's; this adds the shared ones and the command line.
+    func startHosting() {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
+        commit()
+        mp.applyHosting()
         IOSBridge_LauncherFinished()
     }
 

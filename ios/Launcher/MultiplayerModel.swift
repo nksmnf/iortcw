@@ -293,6 +293,28 @@ final class MultiplayerModel: ObservableObject {
         // triggers the Local Network prompt. Multiplayer needs it on; 1 is IPv4
         // only, which is what every master and nearly every server speaks.
         IOSBridge_SetCvar("net_enabled", "1")
+
+        // The game's own server browser, set so that it shows what is out there.
+        //
+        // Its defaults are not the problem -- these are what a player ends up
+        // with after touching the filter screen once, and several of them are
+        // traps. PunkBuster is the worst: the server never sends that key at
+        // all, so "show only PunkBuster servers" hides every server in the
+        // world. The gametype filter is nearly as bad, because a server running
+        // anything the menu does not list is simply invisible.
+        IOSBridge_SetCvar("ui_joinGametype", "0")        // All
+        IOSBridge_SetCvar("ui_browserShowEmpty", "1")
+        IOSBridge_SetCvar("ui_browserShowFull", "1")
+        IOSBridge_SetCvar("ui_browserShowFriendlyFire", "0")
+        IOSBridge_SetCvar("ui_browserShowMaxlives", "1")
+        IOSBridge_SetCvar("ui_browserShowTourney", "1")
+        IOSBridge_SetCvar("ui_browserShowPunkBuster", "0")
+        IOSBridge_SetCvar("ui_browserShowAntilag", "0")
+
+        // A server is pinged once and never again, so a lost packet or a slow
+        // route means it stays invisible until the next full refresh. 800ms is
+        // tight for a transatlantic server on a tablet's wifi.
+        IOSBridge_SetCvar("cl_maxPing", "2000")
     }
 
     /// Server-side settings, applied only when hosting.
@@ -345,9 +367,9 @@ final class MultiplayerModel: ObservableObject {
     /// dedicated and net_port are both settled before any config is exec'd --
     /// one is CVAR_INIT, the other CVAR_LATCH -- so they go on the command line
     /// rather than into ios_launcher.cfg, where they would simply be ignored.
-    func startHosting() {
-        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
-        commitClient()
+    /// The server half of starting a host. LauncherModel.startHosting() calls
+    /// this after the shared settings have been written.
+    func applyHosting() {
         commitServer()
 
         for (name, value) in rotationCommands() {

@@ -103,6 +103,7 @@ cvar_t  *r_ext_multitexture;
 cvar_t  *r_ext_compiled_vertex_array;
 cvar_t  *r_ext_texture_env_add;
 cvar_t	*r_ext_max_anisotropy;
+cvar_t  *r_hidpi;
 cvar_t  *r_ext_texture_filter_anisotropic;
 
 #ifndef USE_OPENGLES
@@ -1197,6 +1198,10 @@ void R_Register( void ) {
 
 	r_ext_texture_filter_anisotropic = ri.Cvar_Get( "r_ext_texture_filter_anisotropic", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_max_anisotropy = ri.Cvar_Get( "r_ext_max_anisotropy", "2", CVAR_ARCHIVE | CVAR_LATCH );
+	// Render at the display's real pixel size rather than in points.
+	// Halving it is the cheapest way to buy back frame time on a tablet,
+	// which is why it is a setting and not a constant.
+	r_hidpi = ri.Cvar_Get( "r_hidpi", "1", CVAR_ARCHIVE | CVAR_LATCH );
 
 	r_picmip = ri.Cvar_Get( "r_picmip", "1", CVAR_ARCHIVE | CVAR_LATCH ); //----(SA)	mod for DM and DK for id build.  was "1" // JPW NERVE pushed back to 1
 	r_roundImagesDown = ri.Cvar_Get( "r_roundImagesDown", "1", CVAR_ARCHIVE | CVAR_LATCH );

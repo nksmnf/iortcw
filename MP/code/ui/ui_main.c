@@ -1529,8 +1529,14 @@ static void UI_DrawNetGameType( rectDef_t *rect, float scale, vec4_t color, int 
 }
 
 static void UI_DrawJoinGameType( rectDef_t *rect, float scale, vec4_t color, int textStyle ) {
-	if ( ui_joinGameType.integer < 0 || ui_joinGameType.integer > uiInfo.numJoinGameTypes ) {
-		trap_Cvar_Set( "ui_joinGameType", "0" );
+	// >=, not >. numJoinGameTypes is a count, so the last valid index is one
+	// less than it, and the old test let that one value through to read an
+	// entry that was never filled in. Its gtEnum is 0, which is GT_FFA, and
+	// the server list then filters down to the gametype almost nothing runs --
+	// a browser showing one server out of seventy, with no setting to blame.
+	if ( ui_joinGameType.integer < 0 || ui_joinGameType.integer >= uiInfo.numJoinGameTypes ) {
+		trap_Cvar_Set( "ui_joinGametype", "0" );
+		ui_joinGameType.integer = 0;
 	}
 	Text_Paint( rect->x, rect->y, scale, color, UI_TranslateString( uiInfo.joinGameTypes[ui_joinGameType.integer].gameType ), 0, 0, textStyle );
 }
@@ -3075,7 +3081,7 @@ static qboolean UI_JoinGameType_HandleKey(int flags, float *special, int key) {
 			ui_joinGameType.integer = 0;
 		}
 
-		trap_Cvar_SetValue( "ui_joinGameType", ui_joinGameType.integer);
+		trap_Cvar_SetValue( "ui_joinGametype", ui_joinGameType.integer);
 		UI_BuildServerDisplayList(qtrue);
 		return qtrue;
 	}

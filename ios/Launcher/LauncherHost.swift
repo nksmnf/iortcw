@@ -128,7 +128,7 @@ public func IOSLauncher_RunModal() {
             // renderer turns it into the server console rather than dismissing
             // it, and that only works if there is a window to turn into one.
             LauncherHost.shared.present()
-            LauncherHost.shared.model?.mp.startHosting()
+            LauncherHost.shared.model?.startHosting()
         } else if LauncherHost.shared.isSkipping {
             // Still build the model and commit. Loading it reads the stored
             // config back, so this rewrites the player's own settings rather

@@ -632,6 +632,37 @@ vm_t *VM_Create( const char *module, intptr_t (*systemCalls)(intptr_t *),
 
 		if ( sm ) {
 			Com_Printf( "%s: using statically linked native module\n", module );
+
+			// Say which pak this module corresponds to.
+			//
+			// A pure server asks the client for the checksums of the paks its
+			// cgame and ui came from. A statically linked module comes from no
+			// pak at all, so that list came back empty and every pure server
+			// answered "Unpure client detected" -- the whole public network,
+			// unreachable, whatever the player had installed.
+			//
+			// Opening the module file the other platforms load marks its pak as
+			// referenced (see the name tests in FS_FOpenFileRead). We do not
+			// load it -- it is x86 code and this is arm64 -- we only need the
+			// filesystem to name the pak it lives in, which is the same pak the
+			// server is asking about. The mod's pak wins over mp_bin.pk3
+			// because it comes later in the search path, which is also what a
+			// native client would have ended up with.
+			if ( !Q_stricmp( module, "cgame" ) || !Q_stricmp( module, "ui" ) ) {
+				static const char *shapes[] = {
+					"vm/%s.mp.qvm", "%s_mp_x86.dll",
+					"%s.mp.i386.so", "%s.mp.x86_64.so"
+				};
+				fileHandle_t h;
+				int i;
+
+				for ( i = 0; i < (int)ARRAY_LEN( shapes ); i++ ) {
+					if ( FS_FOpenFileRead( va( shapes[i], module ), &h, qfalse ) > 0 ) {
+						FS_FCloseFile( h );
+						break;
+					}
+				}
+			}
 			// dllHandle must be non-NULL so the rest of the engine treats this as
 			// a native module; isStatic keeps VM_Free from trying to unload it.
 			vm->dllHandle = (void *)sm;

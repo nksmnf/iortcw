@@ -62,7 +62,7 @@ struct ServersView: View {
                     Panel(L("Найденные серверы")) {
                         ForEach(browser.visibleServers) { server in
                             ServerRow(server: server) {
-                                mp.connect(to: server.address)
+                                model.connect(to: server.address)
                             }
                             if server.id != browser.visibleServers.last?.id {
                                 Divider()
@@ -80,7 +80,7 @@ struct ServersView: View {
                                 .textInputAutocapitalization(.never)
 
                             Button(L("Подключиться")) {
-                                mp.connect(to: manualAddress)
+                                model.connect(to: manualAddress)
                             }
                             .disabled(manualAddress.isEmpty || !model.canPlay)
                         }
@@ -160,6 +160,7 @@ private struct ServerRow: View {
 // MARK: - Настройки мультиплеера
 
 struct MultiplayerSettingsView: View {
+    @ObservedObject var model: LauncherModel
     @ObservedObject var mp: MultiplayerModel
 
     var body: some View {
@@ -224,6 +225,20 @@ struct MultiplayerSettingsView: View {
                     Toggle(L("Упрощённые предметы"), isOn: $mp.simpleItems)
                     Field(note: L("Перезаряжать автоматически, когда обойма опустела.")) {
                         Toggle(L("Автоперезарядка"), isOn: $mp.autoReload)
+                    }
+                }
+
+                Panel(L("Диагностика")) {
+                    Field(note: L("Подробный лог движка в Documents/main/rtcwconsole.log. Пишется построчно, поэтому переживает вылет — на сборке без отладчика это единственный след.")) {
+                        Toggle(L("Подробный лог"), isOn: $model.diagVerboseLog)
+                    }
+
+                    Field(note: L("Счётчик кадров и время кадра поверх игры.")) {
+                        Toggle(L("Счётчики на экране"), isOn: $model.diagPerfHud)
+                    }
+
+                    Field(note: L("Замеры кадра пишутся в лог — по ним видно, где именно просело.")) {
+                        Toggle(L("Профайлинг в лог"), isOn: $model.diagPerfLog)
                     }
                 }
 
@@ -403,7 +418,7 @@ struct HostView: View {
                 }
 
                 Button {
-                    mp.startHosting()
+                    model.startHosting()
                 } label: {
                     Label(L("Запустить сервер"), systemImage: "play.circle.fill")
                         .frame(maxWidth: .infinity)

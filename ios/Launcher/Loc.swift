@@ -246,6 +246,17 @@ enum Loc {
         "26. Финал": "26. End",
 
 
+
+        // --- диагностика ---
+        "Диагностика": "Diagnostics",
+        "Подробный лог": "Verbose log",
+        "Счётчики на экране": "On-screen counters",
+        "Профайлинг в лог": "Profiling to log",
+        "Подробный лог движка в Documents/main/rtcwconsole.log. Пишется построчно, поэтому переживает вылет — на сборке без отладчика это единственный след.":
+            "The engine's verbose log in Documents/main/rtcwconsole.log. Written line by line, so it survives a crash -- on a build with no debugger that is the only account there is.",
+        "Счётчик кадров и время кадра поверх игры.": "Frame counter and frame time over the game.",
+        "Замеры кадра пишутся в лог — по ним видно, где именно просело.":
+            "Frame timings go to the log, which is what shows where it actually dropped.",
         // --- консоль сервера ---
         "Работает": "Running",
         "Запускается…": "Starting\u{2026}",

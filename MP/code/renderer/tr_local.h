@@ -1209,6 +1209,7 @@ extern cvar_t   *r_ext_compiled_vertex_array;
 extern cvar_t   *r_ext_texture_env_add;
 extern cvar_t   *r_ext_texture_filter_anisotropic;  //DAJ from EF
 extern cvar_t	*r_ext_max_anisotropy;
+extern cvar_t	*r_hidpi;             // iOS: render at native pixel size rather than points
 
 //----(SA)	added
 extern cvar_t   *r_ext_NV_fog_dist;

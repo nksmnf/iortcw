@@ -105,7 +105,7 @@ struct LauncherView: View {
                 case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
                 case 1: CampaignView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
                 case 2: ServersView(model: model, mp: model.mp)
-                case 3: MultiplayerSettingsView(mp: model.mp)
+                case 3: MultiplayerSettingsView(model: model, mp: model.mp)
                 case 4: HostView(model: model, mp: model.mp)
                 case 5: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
                 default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
@@ -493,7 +493,7 @@ struct LauncherView: View {
     /// copies of RTCW are, and the brand red belongs to it.
     private var multiplayerButton: some View {
         Button {
-            model.mp.play()
+            model.playMultiplayer()
         } label: {
             Text(L("Мультиплеер"))
                 .font(.system(size: 20, weight: .heavy))

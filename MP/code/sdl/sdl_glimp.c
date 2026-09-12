@@ -502,11 +502,57 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 	{
 		Com_Memset( &desktopMode, 0, sizeof( SDL_DisplayMode ) );
 
-		ri.Printf( PRINT_ALL,
-				"Cannot determine display aspect, assuming 1.333\n" );
+#if TARGET_OS_IPHONE
+		{
+			// SDL_GetDesktopDisplayMode has been seen to fail here on a second
+			// init, and the 640x480 fallback further down is not a size this
+			// device has. The display bounds come from a different SDL path and
+			// still answer, so ask that before giving up on the real one.
+			SDL_Rect bounds;
+
+			if( SDL_GetDisplayBounds( display < 0 ? 0 : display, &bounds ) == 0 &&
+					bounds.w > 0 && bounds.h > 0 )
+			{
+				desktopMode.w = bounds.w;
+				desktopMode.h = bounds.h;
+			}
+		}
+#endif
+
+		if( desktopMode.h > 0 )
+		{
+			displayAspect = (float)desktopMode.w / (float)desktopMode.h;
+
+			ri.Printf( PRINT_ALL, "Display aspect: %.3f (from display bounds)\n",
+					displayAspect );
+		}
+		else
+		{
+			ri.Printf( PRINT_ALL,
+					"Cannot determine display aspect, assuming 1.333\n" );
+		}
 	}
 
 	ri.Printf (PRINT_ALL, "...setting mode %d:", mode );
+
+#if TARGET_OS_IPHONE
+	// There is one screen and no window mode, so the requested r_mode is never
+	// what we want. It also cannot simply be defaulted: r_mode is CVAR_LATCH and
+	// default.cfg inside pak0.pk3 sets it to 3 before the renderer registers the
+	// cvar, so the config always wins. Force the native resolution instead.
+	if ( mode != -2 ) {
+		ri.Printf( PRINT_ALL, " (ignored on iOS, using native resolution)" );
+		mode = -2;
+
+		// Tell the cvar too, or everything that reads it keeps describing a
+		// resolution the game is not using -- the in-game System menu reads
+		// r_mode and was reporting 640x480 on a 2752x2064 screen.
+		ri.Cvar_Set( "r_mode", "-2" );
+	}
+	// One screen, no window manager: SDL gives us a fullscreen window whatever
+	// is asked for, so say so. GLimp_Init pins r_fullscreen to match.
+	fullscreen = qtrue;
+#endif
 
 	if (mode == -2)
 	{
@@ -555,6 +601,20 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 		SDL_DestroyWindow( SDL_window );
 		SDL_window = NULL;
 	}
+
+#if TARGET_OS_IPHONE
+	// Without this the CAEAGLLayer is created at contentsScale 1 and the game
+	// renders at point resolution (1376x1032 here) before being stretched over a
+	// 2064x2752 panel, which looks soft. With it we get the real pixel size and
+	// glConfig is taken from SDL_GL_GetDrawableSize below.
+	//
+	// r_hidpi 0 has to drop the flag rather than merely ignore the drawable
+	// size: leaving the layer at retina scale while telling the engine it is
+	// half that renders the game into one quarter of the screen.
+	if ( r_hidpi->integer ) {
+		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+	}
+#endif
 
 	if( fullscreen )
 	{
@@ -820,6 +880,36 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 
 		ri.Printf( PRINT_ALL, "Using %d color bits, %d depth, %d stencil display.\n",
 				glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits );
+
+#if TARGET_OS_IPHONE
+		{
+			// With SDL_WINDOW_ALLOW_HIGHDPI the drawable is larger than the
+			// window in points, and everything downstream (viewport, 2D layout,
+			// the mouse/touch scaling) works in glConfig units, so take the real
+			// pixel size here. r_hidpi 0 keeps the point-sized drawable, which
+			// is a cheap way to trade sharpness for frame rate.
+			//
+			// Taken whatever r_hidpi says, because the window that exists *is*
+			// the screen: its own size beats anything guessed before it was
+			// created, including the 640x480 fallback used when SDL cannot
+			// report a display mode. r_hidpi 0 used to keep that guess and put
+			// the game in 640x480 on a 2752x2064 panel.
+			int dw = 0, dh = 0;
+
+			if ( r_hidpi->integer ) {
+				SDL_GL_GetDrawableSize( SDL_window, &dw, &dh );
+			} else {
+				SDL_GetWindowSize( SDL_window, &dw, &dh );
+			}
+
+			if ( dw > 0 && dh > 0 ) {
+				glConfig.vidWidth = dw;
+				glConfig.vidHeight = dh;
+				glConfig.windowAspect = (float)dw / (float)dh;
+				ri.Printf( PRINT_ALL, "Drawable: %d x %d\n", dw, dh );
+			}
+		}
+#endif
 		break;
 	}
 
@@ -1127,6 +1217,18 @@ void GLimp_Init( qboolean fixedFunction )
 
 	ri.Sys_GLimpInit( );
 
+#if TARGET_OS_IPHONE
+	// Pin r_fullscreen to what this platform can actually do, before the window
+	// exists. The cvar is registered CVAR_ARCHIVE, so a config written by any
+	// earlier build holds whatever it held -- 0, in the one this was found in --
+	// while GLimp_SetMode goes fullscreen regardless. GLimp_EndFrame used to
+	// resolve that disagreement with a vid_restart on the first frame of every
+	// launch. Writing the value back is deliberate: it repairs the archived
+	// configs that already carry the wrong one.
+	ri.Cvar_Set( "r_fullscreen", "1" );
+	r_fullscreen->modified = qfalse;
+#endif
+
 	// Create the window and set up the context
 	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer, fixedFunction))
 		goto success;
@@ -1221,9 +1323,34 @@ void GLimp_EndFrame( void )
 	// don't flip if drawing to front buffer
 	if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 )
 	{
+#if TARGET_OS_IPHONE
+		// A GPU-bound frame waits here, and iOS exposes no GPU utilisation to
+		// ask instead, so this is the signal the performance readout reports.
+		int before = Sys_Milliseconds();
+
 		SDL_GL_SwapWindow( SDL_window );
+		Sys_IOS_PerfNoteSwap( Sys_Milliseconds() - before );
+#else
+		SDL_GL_SwapWindow( SDL_window );
+#endif
 	}
 
+#if TARGET_OS_IPHONE
+	// The screen is the window here: there is no windowed mode to switch to,
+	// and GLimp_SetMode creates the window fullscreen whatever the cvar says.
+	// The stock code below compares the cvar against the window flags and reads
+	// any difference as "the user asked to toggle" -- which, with an archived
+	// r_fullscreen 0, was true on the first frame of every launch and cost a
+	// vid_restart: the renderer torn down, every .shader reparsed and every
+	// texture reloaded. Keep the cvar honest instead, and never toggle.
+	if( r_fullscreen->modified )
+	{
+		if( !r_fullscreen->integer )
+			ri.Cvar_Set( "r_fullscreen", "1" );
+
+		r_fullscreen->modified = qfalse;
+	}
+#else
 	if( r_fullscreen->modified )
 	{
 		int         fullscreen;
@@ -1261,4 +1388,5 @@ void GLimp_EndFrame( void )
 
 		r_fullscreen->modified = qfalse;
 	}
+#endif
 }
