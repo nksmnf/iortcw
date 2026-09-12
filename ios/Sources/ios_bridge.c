@@ -1400,3 +1400,202 @@ void Sys_IOS_LauncherReset( void )
 {
 	launcherDone = qfalse;
 }
+
+/*
+==============
+Self-test report
+
+The launcher's copy of what `selftest` found, kept separately from the log ring
+above rather than filtered out of it. The log is a ring, a full run prints a
+great deal of ordinary map-loading chatter, and a report that can be pushed out
+of its own buffer by the noise around it is worse than no report at all.
+
+Rows are stored the way they are written to selftest.txt -- verdict, group,
+name, detail, tab separated, one to a line -- so the launcher has one parser for
+a live run and for a report read back off disk.
+==============
+*/
+#define SELFTEST_BUF_SIZE	( 32 * 1024 )
+
+static char      selfTestBuf[SELFTEST_BUF_SIZE];
+static int       selfTestLen;
+static char      selfTestTitle[64];
+static int       selfTestPassed, selfTestFailed, selfTestSkipped;
+static int       selfTestRunning;
+static unsigned  selfTestVersion;
+static pthread_mutex_t selfTestLock = PTHREAD_MUTEX_INITIALIZER;
+
+void IOSBridge_SelfTestBegin( const char *title )
+{
+	pthread_mutex_lock( &selfTestLock );
+
+	selfTestLen = 0;
+	selfTestBuf[0] = '\0';
+	selfTestPassed = selfTestFailed = selfTestSkipped = 0;
+	selfTestRunning = 1;
+	selfTestVersion++;
+	Q_strncpyz( selfTestTitle, title ? title : "", sizeof( selfTestTitle ) );
+
+	pthread_mutex_unlock( &selfTestLock );
+}
+
+void IOSBridge_SelfTestRow( int verdict, const char *group, const char *name,
+                            const char *detail )
+{
+	char line[420];
+	int  len;
+
+	Com_sprintf( line, sizeof( line ), "%s\t%s\t%s\t%s\n",
+		verdict == 0 ? "PASS" : ( verdict == 1 ? "FAIL" : "SKIP" ),
+		group  ? group  : "",
+		name   ? name   : "",
+		detail ? detail : "" );
+
+	len = (int)strlen( line );
+
+	pthread_mutex_lock( &selfTestLock );
+
+	// Truncating rather than dropping the front: a report is read from the top,
+	// and the rows that ran first are the ones the rest depend on.
+	if ( selfTestLen + len < SELFTEST_BUF_SIZE ) {
+		memcpy( selfTestBuf + selfTestLen, line, (size_t)len );
+		selfTestLen += len;
+		selfTestBuf[selfTestLen] = '\0';
+	}
+
+	switch ( verdict ) {
+		case 0:  selfTestPassed++;  break;
+		case 1:  selfTestFailed++;  break;
+		default: selfTestSkipped++; break;
+	}
+
+	selfTestVersion++;
+
+	pthread_mutex_unlock( &selfTestLock );
+}
+
+void IOSBridge_SelfTestEnd( int passed, int failed, int skipped )
+{
+	pthread_mutex_lock( &selfTestLock );
+
+	selfTestPassed  = passed;
+	selfTestFailed  = failed;
+	selfTestSkipped = skipped;
+	selfTestRunning = 0;
+	selfTestVersion++;
+
+	pthread_mutex_unlock( &selfTestLock );
+}
+
+int IOSBridge_SelfTestSnapshot( char *out, int outSize )
+{
+	int copy;
+
+	if ( !out || outSize <= 0 ) {
+		return 0;
+	}
+
+	pthread_mutex_lock( &selfTestLock );
+
+	copy = selfTestLen;
+	if ( copy > outSize - 1 ) {
+		copy = outSize - 1;
+	}
+	memcpy( out, selfTestBuf, (size_t)copy );
+	out[copy] = '\0';
+
+	pthread_mutex_unlock( &selfTestLock );
+
+	return copy;
+}
+
+int IOSBridge_SelfTestRunning( void )
+{
+	return selfTestRunning;
+}
+
+unsigned IOSBridge_SelfTestVersion( void )
+{
+	return selfTestVersion;
+}
+
+void IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped )
+{
+	pthread_mutex_lock( &selfTestLock );
+
+	if ( passed ) {
+		*passed = selfTestPassed;
+	}
+	if ( failed ) {
+		*failed = selfTestFailed;
+	}
+	if ( skipped ) {
+		*skipped = selfTestSkipped;
+	}
+
+	pthread_mutex_unlock( &selfTestLock );
+}
+
+void IOSBridge_SelfTestTitle( char *out, int outSize )
+{
+	if ( !out || outSize <= 0 ) {
+		return;
+	}
+
+	pthread_mutex_lock( &selfTestLock );
+	Q_strncpyz( out, selfTestTitle, outSize );
+	pthread_mutex_unlock( &selfTestLock );
+}
+
+/*
+==============
+IOSBridge_SelfTestLoadStored
+
+The report from the last run, off disk, for the testing page to show when it is
+opened cold -- the buffer above only holds a run this process performed, and the
+useful case is opening the launcher the next morning to see what the last run
+said.
+
+Read here rather than in Swift because the launcher deliberately never touches
+the file system itself: it runs before the engine exists, so every path it could
+form would be one this file already knows.
+==============
+*/
+int IOSBridge_SelfTestLoadStored( char *out, int outSize )
+{
+	char  path[1024];
+	FILE *f;
+	long  length;
+	size_t got;
+
+	if ( !out || outSize <= 0 ) {
+		return 0;
+	}
+
+	out[0] = '\0';
+
+	Com_sprintf( path, sizeof( path ), "%s/main/selftest.txt",
+		Sys_IOS_DataPath() );
+
+	f = fopen( path, "rb" );
+	if ( !f ) {
+		return 0;		// no run has ever finished on this device
+	}
+
+	fseek( f, 0, SEEK_END );
+	length = ftell( f );
+	fseek( f, 0, SEEK_SET );
+
+	if ( length > outSize - 1 ) {
+		length = outSize - 1;
+	}
+	if ( length < 0 ) {
+		length = 0;
+	}
+
+	got = fread( out, 1, (size_t)length, f );
+	fclose( f );
+
+	out[got] = '\0';
+	return (int)got;
+}

@@ -156,6 +156,21 @@ int IOSBridge_LogSnapshot( char *out, int outSize );
 // again" without comparing the text.
 unsigned IOSBridge_LogVersion( void );
 
+// --- self-test report -------------------------------------------------------
+// Filled by cl_selftest.c as a run goes, read by the launcher's testing page.
+// Kept out of the log ring above on purpose: a full run prints a great deal of
+// map-loading chatter, and a report that can be pushed out of its own buffer by
+// the noise around it is worse than no report at all.
+void IOSBridge_SelfTestBegin( const char *title );
+void IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail );
+void IOSBridge_SelfTestEnd( int passed, int failed, int skipped );
+int  IOSBridge_SelfTestSnapshot( char *out, int outSize );
+int  IOSBridge_SelfTestRunning( void );
+unsigned IOSBridge_SelfTestVersion( void );
+void IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped );
+void IOSBridge_SelfTestTitle( char *out, int outSize );
+int  IOSBridge_SelfTestLoadStored( char *out, int outSize );
+
 // Run a console command, exactly as if it had been typed. Ignored before the
 // engine is up, since there would be nothing to run it.
 void IOSBridge_ExecCommand( const char *command );

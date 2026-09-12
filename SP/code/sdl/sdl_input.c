@@ -688,6 +688,13 @@ static void IN_PadEmuEnsure( void );
 static void IN_PadEmuForget( void );
 static void IN_PadEmuDetach( void );
 
+// The self-test lives in cl_selftest.c and is hooked in from here because
+// this is the one file SP and MP share byte for byte: a registration put in
+// either tree's cl_main.c would have to be kept in step by hand, and the two
+// trees have already drifted everywhere else.
+void CL_SelfTest_Init( void );
+void CL_SelfTestFrame( void );
+
 
 /*
 ===============
@@ -3376,6 +3383,10 @@ void IN_Frame( void )
 	// has been turned on. See PAD EMULATION above.
 	IN_PadEmuFrame( );
 
+	// And the self-test, which drives the pad emulator among other things, so it
+	// has to have moved the run on before the frame it is measuring is read.
+	CL_SelfTestFrame( );
+
 	IN_JoyMove( );
 
 	// If not DISCONNECTED (main menu) or ACTIVE (in game), we're loading
@@ -3594,6 +3605,14 @@ static int   padEmuFrame;
 static float padEmuYawStart, padEmuPitchStart;
 static int   padEmuStartTime;
 static int   padEmuPassed, padEmuFailed;
+
+// The names of the rows that failed, kept so a report written somewhere
+// else can say which ones rather than pointing at a console that may not
+// have survived -- the engine truncates its own log on a game restart, and
+// a run that loads a map is exactly the case where that happens.
+#define PADEMU_MAX_NAMED  6
+static char  padEmuFailedNames[PADEMU_MAX_NAMED][48];
+static int   padEmuFailedNamed;
 static qboolean padEmuQuitWhenDone;   // padtest quit -- for scripted runs
 static int   padEmuAttachCount;       // how many times the device has been put in
 static int   padEmuAttachAtStart;     // what it was when the current run began
@@ -3860,6 +3879,12 @@ static void IN_PadEmuMeasure( const padEmuStep_t *step )
 
 	padEmuFailed++;
 
+	if ( padEmuFailedNamed < PADEMU_MAX_NAMED ) {
+		Q_strncpyz( padEmuFailedNames[padEmuFailedNamed], step->what,
+			sizeof( padEmuFailedNames[0] ) );
+		padEmuFailedNamed++;
+	}
+
 	// Named individually, because which output went wrong is the whole
 	// diagnosis: a turn on a movement-only row and a movement on a look-only
 	// row are two different bugs that feel the same.
@@ -4021,6 +4046,36 @@ static void IN_PadEmuFrame( void )
 
 /*
 ===============
+IN_PadTestResult
+
+What the last table came to, and whether one is still running. The counters are
+private to this file; the self-test needs them to say whether the run it started
+actually finished and what it found.
+===============
+*/
+const char *IN_PadTestFailureName( int index )
+{
+	if ( index < 0 || index >= padEmuFailedNamed ) {
+		return NULL;
+	}
+	return padEmuFailedNames[index];
+}
+
+void IN_PadTestResult( int *passed, int *failed, qboolean *running )
+{
+	if ( passed ) {
+		*passed = padEmuPassed;
+	}
+	if ( failed ) {
+		*failed = padEmuFailed;
+	}
+	if ( running ) {
+		*running = ( padEmuStepIndex >= 0 ) ? qtrue : qfalse;
+	}
+}
+
+/*
+===============
 IN_PadTest_f
 ===============
 */
@@ -4079,6 +4134,7 @@ static void IN_PadTest_f( void )
 		Cvar_VariableString( "in_invertLook" ), Cvar_VariableString( "in_gyro" ),
 		Cvar_VariableString( "in_gyroSens" ), Cvar_VariableString( "in_touchGyro" ) );
 
+	padEmuFailedNamed = 0;
 	padEmuStepIndex = 0;
 	padEmuFrame = 0;
 	padEmuPassed = 0;
@@ -4217,6 +4273,7 @@ void IN_Init( void *windowData )
 	in_padEmulate->modified = qfalse;
 
 	Cmd_AddCommand( "padtest", IN_PadTest_f );
+	CL_SelfTest_Init();
 
 	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
 	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );

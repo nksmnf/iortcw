@@ -1103,6 +1103,25 @@ final class LauncherModel: ObservableObject {
         IOSBridge_LauncherFinished()
     }
 
+    /// Hand over to the engine to run the self-test rather than to play.
+    ///
+    /// Goes through commit() like every other way out of the launcher, and that
+    /// is the point rather than a side effect: the run's first and most useful
+    /// check reads ios_launcher.cfg back and asks the engine whether it agrees
+    /// with it, so the file has to be the one this launcher just wrote.
+    func runSelfTest(full: Bool, multiplayer: Bool) {
+        IOSDispatch_SetGame(Int32(multiplayer ? IORTCW_GAME_MULTIPLAYER
+                                              : IORTCW_GAME_CAMPAIGN))
+        commit()
+        if multiplayer {
+            mp.save()
+            mp.commitClient()
+        }
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_SetStartupCommand(full ? "selftest full" : "selftest")
+        IOSBridge_LauncherFinished()
+    }
+
     /// Start a mission directly, skipping the game's own menus.
     func startMission(_ mission: CampaignMission) {
         commit(missionLoadout: mission.chapter)

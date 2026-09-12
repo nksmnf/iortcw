@@ -93,7 +93,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # The port's own version, separate from the engine's. The engine is iortcw
 # 1.51d-SP wherever it runs; this number is about the iPadOS build.
-set(IORTCW_PORT_VERSION "0.7.1")
+set(IORTCW_PORT_VERSION "0.8.0")
 
 # Build number and commit, both read from git.
 #
@@ -352,7 +352,9 @@ else()
     target_include_directories(iortcw_renderer PRIVATE "${TREE_DIR}/code/SDL2/include")
 
     iortcw_abs(ENGINE_SRC ${IORTCW_ENGINE_SOURCES})
-    list(APPEND ENGINE_SRC "${TREE_DIR}/code/qcommon/vm_static.c")
+    list(APPEND ENGINE_SRC
+        "${TREE_DIR}/code/qcommon/vm_static.c"
+        "${TREE_DIR}/code/client/cl_selftest.c")
 
     set(BOTLIB_SRC ${ENGINE_SRC})
     list(FILTER BOTLIB_SRC INCLUDE REGEX "code/botlib/")
