@@ -174,6 +174,91 @@ void R_RenderShadowEdges( void ) {
 #endif
 }
 
+// The stock extrusion: the ceiling, and what an entity with no known floor
+// still gets.
+#define SHADOW_EXTRUDE_MAX      512.0f
+
+// How far past the shadow plane the far cap is put down. The floor has to be
+// inside the volume, not level with its edge.
+#define SHADOW_EXTRUDE_SLACK    16.0f
+
+/*
+=================
+RB_ShadowExtrudeLength
+
+How far the silhouette is pushed away from the light.
+
+The stock figure is a flat 512 units, and that is what puts a character's
+shadow in the next room. Nothing in this renderer occludes a shadow volume:
+only entities cast and the world does not, so a prism 512 units long carries
+straight on through the wall or the doorway and darkens whatever floor it meets
+on the far side. The volume is doing exactly what it was told. It was told too
+much.
+
+The floor the caster is standing on is the only surface its shadow is meant to
+land on, and cgame already knows where that floor is -- CG_PlayerShadow traces
+straight down for it every frame and hands the answer over as e.shadowPlane,
+for every value of cg_shadows and not only for the projection kind. So the
+volume is cut to the length that just reaches past it. Every floor polygon
+under the silhouette is still enclosed, and there is nothing left over to reach
+the room next door.
+
+It shortens the other stencil artefact by the same stroke. This is a z-pass
+volume, which paints the whole screen when the camera ends up inside it, and a
+volume three times shorter is one the player has to stand three times closer to
+get inside.
+
+Only for entities that have a plane. cgame leaves e.shadowPlane at zero when
+the downward trace found no ground, and for models that are not characters it
+is never set at all; those keep the length they have always had.
+=================
+*/
+static float RB_ShadowExtrudeLength( const vec3_t lightDir ) {
+	vec3_t  ground;
+	float   groundDist, d, maxHeight, reach;
+	int     i;
+
+	if ( backEnd.currentEntity->e.shadowPlane == 0.0f ) {
+		return SHADOW_EXTRUDE_MAX;
+	}
+
+	// World up, expressed in the model space that both tess.xyz and lightDir
+	// are in -- the same vector RB_ProjectionShadowDeform builds, for the same
+	// reason.
+	ground[0] = backEnd.or.axis[0][2];
+	ground[1] = backEnd.or.axis[1][2];
+	ground[2] = backEnd.or.axis[2][2];
+
+	// How much of the light is coming from above. One at or below the horizon
+	// never reaches the floor at all, and dividing by it would ask for a volume
+	// of any length whatsoever.
+	d = DotProduct( lightDir, ground );
+	if ( d < 0.1f ) {
+		return SHADOW_EXTRUDE_MAX;
+	}
+
+	groundDist = backEnd.or.origin[2] - backEnd.currentEntity->e.shadowPlane;
+
+	// The highest vertex sets the length: the volume has to clear the plane
+	// starting from the top of the head, not from the origin.
+	maxHeight = 0.0f;
+	for ( i = 0 ; i < tess.numVertexes ; i++ ) {
+		float h = DotProduct( tess.xyz[i], ground ) + groundDist;
+
+		if ( h > maxHeight ) {
+			maxHeight = h;
+		}
+	}
+
+	if ( maxHeight <= 0.0f ) {
+		return SHADOW_EXTRUDE_MAX;      // wholly below its own floor
+	}
+
+	reach = ( maxHeight + SHADOW_EXTRUDE_SLACK ) / d;
+
+	return reach < SHADOW_EXTRUDE_MAX ? reach : SHADOW_EXTRUDE_MAX;
+}
+
 /*
 =================
 RB_ShadowTessEnd
@@ -190,6 +275,7 @@ void RB_ShadowTessEnd( void ) {
 	int i;
 	int numTris;
 	vec3_t lightDir;
+	float extrude;
 	GLboolean rgba[4];
 
 	if ( glConfig.stencilBits < 4 ) {
@@ -207,6 +293,9 @@ void RB_ShadowTessEnd( void ) {
 
 	VectorCopy( backEnd.currentEntity->lightDir, lightDir );
 
+	// Not a constant any more; see RB_ShadowExtrudeLength.
+	extrude = RB_ShadowExtrudeLength( lightDir );
+
 	// project vertexes away from light direction
 	for ( i = 0 ; i < tess.numVertexes ; i++ ) {
 #ifdef USE_OPENGLES
@@ -215,9 +304,9 @@ void RB_ShadowTessEnd( void ) {
 		// whatever the previous surface had put in those slots, which turned
 		// the stencil pass into garbage and painted the darkening quad over
 		// large slabs of the screen.
-		VectorMA( tess.xyz[i], -512, lightDir, tess.xyz[i + tess.numVertexes] );
+		VectorMA( tess.xyz[i], -extrude, lightDir, tess.xyz[i + tess.numVertexes] );
 #else
-		VectorMA( tess.xyz[i], -512, lightDir, shadowXyz[i] );
+		VectorMA( tess.xyz[i], -extrude, lightDir, shadowXyz[i] );
 #endif
 	}
 
