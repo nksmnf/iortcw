@@ -9,7 +9,7 @@ native controller support including DualSense gyro aim and adaptive triggers, an
 on-screen touch layout, and a dedicated server that runs on the tablet itself.
 
   * **[ios/README.md](ios/README.md)** — building the `.ipa`, the launcher, controls, multiplayer.
-  * **[docs/RU/](docs/RU/)** — notes in Russian: multiplayer, running a server, controller sticks, mission data, the ten fan campaigns and the Russian localisation.
+  * **[docs/RU/](docs/RU/)** — notes in Russian: multiplayer, running a server, controller sticks, mission data, the ten fan campaigns, the Russian localisation, and a study of what an Android build would take ([yphone.md](docs/RU/yphone.md)).
 
 The upstream history is preserved in full. Everything on top of the iortcw
 baseline lives in `ios/` and `docs/RU/`, plus targeted changes across `SP/` and
