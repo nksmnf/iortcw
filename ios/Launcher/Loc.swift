@@ -88,6 +88,29 @@ enum Loc {
         "Не так уж и плохо": "Bring 'em on",
         "Смерть во плоти": "Death incarnate",
         "Миссии": "Missions",
+        "карт": "maps",
+        "МБ": "MB",
+
+        // The campaigns. The retail one, and the ten fan campaigns of the
+        // Russian anthology -- their English names are the ones their authors
+        // released them under, not translations of the Russian.
+        "Оригинальная кампания": "Original campaign",
+        "Врата времени": "Time Gate",
+        "Сталинград": "Stalingrad",
+        "Диверсант": "Saboteur",
+        "Призраки войны": "Ghosts of War",
+        "Красная тревога": "Red Alert",
+        "Спецназ": "Special Forces",
+        "Проект 51": "Project 51",
+        "Проклятие фараона": "Pharaoh's Curse",
+        "Ставка больше, чем жизнь": "The Rate Is More Than Life",
+        "Проект X (демо)": "Project X (demo)",
+
+        // Mission names a campaign gives its own maps.
+        "Прибрежная полоса": "The coastal strip",
+        "Морская крепость": "Sea fortress",
+        "Техническая часть базы": "Base technical section",
+        "Инженерный бункер": "Engineering bunker",
 
         // Graphics
         "Качество": "Quality",

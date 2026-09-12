@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // lives.
 
 #include "ios_engine.h"
+#include "ios_bridge.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -213,6 +214,32 @@ static BOOL IOS_FileLooksComplete( NSString *path )
 
 /*
 ==============
+IOS_CampaignForPak
+
+Which folder a dropped pk3 belongs in, or nil for main/.
+
+The campaigns are known by the one pak each ships as, so a player who drags
+time_gate.pk3 across gets a playable campaign rather than a mod pak sitting in
+main/ overriding the retail menus.
+==============
+*/
+static NSString *IOS_CampaignForPak( NSString *name )
+{
+	int i;
+
+	for ( i = 0; i < IOSBridge_CampaignModCount(); i++ ) {
+		NSString *pak = [NSString stringWithUTF8String:IOSBridge_CampaignModPak( i )];
+
+		if ( [name caseInsensitiveCompare:pak] == NSOrderedSame ) {
+			return [NSString stringWithUTF8String:IOSBridge_CampaignModDir( i )];
+		}
+	}
+
+	return nil;
+}
+
+/*
+==============
 Sys_IOS_ImportLooseData
 
 Move any .pk3 the user has dropped into the top of the app's folder down into
@@ -241,27 +268,72 @@ int Sys_IOS_ImportLooseData( void )
 
 		// Any subfolder that is not main/ is worth a look -- most likely a
 		// dropped-in "Main" from the original install.
+		//
+		// Except a campaign's own folder. Those hold a mod the engine plays
+		// with fs_game pointed at them, and sweeping their pak into main/
+		// would both break the campaign and overwrite the retail menus with
+		// its own -- the campaign would be unplayable and the base game would
+		// come up wearing its title screen.
 		for ( NSString *entry in [fm contentsOfDirectoryAtPath:root error:nil] ) {
 			NSString *full = [root stringByAppendingPathComponent:entry];
 			BOOL isDir = NO;
 
 			if ( [fm fileExistsAtPath:full isDirectory:&isDir] && isDir &&
-				 [entry caseInsensitiveCompare:@"main"] != NSOrderedSame ) {
+				 [entry caseInsensitiveCompare:@"main"] != NSOrderedSame &&
+				 !IOSBridge_IsCampaignModDir( [entry UTF8String] ) &&
+				 ![entry isEqualToString:@"logs"] ) {
 				[searchDirs addObject:full];
 			}
 		}
 
 		for ( NSString *dir in searchDirs ) {
 			for ( NSString *entry in [fm contentsOfDirectoryAtPath:dir error:nil] ) {
-				NSString *src, *target;
+				NSString *src, *target, *into = dest;
+				NSString *campaign = IOS_CampaignForPak( entry );
 				NSError *err = nil;
+
+				// The one file that is not a pk3 and still has to be filed.
+				//
+				// Multiplayer's Russian strings are in scripts/translation.cfg,
+				// which the anthology ships loose rather than in a pak -- and
+				// that is what makes it work on pure servers, where a .cfg on
+				// disk is still read and an unlisted pak is outranked. Left at
+				// the top level it would do nothing at all, for ever.
+				if ( [entry caseInsensitiveCompare:@"translation.cfg"] == NSOrderedSame ) {
+					NSString *scripts = [dest stringByAppendingPathComponent:@"scripts"];
+
+					[fm createDirectoryAtPath:scripts withIntermediateDirectories:YES
+								   attributes:nil error:nil];
+
+					src = [dir stringByAppendingPathComponent:entry];
+					target = [scripts stringByAppendingPathComponent:@"translation.cfg"];
+
+					[fm removeItemAtPath:target error:nil];
+
+					if ( [fm moveItemAtPath:src toPath:target error:nil] ) {
+						Com_Printf( "Imported translation.cfg into main/scripts/\n" );
+						moved++;
+					}
+
+					continue;
+				}
 
 				if ( [[entry pathExtension] caseInsensitiveCompare:@"pk3"] != NSOrderedSame ) {
 					continue;
 				}
 
+				// A campaign's pak is filed into its own folder, made here if
+				// this is the first of them: the player only has to drop the
+				// file in, and the launcher finds a campaign where it looks
+				// for one.
+				if ( campaign ) {
+					into = [root stringByAppendingPathComponent:campaign];
+					[fm createDirectoryAtPath:into withIntermediateDirectories:YES
+								   attributes:nil error:nil];
+				}
+
 				src = [dir stringByAppendingPathComponent:entry];
-				target = [dest stringByAppendingPathComponent:[entry lowercaseString]];
+				target = [into stringByAppendingPathComponent:[entry lowercaseString]];
 
 				if ( [fm fileExistsAtPath:target] ) {
 					// Already have it; drop the stray copy rather than leaving
@@ -276,7 +348,8 @@ int Sys_IOS_ImportLooseData( void )
 				}
 
 				if ( [fm moveItemAtPath:src toPath:target error:&err] ) {
-					Com_Printf( "Imported %s into main/\n", [entry UTF8String] );
+					Com_Printf( "Imported %s into %s/\n", [entry UTF8String],
+						campaign ? [campaign UTF8String] : "main" );
 					moved++;
 				} else {
 					os_log_error( OS_LOG_DEFAULT, "iORTCW: cannot move %{public}s: %{public}s",

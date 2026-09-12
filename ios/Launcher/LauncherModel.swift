@@ -239,6 +239,118 @@ struct CampaignMission: Identifiable, Hashable {
     ]
 }
 
+/// A campaign the launcher can start: the retail one, or one of the fan
+/// campaigns from the Russian anthology installed beside it.
+///
+/// Those are pure data -- maps, AAS, scripts, menus, text, sound -- and this
+/// engine plays them unmodified, each out of a folder of its own with fs_game
+/// pointed at it. The bridge owns the list of folders, because the importer has
+/// to know it too; what lives here is what only the launcher cares about: what
+/// to call a campaign and which maps it contains, in which order.
+///
+/// The order is not guesswork. It is the chain of `changelevel` commands in the
+/// campaign's own .ai scripts -- how RTCW actually moves the player from one
+/// map to the next -- read out of each pk3. Maps outside that chain are left
+/// out on purpose: they are duplicates of retail levels the campaign ships
+/// unchanged, or test maps its author never wired up, and neither is part of
+/// the story it tells.
+///
+/// Mission names are the map names, with the campaign's own title where it
+/// gives one in its briefing. Inventing Russian names for a hundred maps whose
+/// authors never named them would put words in their mouths, and the player
+/// picking a mission out of the grid is served by the name the game itself
+/// uses.
+struct Campaign: Identifiable, Hashable {
+    let id: String              // fs_game folder; empty is the retail campaign
+    let title: String
+    let maps: [String]
+    let names: [String: String] // map -> the campaign's own name for it
+
+    var isRetail: Bool { id.isEmpty }
+    var startMap: String { maps.first ?? "" }
+
+    var missions: [CampaignMission] {
+        guard !isRetail else { return CampaignMission.all }
+
+        // Translated here rather than at the tile: the number is part of the
+        // title the retail campaign already carries, so a tile that put one in
+        // front of what it was given would number those twice. Read on every
+        // redraw, which is what a language switch causes.
+        return maps.enumerated().map { index, map in
+            let name = names[map].map { Loc.s($0) } ?? map
+            return CampaignMission(id: map, title: "\(index + 1). \(name)")
+        }
+    }
+
+    static let retail = Campaign(id: "", title: "Оригинальная кампания",
+                                 maps: CampaignMission.all.map(\.id), names: [:])
+
+    /// The ten campaigns of the anthology, every one of them verified to load
+    /// on this engine. Ordered the way the anthology's own installer lists
+    /// them: the full-length ones first, the demo last.
+    static let extras: [Campaign] = [
+        Campaign(id: "time_gate", title: "Врата времени",
+                 maps: ["cutscene1", "tomb2", "tomb3", "tomb4", "vil01", "vil02",
+                        "berg", "bergwerk", "ber", "labor1", "labor1a", "labor2",
+                        "labor3", "fin"],
+                 names: [:]),
+
+        Campaign(id: "stalingrad", title: "Сталинград",
+                 maps: ["cutscene1", "demo1", "demo2", "demo3", "cine8", "demo4",
+                        "demo5", "cine9", "demo6", "demo7", "demo8", "demo9",
+                        "demo55a", "demo10", "cine5"],
+                 names: [:]),
+
+        Campaign(id: "saboteur", title: "Диверсант",
+                 maps: ["normandy", "seabase", "techicalbunker", "support",
+                        "UnderBase", "UnderBase2", "SecretWeapon",
+                        "SecretWeapon2", "Endmission"],
+                 names: ["normandy": "Прибрежная полоса",
+                         "seabase": "Морская крепость",
+                         "techicalbunker": "Техническая часть базы",
+                         "support": "Инженерный бункер"]),
+
+        Campaign(id: "ghosts_of_war", title: "Призраки войны",
+                 maps: ["cutscene1", "roadtobase2", "darkforest", "darkcastle",
+                        "darkchurch", "darkcrypt1", "darkcrypt2", "statement",
+                        "darkend"],
+                 names: [:]),
+
+        Campaign(id: "red_alert", title: "Красная тревога",
+                 maps: ["cutscene1", "50a", "50b", "50b_1", "50c", "505", "50d",
+                        "50e", "506", "50e_1", "50f", "50j"],
+                 names: [:]),
+
+        Campaign(id: "special_forces", title: "Спецназ",
+                 maps: ["cutscene1", "30s", "30", "30a", "30b", "30c", "30d",
+                        "30f", "30j"],
+                 names: [:]),
+
+        Campaign(id: "project_51", title: "Проект 51",
+                 maps: ["cutscene1", "pro2", "pro3", "pro4", "pro5", "pro6",
+                        "pro7", "pro8", "pro9", "pro10", "pro11", "pro12"],
+                 names: [:]),
+
+        Campaign(id: "pharaohs_curse", title: "Проклятие фараона",
+                 maps: ["intro_grobnica", "level1", "level2", "level3", "level4",
+                        "level5"],
+                 names: [:]),
+
+        // The one campaign whose .ai scripts name no successor: it moves the
+        // player on from trigger entities inside the maps instead. Listed in
+        // the order its own pk3 numbers them.
+        Campaign(id: "the_rate_is_more_than_life", title: "Ставка больше, чем жизнь",
+                 maps: ["dd", "2222", "77", "map4_1", "map5"],
+                 names: [:]),
+
+        Campaign(id: "project_x", title: "Проект X (демо)",
+                 maps: ["piramid", "tomb1"],
+                 names: [:]),
+    ]
+
+    static let all: [Campaign] = [retail] + extras
+}
+
 /// Which of the two sets of game data something belongs to.
 ///
 /// The raw values are the engine side's IOS_DATA_SET_*, and they are written
@@ -381,6 +493,57 @@ final class LauncherModel: ObservableObject {
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
+
+    // MARK: - Кампания
+
+    /// Which campaign the Campaign tab is showing, as its fs_game folder.
+    ///
+    /// Kept in UserDefaults rather than in ios_launcher.cfg, because it is not
+    /// a cvar: fs_game is read by FS_Startup before any config is exec'd, so it
+    /// reaches the engine on the command line and nothing would ever read it
+    /// back out of the file. Remembered all the same -- a player halfway
+    /// through a fan campaign should not land on the retail one every launch.
+    @Published var campaignID: String = UserDefaults.standard.string(forKey: "IORTCWCampaign") ?? "" {
+        didSet {
+            guard campaignID != oldValue else { return }
+            UserDefaults.standard.set(campaignID, forKey: "IORTCWCampaign")
+        }
+    }
+
+    /// Which of the extra campaigns are actually on the device, refreshed by
+    /// the same once-a-second poll that watches for the retail paks.
+    @Published var installedCampaigns: [String] = []
+
+    /// The campaign in play, falling back to the retail one if what was
+    /// remembered has since been deleted off the device.
+    var campaign: Campaign {
+        guard let found = Campaign.all.first(where: { $0.id == campaignID }),
+              found.isRetail || installedCampaigns.contains(found.id) else {
+            return .retail
+        }
+
+        return found
+    }
+
+    /// What the picker offers: the retail campaign always, and every extra one
+    /// whose pak is installed and readable.
+    var availableCampaigns: [Campaign] {
+        [.retail] + Campaign.extras.filter { installedCampaigns.contains($0.id) }
+    }
+
+    /// How many maps and how much data an installed campaign holds, straight
+    /// from the bridge's scan of its pk3.
+    func campaignSummary(_ campaign: Campaign) -> (maps: Int, megabytes: Double)? {
+        guard !campaign.isRetail else { return nil }
+
+        for index in 0..<Int(IOSBridge_CampaignModCount())
+        where String(cString: IOSBridge_CampaignModDir(Int32(index))) == campaign.id {
+            return (Int(IOSBridge_CampaignModMaps(Int32(index))),
+                    IOSBridge_CampaignModMegabytes(Int32(index)))
+        }
+
+        return nil
+    }
 
     // MARK: - Раздельные оси
 
@@ -541,6 +704,12 @@ final class LauncherModel: ObservableObject {
         loadDefaults()
         observeControllers()
 
+        // The game's language follows the launcher's, including across a
+        // restart: the paks may have been copied in since the last run, or the
+        // language chosen on a launch where they were not there yet. Costs a
+        // pair of stats when nothing has to move.
+        applyLanguage(Loc.current, writeConfig: false)
+
         // The whole point of polling: the user copies files in through Files.app
         // with this screen open, and the checklist should tick over as they land
         // rather than making them relaunch.
@@ -580,6 +749,19 @@ final class LauncherModel: ObservableObject {
         let fresh = DataSetKind.allCases.map { snapshot(of: $0) }
         if fresh != dataSets {
             dataSets = fresh
+        }
+
+        // Same treatment for the extra campaigns: their folders are watched by
+        // this poll, so a campaign copied in with the launcher open turns up in
+        // the picker without a relaunch.
+        var present: [String] = []
+        for index in 0..<Int(IOSBridge_CampaignModCount())
+        where IOSBridge_CampaignModInstalled(Int32(index)) {
+            present.append(String(cString: IOSBridge_CampaignModDir(Int32(index))))
+        }
+
+        if present != installedCampaigns {
+            installedCampaigns = present
         }
     }
 
@@ -1056,6 +1238,7 @@ final class LauncherModel: ObservableObject {
     func play() {
         IOSDispatch_SetGame(Int32(IORTCW_GAME_CAMPAIGN))
         commit()
+        beginSession()
         IOSBridge_SetStartupCommand("")
         IOSBridge_LauncherFinished()
     }
@@ -1096,8 +1279,83 @@ final class LauncherModel: ObservableObject {
 
     /// Start a mission directly, skipping the game's own menus.
     func startMission(_ mission: CampaignMission) {
-        commit(missionLoadout: mission.chapter)
+        // The mission loadout is the retail campaign's own table of what the
+        // player should be carrying by that chapter. A fan campaign has its
+        // own progression and its maps hand out their own weapons, so it gets
+        // none: guessing a chapter number for someone else's level would arm
+        // the player with whatever the retail game hands out at that point.
+        commit(missionLoadout: campaign.isRetail ? mission.chapter : 0)
+        beginSession()
         IOSBridge_SetStartupCommand("spmap \(mission.id)")
         IOSBridge_LauncherFinished()
     }
+
+    /// Start the selected campaign from its first map.
+    func startCampaign() {
+        guard let first = campaign.missions.first else {
+            play()
+            return
+        }
+
+        startMission(first)
+    }
+
+    /// Everything that has to happen between "the player pressed start" and the
+    /// engine coming up: point it at the right game folder, and keep the last
+    /// run's log before this one truncates it.
+    private func beginSession() {
+        let tag = campaign.isRetail ? "main" : campaign.id
+
+        // fs_game is read by FS_Startup, long before the first exec, so the
+        // command line is the only way in. The multiplayer build uses the same
+        // slot for its dedicated-server arguments and has no campaign picker,
+        // so it is left alone there.
+        if !isMultiplayer {
+            IOSBridge_SetExtraArgs(campaign.isRetail ? "" : "+set fs_game \(campaign.id)")
+        }
+
+        IOSBridge_RotateLog(tag)
+    }
+
+    /// Follow the launcher's language with the game's own.
+    ///
+    /// The anthology's Russian paks override the retail text, menus, fonts and
+    /// -- for the campaign -- the dubbed dialogue, and their names put them
+    /// last in the search order, where nothing can outrank them. So switching
+    /// the launcher to English has to take the files themselves out of the
+    /// path; the bridge does that by renaming them, which costs nothing even
+    /// for the 163MB of sound.
+    ///
+    /// Multiplayer also gets cl_language, and that one deserves a note: the
+    /// anthology ships its in-game Russian strings in the *French* slot of
+    /// scripts/translation.cfg, because a stock 1.41 client has no Russian slot
+    /// to put them in. So "French" here means Russian, and it is the only way
+    /// those strings reach the screen -- including on pure servers, where the
+    /// Russian pak itself is outranked by the server's own paks but a .cfg on
+    /// disk is still read.
+    func applyLanguage(_ language: Loc.Language, writeConfig: Bool = true) {
+        let russian = language == .russian
+
+        if IOSBridge_RussianPaksPresent() {
+            _ = IOSBridge_SetRussianPaks(russian)
+        }
+
+        if isMultiplayer {
+            IOSBridge_SetCvar("cl_language", russian ? "1" : "0")
+
+            // Not from init: the settings have only just been read back and
+            // writing them out again before the player has touched anything
+            // would be a round trip for nothing. Play and every other commit
+            // writes the file anyway.
+            if writeConfig {
+                IOSBridge_WriteConfig()
+            }
+        }
+
+        refreshData()
+    }
+
+    /// Are the Russian game files installed at all? The language switch says so
+    /// when they are not, rather than silently doing nothing.
+    var hasRussianPaks: Bool { IOSBridge_RussianPaksPresent() }
 }
