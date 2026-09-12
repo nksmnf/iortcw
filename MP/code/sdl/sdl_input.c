@@ -667,7 +667,8 @@ static int   gyroAxis[2];      // [0] pitch, [1] yaw, as last written to the axe
 // makes a zero from one half quieten that half and nothing else.
 #define GYRO_SRC_PAD     0   // the controller's own sensor
 #define GYRO_SRC_TABLET  1   // the iPad's, out of CoreMotion
-#define GYRO_SRC_COUNT   2
+#define GYRO_SRC_EMU     2   // padtest's, so a run can exercise gyro aiming
+#define GYRO_SRC_COUNT   3
 
 static int gyroSource[GYRO_SRC_COUNT][2];   // [source][0] pitch, [1] yaw
 
@@ -3500,6 +3501,12 @@ typedef struct
 	// Not a thing the step itself checks -- the row after it is what catches
 	// what goes wrong.
 	qboolean flip;
+
+	// Gyro to hold alongside the sticks, in view degrees per second, the way
+	// the player would read it off a settings screen: positive yaw to the
+	// right, positive pitch downwards. Trailing fields, so every row written
+	// before the gyro existed keeps a quiet gyro without being touched.
+	float gyroPitch, gyroYaw;
 } padEmuStep_t;
 
 static const padEmuStep_t padEmuScript[] =
@@ -3540,6 +3547,35 @@ static const padEmuStep_t padEmuScript[] =
 	// is.
 	{ "left stick right, mode switched under it",
 	                                     1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ANY,   PADEMU_ANY,   PADEMU_ZERO, PADEMU_ZERO, qtrue },
+
+	// The gyro on its own, which is the whole of the aim for a player who has
+	// put the sticks down. It goes in through a source of its own rather than
+	// the controller's: the pad is polled every frame and reports a quiet
+	// sensor as zero, so anything written into the controller's row would be
+	// wiped before the frame ended.
+	//
+	// These rows exist because this is precisely what was missing. Multiplayer
+	// carried the 2003 CL_JoystickMove, which reads four axes and stops, so the
+	// gyro axes were filled every frame by a backend that both games share and
+	// then read by neither -- the setting was on, the sensor was working, and
+	// the view did not move. Nothing in the table caught it, because nothing in
+	// the table had ever asked the gyro a question.
+	{ "gyro turning right",              0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO, qfalse,
+	                                       0.0f, 220.0f },
+	{ "gyro turning left",               0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO, qfalse,
+	                                       0.0f, -220.0f },
+	{ "gyro looking up",                 0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_FULL, qfalse,
+	                                    -190.0f,   0.0f },
+	{ "gyro looking down",               0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, qfalse,
+	                                     190.0f,   0.0f },
+
+	// Gyro and stick together, which is how gyro aim is actually played: the
+	// stick makes the big turn and the wrist corrects inside it. The two are
+	// added, so a stick turn with the gyro pulling the other way has to come
+	// out as very little -- if either one wins outright, they are not being
+	// mixed but chosen between.
+	{ "gyro against the stick",          0.00f,  0.00f,  1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_ZERO, qfalse,
+	                                       0.0f, -220.0f },
 
 	// And nothing at all, which has to come out as nothing at all. A row that
 	// fails here is something else writing the axes -- a gyro, a stuck touch,
@@ -3853,6 +3889,21 @@ static void IN_PadEmuMeasure( const padEmuStep_t *step )
 
 /*
 ===============
+IN_PadEmuGyro
+
+Holds a gyro reading for as long as a step asks for it, in the units the axes
+are carried in.
+===============
+*/
+static void IN_PadEmuGyro( float pitch, float yaw )
+{
+	IN_GyroContribute( GYRO_SRC_EMU,
+		(int)( pitch * GYRO_AXIS_SCALE ),
+		(int)( yaw   * GYRO_AXIS_SCALE ) );
+}
+
+/*
+===============
 IN_PadEmuFrame
 
 Called once a frame from IN_Frame, before the pad is read.
@@ -3960,10 +4011,12 @@ static void IN_PadEmuFrame( void )
 		// than from wherever the last one left the stick. A digital movement key
 		// that is still held would otherwise be credited to the step after it.
 		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+		IN_PadEmuGyro( 0.0f, 0.0f );
 		return;
 	}
 
 	IN_PadEmuWrite( step->lx, step->ly, step->rx, step->ry );
+	IN_PadEmuGyro( step->gyroPitch, step->gyroYaw );
 }
 
 /*
@@ -4001,11 +4054,22 @@ static void IN_PadTest_f( void )
 	// table would come out all zeroes and read as a pass.
 	if ( CL_UIActive() ) {
 		Com_Printf( "padtest: start a map first -- nothing moves while a menu or a loading screen is up\n" );
+		// Which of the two reasons it was, because from a script they look the
+		// same and the difference decides what to do next: a key catcher means
+		// something is on screen waiting to be dismissed, a connection state
+		// means the map is not running yet and waiting longer is the answer.
+		Com_Printf( "         keycatcher %d, connection state %d\n",
+			Key_GetCatcher(), (int)clc.state );
 		return;
 	}
 
 	Com_Printf( "\npadtest: %d steps. Turn is positive to the right, look is positive upwards.\n",
 		(int)ARRAY_LEN( padEmuScript ) );
+	// The gyro rows put their reading straight onto the shared total, which is
+	// downstream of in_gyro: they ask whether the engine turns the view when
+	// the axes carry something, not whether the switch is on. A run with gyro=0
+	// on the line below and the gyro rows passing is correct, not a contradiction.
+	Com_Printf( "padtest: the gyro rows drive the axes directly, so they do not test the in_gyro switch.\n" );
 	Com_Printf( "padtest: direct=%s digital=%s dpad=%s deadzone=%s yawSpeed=%s pitchSpeed=%s"
 		" stickExpo=%s moveExpo=%s invert=%s gyro=%s gyroSens=%s touchGyro=%s\n\n",
 		Cvar_VariableString( "in_gamepadDirect" ), Cvar_VariableString( "in_moveDigital" ),
