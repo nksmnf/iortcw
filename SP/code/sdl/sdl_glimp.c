@@ -1326,10 +1326,10 @@ void GLimp_EndFrame( void )
 #if TARGET_OS_IPHONE
 		// A GPU-bound frame waits here, and iOS exposes no GPU utilisation to
 		// ask instead, so this is the signal the performance readout reports.
-		int before = Sys_Milliseconds();
+		double before = Sys_IOS_PerfSeconds();
 
 		SDL_GL_SwapWindow( SDL_window );
-		Sys_IOS_PerfNoteSwap( Sys_Milliseconds() - before );
+		Sys_IOS_PerfNoteSwap( ( Sys_IOS_PerfSeconds() - before ) * 1000.0 );
 #else
 		SDL_GL_SwapWindow( SDL_window );
 #endif

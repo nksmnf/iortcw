@@ -81,6 +81,10 @@ qboolean    Sys_IOS_HasHardwareKeyboard( void );
 void        Sys_IOS_PerfInit( void *parentView );
 void        Sys_IOS_PerfFrame( void );
 void        Sys_IOS_PerfNoteSwap( double ms );
+
+// A monotonic clock in seconds, finer than Sys_Milliseconds. For the swap
+// timing above, which at 120Hz is a couple of milliseconds all told.
+double      Sys_IOS_PerfSeconds( void );
 void        Sys_IOS_GyroInit( void );
 void        Sys_IOS_GyroFrame( void );
 void        Sys_IOS_GyroShutdown( void );

@@ -582,22 +582,88 @@ enum Loc {
 
         "note.perfHud": (
             ru: """
-                Полоска поверх игры: кадры в секунду, время кадра, частота \
-                экрана, процессор, память и счётчики рендера.
+                Полоска поверх игры, слева направо:
+
+                60 FPS — кадров в секунду за последние полсекунды.
+
+                8.3/16.4 ms — среднее время кадра и худший кадр за то же \
+                окно. Рывки видно во втором числе: среднее их сглаживает.
+
+                120 Hz — частота, которую экран выдаёт на самом деле. \
+                ProMotion меняет её сам, поэтому она измеряется, а не берётся \
+                из паспорта.
+
+                CPU 142%/800% — процессор, всеми потоками процесса сразу. \
+                100% — это одно ядро целиком, а не весь планшет; второе число \
+                говорит, сколько ядер сейчас доступно. 142% из 800% — это \
+                «полтора ядра занято», а не перегрузка.
+
+                GPU 3.1 ms 38% — сколько кадр простоял в ожидании видеочасти \
+                и какая это доля кадра. Собственной загрузки видеоядра \
+                iPadOS не отдаёт никакому приложению, так что это ближайшее к \
+                ней честное измерение: чем ближе доля к сотне, тем вернее \
+                упор в GPU, а не в процессор.
+
+                RSS 512 MB — физическая память, занятая процессом прямо \
+                сейчас.
+
+                VM 3.4 GB — отображённое адресное пространство. У \
+                64-битного процесса оно велико по определению, и смотреть \
+                стоит на его рост, а не на саму цифру.
+
+                840 surf, 120k tri — поверхности и треугольники, отданные на \
+                последнем кадре. 42 ent — сущности из последнего снимка \
+                сервера.
                 """,
             en: """
-                A strip over the game: frames per second, frame time, screen \
-                refresh, CPU, memory and the renderer's counters.
+                A strip over the game, left to right:
+
+                60 FPS -- frames per second over the last half second.
+
+                8.3/16.4 ms -- the average frame and the worst frame of that \
+                same window. Stutter shows up in the second number; the \
+                average smooths it away.
+
+                120 Hz -- what the display is actually running at. ProMotion \
+                changes it on its own, so it is measured rather than assumed.
+
+                CPU 142%/800% -- the processor, every thread of the process \
+                together. 100% is one core saturated, not the whole tablet, \
+                and the second figure is how many cores are available right \
+                now. 142% out of 800% means "a core and a half busy", not a \
+                machine in trouble.
+
+                GPU 3.1 ms 38% -- how long the frame spent waiting on the \
+                graphics side, and what share of the frame that is. iPadOS \
+                gives no application the GPU's own utilisation, so this is \
+                the closest honest measurement of it: the nearer the share \
+                gets to a hundred, the more certain it is the GPU and not the \
+                CPU that is the limit.
+
+                RSS 512 MB -- the physical memory the process holds right now.
+
+                VM 3.4 GB -- the address space it has mapped. On a 64-bit \
+                process that is large by definition; watch it for growth \
+                rather than for its size.
+
+                840 surf, 120k tri -- surfaces and triangles submitted on the \
+                last frame. 42 ent -- entities in the last snapshot from the \
+                server.
                 """),
 
         "note.perfLog": (
             ru: """
                 Те же замеры в main/perf.csv, по строке на полсекунды — по ним \
-                видно, где именно просело.
+                видно, где именно просело. В файле столбцов больше, чем в \
+                полоске: карта, com_maxfps и footprint — та память, по которой \
+                система решает, выгружать приложение или нет.
                 """,
             en: """
                 The same measurements in main/perf.csv, a row every half \
-                second, which is what shows where it actually dropped.
+                second, which is what shows where it actually dropped. The \
+                file carries more columns than the strip: the map, com_maxfps, \
+                and the footprint -- the memory figure the system goes by when \
+                it decides whether to evict the app.
                 """),
 
         "note.verboseLog": (
