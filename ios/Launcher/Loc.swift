@@ -197,6 +197,7 @@ enum Loc {
         "Диагностика": "Diagnostics",
         "Панель производительности": "Performance readout",
         "Запись производительности в perf.csv": "Log performance to perf.csv",
+        "Подробный лог движка": "Verbose engine log",
         "Запись событий контроллера в лог": "Log controller events",
         "Раскладка": "Layout",
         "Проверка контроллера…": "Controller test…",
@@ -308,15 +309,6 @@ enum Loc {
         "мастер-серверы": "master servers",
         "загрузка карты": "map load",
         "таблица стиков и гироскопа": "stick and gyro table",
-        // --- диагностика ---
-        "Подробный лог": "Verbose log",
-        "Счётчики на экране": "On-screen counters",
-        "Профайлинг в лог": "Profiling to log",
-        "Подробный лог движка в Documents/main/rtcwconsole.log. Пишется построчно, поэтому переживает вылет — на сборке без отладчика это единственный след.":
-            "The engine's verbose log in Documents/main/rtcwconsole.log. Written line by line, so it survives a crash -- on a build with no debugger that is the only account there is.",
-        "Счётчик кадров и время кадра поверх игры.": "Frame counter and frame time over the game.",
-        "Замеры кадра пишутся в лог — по ним видно, где именно просело.":
-            "Frame timings go to the log, which is what shows where it actually dropped.",
         // --- консоль сервера ---
         "Работает": "Running",
         "Запускается…": "Starting\u{2026}",
@@ -329,8 +321,9 @@ enum Loc {
         "Перезапустить карту": "Restart map",
         "Остановить": "Stop",
         // --- Мультиплеер: вкладки и экраны ---
+        // "Мультиплеер" itself is up with the campaign's action names, which is
+        // where it was first needed.
         "Серверы": "Servers",
-        "Мультиплеер": "Multiplayer",
         "Свой сервер": "Host",
 
         // Поиск игры
@@ -362,7 +355,6 @@ enum Loc {
         "Снимков в секунду": "Snapshots per second",
         "Докачивать карты с сервера": "Download maps from the server",
         "Экран боя": "Heads-up display",
-        "Вид прицела": "Crosshair",
         "Счётчик кадров": "Frame counter",
         "Лагометр": "Lagometer",
         "Кровь": "Blood",
@@ -375,10 +367,9 @@ enum Loc {
             "How many world snapshots the server sends you per second. You cannot receive more than it sends.",
         "Больше половины населённых серверов играют на нестандартных картах. Без докачки на них просто не зайти. Качается по UDP — медленно, но это единственный путь: curl в сборку для iOS не входит.":
             "Over half the populated servers run custom maps, and without downloads you simply cannot join them. It goes over UDP -- slow, but it is the only route: curl is not built for iOS.",
-        "0 убирает прицел совсем.": "0 removes the crosshair entirely.",
         "Перезаряжать автоматически, когда обойма опустела.": "Reload automatically when the magazine runs dry.",
-        "Графика, чувствительность стиков, гироскоп и раскладка геймпада — на вкладках «Графика» и «Управление»: они общие с одиночной игрой.":
-            "Graphics, stick feel, gyro and the pad layout are on the Graphics and Controls tabs: they are shared with the campaign.",
+        "Графика, прицел, чувствительность стиков, гироскоп, раскладка геймпада и диагностика — на вкладках «Графика», «Управление» и «Игра»: они общие с одиночной игрой.":
+            "Graphics, the crosshair, stick feel, gyro, the pad layout and diagnostics are on the Graphics, Controls and Game tabs: they are shared with the campaign.",
 
         // Хостинг
         "Сервер": "Server",
@@ -587,6 +578,38 @@ enum Loc {
                 something you do not already carry turns up. "Always" is Quake \
                 III's -- any gun picked up, a duplicate included, takes over, \
                 which with the launcher's loadout happens constantly.
+                """),
+
+        "note.perfHud": (
+            ru: """
+                Полоска поверх игры: кадры в секунду, время кадра, частота \
+                экрана, процессор, память и счётчики рендера.
+                """,
+            en: """
+                A strip over the game: frames per second, frame time, screen \
+                refresh, CPU, memory and the renderer's counters.
+                """),
+
+        "note.perfLog": (
+            ru: """
+                Те же замеры в main/perf.csv, по строке на полсекунды — по ним \
+                видно, где именно просело.
+                """,
+            en: """
+                The same measurements in main/perf.csv, a row every half \
+                second, which is what shows where it actually dropped.
+                """),
+
+        "note.verboseLog": (
+            ru: """
+                Собственный рассказ движка в main/rtcwconsole.log — включая то, \
+                почему сервер выпал из списка. Пишется построчно, поэтому \
+                переживает вылет.
+                """,
+            en: """
+                The engine's own running commentary in main/rtcwconsole.log, \
+                including why a server was dropped from the browser. Written \
+                line by line, so it survives a crash.
                 """),
 
         "note.diag": (

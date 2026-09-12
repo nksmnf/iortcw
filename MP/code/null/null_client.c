@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 cvar_t *cl_shownet;
 // TTimo: win32 dedicated
 cvar_t  *cl_language;
+cvar_t  *cl_menuLanguage;
 
 void CL_Shutdown(char *finalmsg, qboolean disconnect, qboolean quit) {
 }
@@ -41,6 +42,7 @@ void CL_Init( void ) {
 	cl_shownet = Cvar_Get( "cl_shownet", "0", CVAR_TEMP );
 	// TTimo: localisation, prolly not any use in dedicated / null client
 	cl_language = Cvar_Get( "cl_language", "0", CVAR_ARCHIVE );
+	cl_menuLanguage = Cvar_Get( "cl_menuLanguage", "-1", CVAR_ARCHIVE );
 }
 
 void CL_MouseEvent( int dx, int dy, int time ) {

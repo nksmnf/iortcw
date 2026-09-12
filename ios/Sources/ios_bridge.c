@@ -933,18 +933,19 @@ pak renamed to *.pk3.off is not in the game at all, and renaming it back costs
 one call and no copying -- which matters for the 163MB of dubbed dialogue.
 ==============
 */
+// The anthology's three, and no fourth.
+//
+// A "mp_zzru_french_menus.pk3" used to be listed here: multiplayer's Russian
+// menus repacked into ui_mp/french/, which is where a client with cl_language 1
+// looks first, so that they would beat the 38 real French menus in mp_pak1, 2, 3
+// and 5. That pak was never built, and the entry quietly did nothing while
+// multiplayer showed a French menu to anyone who chose Russian. The fix is a
+// cvar rather than a pak -- cl_menuLanguage, see MP/code/client/cl_main.c -- so
+// nothing has to be repacked and it works for whatever Russian pak a player has.
 static const char *russianPaks[] = {
 	"sp_zpak_russian_text.pk3",
 	"sp_zpak_russian_sound.pk3",
-	"mp_zpak_russian_text.pk3",
-
-	// Multiplayer's Russian menus, in the slot a client with cl_language 1
-	// actually reads. The anthology puts its Russian strings in the French slot
-	// of scripts/translation.cfg because a 1.41 client has no Russian one, and
-	// ui_main.c's Load_Menu then looks for ui_mp/french/<file> before falling
-	// back -- where mp_pak0 has real French menus. Without this pak, choosing
-	// Russian in multiplayer gives Russian subtitles under a French menu.
-	"mp_zzru_french_menus.pk3"
+	"mp_zpak_russian_text.pk3"
 };
 
 #define IOS_PAK_OFF_SUFFIX ".off"

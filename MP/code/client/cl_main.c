@@ -138,6 +138,7 @@ cvar_t  *cl_waitForFire;
 // NERVE - SMF - localization
 cvar_t  *cl_language;
 cvar_t  *cl_debugTranslation;
+cvar_t  *cl_menuLanguage;
 // -NERVE - SMF
 // DHM - Nerve :: Auto-Update
 cvar_t  *cl_updateavailable;
@@ -4171,6 +4172,23 @@ void CL_Init( void ) {
 	cl_language = Cvar_Get( "cl_language", "0", CVAR_ARCHIVE );
 	cl_debugTranslation = Cvar_Get( "cl_debugTranslation", "0", 0 );
 	// -NERVE - SMF
+
+	// Which ui_mp folder the menus are read from, apart from which column of
+	// scripts/translation.cfg the in-game strings come from.
+	//
+	// -1 keeps the stock behaviour: the menus follow cl_language, so
+	// cl_language 1 reads ui_mp/french/ and falls back to ui_mp/ when a file is
+	// not there (Load_Menu, ui_main.c).
+	//
+	// It is separate because a localisation can legitimately put its two halves
+	// in different places, and the Russian one does. The anthology has no
+	// Russian column in translation.cfg to use -- a 1.41 client has four, and
+	// none of them is Russian -- so it puts its strings in the French one, and
+	// cl_language 1 is the only way to read them. Its menus, though, are in the
+	// plain ui_mp/ folder, while mp_pak1, 2, 3 and 5 fill ui_mp/french/ with 38
+	// real French menus that then win. cl_menuLanguage 0 says "plain folder",
+	// and the two halves stop fighting.
+	cl_menuLanguage = Cvar_Get( "cl_menuLanguage", "-1", CVAR_ARCHIVE );
 
 	// DHM - Nerve :: Auto-update
 	cl_updateavailable = Cvar_Get( "cl_updateavailable", "0", CVAR_ROM );

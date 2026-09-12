@@ -1727,7 +1727,7 @@ private struct ControlsView: View {
         case touchGyroInvertYaw, touchGyroInvertPitch
         case volume, music
         case autoSwitch, autoActivate, emptySwitch, viewBob, crosshair
-        case perfHud, perfLog, padLog
+        case perfHud, perfLog, verboseLog, padLog
     }
 
     /// What a row does when it is confirmed or pushed sideways. Written as one
@@ -2181,16 +2181,25 @@ private struct ControlsView: View {
                 }
             }
 
+            // The one Diagnostics panel. Multiplayer used to carry a second one
+            // with its own copy of the first two switches; both wrote the same
+            // two cvars and the multiplayer copy was written last, so this one
+            // could not turn the strip on at all.
             Panel(L("Диагностика")) {
-                Field {
+                Field(note: L("note.perfHud")) {
                     Toggle(L("Панель производительности"), isOn: $model.perfHud)
                         .id(Row.perfHud)
                         .padFocus(focused(.perfHud))
                 }
-                Field {
+                Field(note: L("note.perfLog")) {
                     Toggle(L("Запись производительности в perf.csv"), isOn: $model.perfLog)
                         .id(Row.perfLog)
                         .padFocus(focused(.perfLog))
+                }
+                Field(note: L("note.verboseLog")) {
+                    Toggle(L("Подробный лог движка"), isOn: $model.verboseLog)
+                        .id(Row.verboseLog)
+                        .padFocus(focused(.verboseLog))
                 }
                 Field(note: L("note.diag")) {
                     Toggle(L("Запись событий контроллера в лог"), isOn: $model.padLog)
@@ -2269,6 +2278,7 @@ private struct ControlsView: View {
         case .perfHud:       return .flag(\.perfHud)
         case .perfLog:       return .flag(\.perfLog)
         case .padLog:        return .flag(\.padLog)
+        case .verboseLog:    return .flag(\.verboseLog)
         case .test:          return .press { showTest = true }
         case .binds:         return .press { showBinds = true }
         case .reset:         return .press { model.applyDefaultBindings() }

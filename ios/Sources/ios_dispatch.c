@@ -34,6 +34,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // answer rather than a placeholder: everything the launcher asks for at that
 // point -- where the data folder is, what is in it, what the stored settings
 // say -- is read from files both copies read the same way.
+//
+// The three calls that write the launcher's settings go to both instead. The
+// settings are the player's, not the running game's, and whichever copy ends
+// up writing ios_launcher.cfg has to be holding all of them.
 
 #include "ios_bridge.h"
 #include "ios_dispatch.h"
@@ -302,12 +306,10 @@ int IOSBridge_SetRussianPaks( bool on )
 
 void IOSBridge_SetCvar( const char *name, const char *value )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_SetCvar( name, value );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_SetCvar( name, value );
+	MP_IOSBridge_SetCvar( name, value );
 }
 
 const char * IOSBridge_GetCvar( const char *name )
@@ -321,22 +323,18 @@ const char * IOSBridge_GetCvar( const char *name )
 
 void IOSBridge_ForgetCvar( const char *name )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_ForgetCvar( name );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_ForgetCvar( name );
+	MP_IOSBridge_ForgetCvar( name );
 }
 
 void IOSBridge_SetBinding( const char *keyName, const char *action )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_SetBinding( keyName, action );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_SetBinding( keyName, action );
+	MP_IOSBridge_SetBinding( keyName, action );
 }
 
 const char * IOSBridge_GetBinding( const char *keyName )

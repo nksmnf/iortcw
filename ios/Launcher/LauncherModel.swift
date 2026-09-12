@@ -495,10 +495,26 @@ final class LauncherModel: ObservableObject {
     @Published var viewBob: Bool = true
     @Published var crosshairSize: Double = 48
 
-    // Diagnostics
+    // Diagnostics.
+    //
+    // One set for one application. There used to be a second copy of the first
+    // two here -- diagPerfHud/diagPerfLog, behind the multiplayer tab's own
+    // Diagnostics panel -- from when the campaign and multiplayer launchers
+    // were separate builds. Once they became one, commit() wrote r_perfHud and
+    // r_perfLog twice, and the second write won: switching the performance
+    // strip on in the Game tab was undone before the file was even written, so
+    // the strip could not be turned back on at all.
+    //
+    // The two logs keep the defaults the multiplayer copies had, because those
+    // are the ones that were winning and so the ones players actually have. On
+    // by default is the right way round for both: the port is new enough that
+    // the next fix usually starts with a log, and a log nobody switched on is a
+    // log nobody has. The strip stays off -- it is for looking at, and a player
+    // who wants it asks.
     @Published var perfHud: Bool = false
-    @Published var perfLog: Bool = false
+    @Published var perfLog: Bool = true
     @Published var padLog: Bool = false
+    @Published var verboseLog: Bool = true
     @Published var invertLook: Bool = false
     @Published var moveDigital: Bool = true
     @Published var skill: Int = 2          // g_gameskill: 1 easy .. 4 death incarnate
@@ -617,13 +633,6 @@ final class LauncherModel: ObservableObject {
 
     // Bindings, keyed by engine key name
     @Published var bindings: [String: String] = [:]
-
-    // Diagnostics. On by default for now: the port is new enough that the next
-    // fix usually starts with a log, and a log nobody switched on is a log
-    // nobody has.
-    @Published var diagVerboseLog: Bool = true
-    @Published var diagPerfHud: Bool = false
-    @Published var diagPerfLog: Bool = true
 
     @Published var controllerName: String? = nil
 
@@ -980,9 +989,7 @@ final class LauncherModel: ObservableObject {
         rumbleImpactScale = cvarValue("cg_rumbleImpactScale", rumbleImpactScale)
         hiDPI            = cvarValue("r_hidpi", hiDPI ? 1 : 0) != 0
 
-        diagVerboseLog   = cvarValue("developer", diagVerboseLog ? 1 : 0) != 0
-        diagPerfHud      = cvarValue("r_perfHud", diagPerfHud ? 1 : 0) != 0
-        diagPerfLog      = cvarValue("r_perfLog", diagPerfLog ? 1 : 0) != 0
+        verboseLog       = cvarValue("developer", verboseLog ? 1 : 0) != 0
 
         migrate(from: stored)
     }
@@ -1173,15 +1180,16 @@ final class LauncherModel: ObservableObject {
         IOSBridge_SetCvar("in_touchControls", "\(touchControls)")
         IOSBridge_SetCvar("in_joystick", "1")
 
-        // pmove_fixed is deliberately left alone.
+        // pmove_fixed is deliberately left alone, in both games.
         //
         // It makes movement frame-rate independent, which is tempting at 120Hz,
-        // but g_active.c applies it to every client -- there is no per-client
-        // switch in this tree, pers.pmoveFixed is read and never set. So turning
-        // it on also runs every AI cast's physics in 8ms steps instead of the
-        // stock single step per think, which is a change to how the game's
-        // characters move that the original never had. Not a trade worth making
-        // for a single-player nicety.
+        // but in the campaign g_active.c applies it to every client -- there is
+        // no per-client switch in this tree, pers.pmoveFixed is read and never
+        // set. So turning it on also runs every AI cast's physics in 8ms steps
+        // instead of the stock single step per think, which is a change to how
+        // the game's characters move that the original never had. Not a trade
+        // worth making for a single-player nicety. In multiplayer it is not the
+        // client's to decide at all: the server settles it.
         IOSBridge_SetCvar("pmove_fixed", "0")
 
         IOSBridge_SetCvar("in_tuningVersion", "\(LauncherModel.tuningVersion)")
@@ -1236,10 +1244,20 @@ final class LauncherModel: ObservableObject {
         // crash -- on a sideloaded build with no debugger that is the only
         // account of what happened. developer 1 adds the engine's own running
         // commentary, including why a server was dropped from the browser.
-        IOSBridge_SetCvar("developer", diagVerboseLog ? "1" : "0")
+        //
+        // r_perfHud and r_perfLog are written once, above, with the rest of the
+        // diagnostics. Writing them a second time here is what used to break
+        // the performance strip.
+        IOSBridge_SetCvar("developer", verboseLog ? "1" : "0")
         IOSBridge_SetCvar("logfile", "2")
-        IOSBridge_SetCvar("r_perfHud", diagPerfHud ? "1" : "0")
-        IOSBridge_SetCvar("r_perfLog", diagPerfLog ? "1" : "0")
+
+        // The game's language, written on every commit rather than only when
+        // the switch is touched. Both engines read it -- cl_language picks the
+        // translation.cfg column, cl_menuLanguage which ui_mp folder the menus
+        // come from -- and a player who never touches the switch has to reach
+        // the game in the language the launcher is showing them all the same.
+        // See applyLanguage() for why the two are separate.
+        applyLanguageCvars(Loc.current)
 
         IOSBridge_WriteConfig()
     }
@@ -1362,25 +1380,45 @@ final class LauncherModel: ObservableObject {
     /// Russian pak itself is outranked by the server's own paks but a .cfg on
     /// disk is still read.
     func applyLanguage(_ language: Loc.Language, writeConfig: Bool = true) {
-        let russian = language == .russian
-
         if IOSBridge_RussianPaksPresent() {
-            _ = IOSBridge_SetRussianPaks(russian)
+            _ = IOSBridge_SetRussianPaks(language == .russian)
         }
 
-        if isMultiplayer {
-            IOSBridge_SetCvar("cl_language", russian ? "1" : "0")
+        applyLanguageCvars(language)
 
-            // Not from init: the settings have only just been read back and
-            // writing them out again before the player has touched anything
-            // would be a round trip for nothing. Play and every other commit
-            // writes the file anyway.
-            if writeConfig {
-                IOSBridge_WriteConfig()
-            }
+        // Not from init: the settings have only just been read back and writing
+        // them out again before the player has touched anything would be a
+        // round trip for nothing. Play and every other commit writes the file
+        // anyway.
+        if writeConfig {
+            IOSBridge_WriteConfig()
         }
 
         refreshData()
+    }
+
+    /// The two cvars that carry the language into the game, without touching
+    /// the paks. Split out because commit() writes them too: the paks only have
+    /// to be renamed when the switch is moved, but the cvars have to be in
+    /// every generated config, including the first one a player ever gets.
+    ///
+    /// They are two cvars and not one because the anthology's localisation puts
+    /// its two halves in different places. The in-game strings are in the
+    /// French column of scripts/translation.cfg, which only cl_language 1 will
+    /// read. The menus are in the plain ui_mp/ folder -- and cl_language 1 also
+    /// sends Load_Menu (MP/code/ui/ui_main.c) looking in ui_mp/french/ first,
+    /// where mp_pak1, 2, 3 and 5 have all 38 genuinely French menus. So the one
+    /// cvar that is needed for Russian text is also the one that hands the
+    /// player a French menu, which is what multiplayer had been doing.
+    ///
+    /// cl_menuLanguage is this port's cvar and separates the two: -1 follows
+    /// cl_language, the way a stock client behaves, and 0 says the menus are in
+    /// the plain folder no matter what column the strings come from.
+    private func applyLanguageCvars(_ language: Loc.Language) {
+        let russian = language == .russian
+
+        IOSBridge_SetCvar("cl_language", russian ? "1" : "0")
+        IOSBridge_SetCvar("cl_menuLanguage", russian ? "0" : "-1")
     }
 
     /// Are the Russian game files installed at all? The language switch says so

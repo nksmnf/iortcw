@@ -512,6 +512,7 @@ extern cvar_t  *cl_waitForFire;
 // NERVE - SMF - localization
 extern cvar_t  *cl_language;
 // -NERVE - SMF
+extern cvar_t  *cl_menuLanguage;
 
 //=================================================
 
