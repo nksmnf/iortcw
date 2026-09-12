@@ -135,7 +135,17 @@ public func IOSLauncher_RunModal() {
             // than a set of defaults -- and it is the only place a player who
             // skips the launcher ever picks up a migration (see
             // LauncherModel.migrate(from:)).
+            // Debug aid: which game to skip into. A script driving the
+            // simulator cannot press either button, and every test below the
+            // launcher needs one of them pressed. Unset in normal use, where
+            // skipping means the campaign.
+            let game = UserDefaults.standard.integer(forKey: "IORTCWStartGame")
+            IOSDispatch_SetGame(Int32(game))
+
             let model = LauncherModel()
+            if game == IORTCW_GAME_MULTIPLAYER {
+                model.mp.commitClient()
+            }
             model.commit()
             IOSBridge_LauncherFinished()
             skipped = true
