@@ -422,6 +422,11 @@ void Sys_Print( const char *msg )
 {
 	CON_LogWrite( msg );
 	CON_Print( msg );
+#if TARGET_OS_IPHONE
+	// The launcher's own copy. A dedicated server has no renderer and no
+	// console of its own, so without this there is nowhere at all to watch it.
+	IOSBridge_LogAppend( msg );
+#endif
 }
 
 /*
@@ -786,6 +791,20 @@ int main( int argc, char **argv )
 	while( 1 )
 	{
 		Com_Frame( );
+
+#if TARGET_OS_IPHONE
+		// A dedicated server never initialises the renderer, so nothing in the
+		// frame pumps the runloop the way SDL's event handling does for a
+		// client. Without this the process runs fine and the interface on top
+		// of it -- the launcher, showing the server's console -- never gets a
+		// frame and looks frozen.
+		//
+		// Zero seconds: run whatever is already queued and come straight back.
+		// The server's own tick is what paces the loop.
+		if ( com_dedicated && com_dedicated->integer ) {
+			Sys_IOS_PumpRunLoop();
+		}
+#endif
 	}
 
 	return 0;

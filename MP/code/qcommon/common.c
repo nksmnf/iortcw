@@ -2405,6 +2405,19 @@ void Com_ExecuteCfg(void)
 		Cbuf_Execute();
 	}
 #endif
+
+#if TARGET_OS_IPHONE
+	// Last word, deliberately. default.cfg lives inside pak0.pk3 and sets things
+	// like r_mode that would otherwise override whatever the launcher chose, and
+	// wolfconfig_mp.cfg carries the previous session's values. Both have run by
+	// now. autoexec.cfg is left alone -- that one belongs to the user.
+	//
+	// This also carries the map rotation the hosting screen built, as the vstr
+	// chain d1..dN, so "+vstr d1" on the command line has something to run.
+	Com_Printf( "Applying launcher settings (ios_launcher.cfg)\n" );
+	Cbuf_ExecuteText(EXEC_NOW, "exec ios_launcher.cfg\n");
+	Cbuf_Execute();
+#endif
 }
 
 /*
@@ -2885,7 +2898,21 @@ void Com_Init( char *commandLine ) {
 	com_dedicated->modified = qfalse;
 
 #ifndef DEDICATED
-	CL_Init();
+	// Only when there is going to be a client. RTCW calls this unconditionally
+	// -- the check ioquake3 has here was never carried over -- so a client
+	// binary asked to run "dedicated 1" would start the renderer, open a
+	// window and initialise sound for a game nobody is going to look at.
+	//
+	// On a tablet that is not merely wasteful: the server has no interface of
+	// its own, so the renderer takes the screen away from the launcher, which
+	// is the only thing able to show what the server is doing.
+	//
+	// Everything downstream already copes. CL_StartHunkUsers returns early
+	// unless com_cl_running is set, and that is set by CL_Init; CL_Frame is
+	// guarded by com_dedicated in Com_Frame.
+	if ( !com_dedicated->integer ) {
+		CL_Init();
+	}
 #endif
 
 	// set com_frameTime so that if a map is started on the

@@ -2456,7 +2456,21 @@ void Com_Init( char *commandLine ) {
 	com_dedicated->modified = qfalse;
 
 #ifndef DEDICATED
-	CL_Init();
+	// Only when there is going to be a client. RTCW calls this unconditionally
+	// -- the check ioquake3 has here was never carried over -- so a client
+	// binary asked to run "dedicated 1" would start the renderer, open a
+	// window and initialise sound for a game nobody is going to look at.
+	//
+	// On a tablet that is not merely wasteful: the server has no interface of
+	// its own, so the renderer takes the screen away from the launcher, which
+	// is the only thing able to show what the server is doing.
+	//
+	// Everything downstream already copes. CL_StartHunkUsers returns early
+	// unless com_cl_running is set, and that is set by CL_Init; CL_Frame is
+	// guarded by com_dedicated in Com_Frame.
+	if ( !com_dedicated->integer ) {
+		CL_Init();
+	}
 #endif
 
 	// set com_frameTime so that if a map is started on the

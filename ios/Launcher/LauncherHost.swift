@@ -25,7 +25,7 @@ final class LauncherHost {
     static let shared = LauncherHost()
 
     private var window: UIWindow?
-    private var model: LauncherModel?
+    private(set) var model: LauncherModel?
 
     /// Skip straight into the game, for players who have already set everything
     /// up and do not want a menu every launch. Settable from the launcher, or
@@ -35,6 +35,16 @@ final class LauncherHost {
     /// to except a fatal error in FS_Startup.
     var isSkipping: Bool {
         UserDefaults.standard.bool(forKey: "IORTCWSkipLauncher")
+            && IOSBridge_HasGameData()
+    }
+
+    /// Debug aid: start hosting straight away, with whatever is stored in the
+    /// hosting settings. A script driving the simulator cannot tap the button,
+    /// and the console screen is the one part of this that only exists once a
+    /// server is actually running. Unset in normal use.
+    var isAutoHosting: Bool {
+        UserDefaults.standard.bool(forKey: "IORTCWAutoHost")
+            && IOSBridge_IsMultiplayer()
             && IOSBridge_HasGameData()
     }
 
@@ -62,7 +72,23 @@ final class LauncherHost {
         self.window = window
     }
 
+    /// Set when the player starts a server that has no renderer. The launcher
+    /// then stays on screen and becomes the server's console instead of handing
+    /// the display to a game that will never draw anything.
+    var hostingModel: MultiplayerModel?
+
     func dismiss() {
+        // A dedicated server draws nothing at all, so there is no game window to
+        // hand over to: dismissing here would leave a black screen with no way
+        // back. Swap the launcher's contents for the console instead and keep
+        // the window.
+        if let mp = hostingModel {
+            window?.rootViewController =
+                UIHostingController(rootView: ServerConsoleView(mp: mp))
+            model = nil
+            return
+        }
+
         let ours = window
         window = nil
         model = nil
@@ -97,7 +123,13 @@ public func IOSLauncher_RunModal() {
     var skipped = false
 
     MainActor.assumeIsolated {
-        if LauncherHost.shared.isSkipping {
+        if LauncherHost.shared.isAutoHosting {
+            // The launcher still has to be on screen: hosting without a
+            // renderer turns it into the server console rather than dismissing
+            // it, and that only works if there is a window to turn into one.
+            LauncherHost.shared.present()
+            LauncherHost.shared.model?.mp.startHosting()
+        } else if LauncherHost.shared.isSkipping {
             // Still build the model and commit. Loading it reads the stored
             // config back, so this rewrites the player's own settings rather
             // than a set of defaults -- and it is the only place a player who

@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "ios_bridge.h"
 
 #include <dirent.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1160,7 +1161,153 @@ const char *IOSBridge_BuildCommandLine( void )
 			launcherStartupCommand );
 	}
 
+	// Into the launcher's console, where it is the first thing visible when a
+	// server comes up. Worth having: everything the launcher decided before the
+	// engine existed arrives here, and nothing else records it.
+	IOSBridge_LogAppend( "launcher command line: " );
+	IOSBridge_LogAppend( launcherCommandLine );
+	IOSBridge_LogAppend( "\n" );
+
 	return launcherCommandLine;
+}
+
+/*
+==============
+IOSBridge_LogAppend
+
+The launcher's copy of the console.
+
+Its own ring, not CON_LogRead's: that one is consumed by the reader and the
+engine's console already reads it. Fed from Sys_Print so it does not depend on
+a renderer existing -- which is the whole point, because a dedicated server
+draws nothing and this is the only window into it.
+
+Engine and launcher both run on the main thread (the engine's frame loop lets
+the runloop breathe), so there is no contention to guard against; the mutex is
+there for the day that stops being true.
+==============
+*/
+#define LAUNCHER_LOG_SIZE	( 96 * 1024 )
+
+static char      launcherLog[LAUNCHER_LOG_SIZE];
+static int       launcherLogLen;
+static unsigned  launcherLogVersion;
+static pthread_mutex_t launcherLogLock = PTHREAD_MUTEX_INITIALIZER;
+
+void IOSBridge_LogAppend( const char *msg )
+{
+	int len;
+
+	if ( !msg || !*msg ) {
+		return;
+	}
+
+	len = (int)strlen( msg );
+
+	pthread_mutex_lock( &launcherLogLock );
+
+	if ( len >= LAUNCHER_LOG_SIZE ) {
+		// A single message longer than the whole ring: keep its tail, which is
+		// where anything interesting will be.
+		msg += len - ( LAUNCHER_LOG_SIZE - 1 );
+		len = LAUNCHER_LOG_SIZE - 1;
+		launcherLogLen = 0;
+	}
+
+	if ( launcherLogLen + len >= LAUNCHER_LOG_SIZE ) {
+		// Drop from the front, in whole lines where possible so the view never
+		// opens on half a sentence.
+		int drop = launcherLogLen + len - LAUNCHER_LOG_SIZE + 1;
+		int i;
+
+		for ( i = drop; i < launcherLogLen && i < drop + 512; i++ ) {
+			if ( launcherLog[i] == '\n' ) {
+				drop = i + 1;
+				break;
+			}
+		}
+
+		memmove( launcherLog, launcherLog + drop, (size_t)( launcherLogLen - drop ) );
+		launcherLogLen -= drop;
+	}
+
+	memcpy( launcherLog + launcherLogLen, msg, (size_t)len );
+	launcherLogLen += len;
+	launcherLogVersion++;
+
+	pthread_mutex_unlock( &launcherLogLock );
+}
+
+/*
+==============
+IOSBridge_LogSnapshot
+==============
+*/
+int IOSBridge_LogSnapshot( char *out, int outSize )
+{
+	int copy;
+
+	if ( !out || outSize <= 0 ) {
+		return 0;
+	}
+
+	pthread_mutex_lock( &launcherLogLock );
+
+	copy = launcherLogLen;
+	if ( copy > outSize - 1 ) {
+		// Keep the tail: the newest output is what a server operator is
+		// watching for.
+		memcpy( out, launcherLog + ( launcherLogLen - ( outSize - 1 ) ),
+			(size_t)( outSize - 1 ) );
+		copy = outSize - 1;
+	} else {
+		memcpy( out, launcherLog, (size_t)copy );
+	}
+	out[copy] = '\0';
+
+	pthread_mutex_unlock( &launcherLogLock );
+
+	return copy;
+}
+
+/*
+==============
+IOSBridge_LogVersion
+==============
+*/
+unsigned IOSBridge_LogVersion( void )
+{
+	return launcherLogVersion;
+}
+
+/*
+==============
+IOSBridge_ExecCommand
+==============
+*/
+void IOSBridge_ExecCommand( const char *command )
+{
+	if ( !command || !*command || !com_fullyInitialized ) {
+		return;
+	}
+
+	Cbuf_AddText( va( "%s\n", command ) );
+}
+
+/*
+==============
+IOSBridge_ServerRunning
+==============
+*/
+bool IOSBridge_ServerRunning( void )
+{
+	if ( !com_fullyInitialized ) {
+		return false;
+	}
+
+	// sv_running is the server's own answer, and it is a cvar rather than
+	// something only the server module can see.
+	return Cvar_VariableIntegerValue( "sv_running" ) ? true : false;
 }
 
 /*

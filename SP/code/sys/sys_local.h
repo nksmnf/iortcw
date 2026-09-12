@@ -91,6 +91,11 @@ void        Sys_IOS_TouchOverlayShutdown( void );
 void        IOSLauncher_RunModal( void );
 void        IOSLauncher_Show( void );
 const char *IOSBridge_BuildCommandLine( void );
+void        IOSBridge_LogAppend( const char *msg );
+
+// Let UIKit run for a moment. Only needed by a dedicated server, which has no
+// renderer and therefore nothing else that gives the runloop a turn.
+void        Sys_IOS_PumpRunLoop( void );
 #endif
 
 void Sys_GLimpSafeInit( void );

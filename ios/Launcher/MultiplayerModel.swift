@@ -363,6 +363,11 @@ final class MultiplayerModel: ObservableObject {
         // silent audio graph running behind a single-player game is pure drain.
         IOSBridge_SetKeepAwake(keepAwake)
 
+        // A server with no renderer has nothing to show, so the launcher stays
+        // up and turns into its console. A listen server does draw, and there
+        // the launcher gets out of the way as usual.
+        LauncherHost.shared.hostingModel = visibility.hasRenderer ? nil : self
+
         // vstr d1 rather than "map X": it starts the rotation at its first
         // entry, so nextmap is already primed when the first round ends.
         IOSBridge_SetStartupCommand("vstr d1")

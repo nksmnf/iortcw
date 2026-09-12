@@ -110,6 +110,34 @@ void IOSBridge_SetExtraArgs( const char *args );
 // exists so one launcher source can serve both.
 bool IOSBridge_IsMultiplayer( void );
 
+// --- console ---------------------------------------------------------------
+//
+// A copy of everything the engine prints, kept so the launcher can show it.
+// Its own ring rather than CON_LogRead's, because that one is drained by
+// whoever reads it and the engine's console is already that consumer.
+//
+// Fed from Sys_Print, so it works whether or not a renderer exists -- which is
+// the case that matters: a dedicated server draws nothing at all, and this is
+// then the only way to see what it is doing.
+
+// Append output. Called by the engine; harmless before Com_Init.
+void IOSBridge_LogAppend( const char *msg );
+
+// Copy the tail of the log out without consuming it. Returns the number of
+// bytes written, not counting the terminator.
+int IOSBridge_LogSnapshot( char *out, int outSize );
+
+// Bumped on every append, so a poller can tell "nothing new" from "read it
+// again" without comparing the text.
+unsigned IOSBridge_LogVersion( void );
+
+// Run a console command, exactly as if it had been typed. Ignored before the
+// engine is up, since there would be nothing to run it.
+void IOSBridge_ExecCommand( const char *command );
+
+// Is a server running in this process right now?
+bool IOSBridge_ServerRunning( void );
+
 // --- background hosting ----------------------------------------------------
 //
 // iOS suspends an ordinary app seconds after it leaves the screen, which would

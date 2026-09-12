@@ -341,6 +341,24 @@ void Sys_IOS_InitAudioSession( void )
 
 /*
 ==============
+Sys_IOS_PumpRunLoop
+
+Give UIKit a turn.
+
+A client gets this for free: SDL's event handling runs the runloop every frame.
+A dedicated server never starts the renderer, so nothing does -- and the
+launcher sitting on top of it, showing the server's console, would never redraw.
+Called once per server frame, with a zero timeout, so it returns as soon as
+whatever was queued has been handled and the server's own tick keeps the pace.
+==============
+*/
+void Sys_IOS_PumpRunLoop( void )
+{
+	CFRunLoopRunInMode( kCFRunLoopDefaultMode, 0.0, true );
+}
+
+/*
+==============
 Sys_IOS_InitSDLHints
 
 Hints that have to be set before SDL creates its window. The Info.plist
