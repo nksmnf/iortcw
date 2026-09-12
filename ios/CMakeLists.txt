@@ -405,6 +405,16 @@ if(IORTCW_IOS)
         XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.h"
     )
+
+    # A duplicate key in Loc.swift builds cleanly and then kills the process on
+    # the launcher's first draw -- Swift traps inside the dictionary literal's
+    # one-time initialiser. Checked before every build of the launcher, because
+    # the alternative is finding out from a crash report on the device.
+    add_custom_command(TARGET iortcw_launcher PRE_BUILD
+        COMMAND python3
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_loc.py"
+        COMMENT "Checking Loc.swift for duplicate keys"
+        VERBATIM)
 endif()
 
 # ---------------------------------------------------------------------------
