@@ -84,6 +84,20 @@ function(iortcw_build_engine TREE)
         target_compile_definitions(iortcw_common_${TREE} INTERFACE IORTCW_MP_BUILD)
     endif()
 
+    # Objective-C classes are registered with the runtime by name, and `ld -r`
+    # cannot localise that the way it does a C symbol. Both engines carry the
+    # platform layer, so without this the runtime sees two IORTCWTouchOverlay
+    # classes, keeps one, and the game ends up talking to the copy belonging to
+    # the engine that is not running -- the on-screen controls appear and then
+    # do nothing at all, which is exactly how it failed.
+    #
+    # Renaming through the preprocessor keeps the sources free of it.
+    foreach(_cls IORTCWTouchOverlay IORTCWTouchStick IORTCWTouchButton
+                 IORTCWTouchController IORTCWDisplayLinkTarget)
+        target_compile_definitions(iortcw_common_${TREE} INTERFACE
+            ${_cls}=${_cls}_${TREE})
+    endforeach()
+
     # --- vendored ----------------------------------------------------------
     _abs(JPEG_SRC ${IORTCW_JPEG_SOURCES})
     add_library(iortcw_jpeg_${TREE} STATIC ${JPEG_SRC})
