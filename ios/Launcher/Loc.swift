@@ -247,6 +247,12 @@ enum Loc {
 
 
 
+        "Мультиплеер": "Multiplayer",
+        "Бросить оружие": "Drop weapon",
+        "Помощь (MP)": "Help (MP)",
+        "Таблица очков": "Scoreboard",
+        "Написать всем": "Say to all",
+        "Написать команде": "Say to team",
         // --- диагностика ---
         "Диагностика": "Diagnostics",
         "Подробный лог": "Verbose log",

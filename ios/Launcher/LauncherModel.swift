@@ -35,6 +35,15 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "itemnext",   title: "Следующий предмет",  group: "Действия"),
         GameAction(id: "+kick",      title: "Удар ногой",         group: "Действия"),
         GameAction(id: "notebook",   title: "Журнал",             group: "Действия"),
+        // Multiplayer's own commands. The campaign does not register these and
+        // the campaign's notebook is not registered in multiplayer -- one
+        // binding list, two games, and a binding the running game has never
+        // heard of simply does nothing.
+        GameAction(id: "+dropweapon", title: "Бросить оружие",    group: "Мультиплеер"),
+        GameAction(id: "help",        title: "Помощь (MP)",       group: "Мультиплеер"),
+        GameAction(id: "+scores",     title: "Таблица очков",     group: "Мультиплеер"),
+        GameAction(id: "messagemode", title: "Написать всем",     group: "Мультиплеер"),
+        GameAction(id: "messagemode2", title: "Написать команде", group: "Мультиплеер"),
         // The names default.cfg binds to F5 and F9. "save quick" was neither a
         // command nor an argument the engine knows, so binding it did nothing.
         GameAction(id: "savegame quicksave", title: "Быстрое сохранение", group: "Система"),
@@ -42,7 +51,7 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "togglemenu", title: "Меню",               group: "Система"),
     ]
 
-    static var groups: [String] { ["Бой", "Движение", "Действия", "Система"] }
+    static var groups: [String] { ["Бой", "Движение", "Действия", "Мультиплеер", "Система"] }
 }
 
 /// The DualSense inputs a player can bind, named the way the engine names them.

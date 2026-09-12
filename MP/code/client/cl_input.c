@@ -459,6 +459,15 @@ void CL_JoystickEvent( int axis, int value, int time ) {
 CL_JoystickMove
 =================
 */
+// What the gyro axes are measured in: degrees of view per second, multiplied by
+// this so an integer axis still has room for a slow drift correction. +-32767
+// then covers +-1024 degrees a second in steps of a thirty-second of a degree,
+// which is finer than any deadzone the input side applies.
+//
+// IN_GamepadGyro in sdl_input.c and Sys_IOS_GyroFrame in ios_gyro.m produce
+// these values and must use the same number.
+#define GYRO_AXIS_SCALE 32.0f
+
 void CL_JoystickMove( usercmd_t *cmd ) {
 	float anglespeed;
 
@@ -467,6 +476,13 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	float forward = j_forward->value * cl.joystickAxis[j_forward_axis->integer];
 	float pitch   = j_pitch->value   * cl.joystickAxis[j_pitch_axis->integer];
 	float up      = j_up->value      * cl.joystickAxis[j_up_axis->integer];
+
+	// Whether the input backend is reading the sticks itself and writing these
+	// axes directly, rather than synthesising key presses and letting the
+	// bindings decide what a stick does. sdl_input.c owns the cvar; a build
+	// without that backend has no such cvar, the lookup answers zero, and
+	// everything below behaves exactly as it always did.
+	qboolean padDirect = Cvar_VariableIntegerValue( "in_gamepadDirect" ) ? qtrue : qfalse;
 
 	if ( !( kb[KB_SPEED].active ^ cl_run->integer ) ) {
 		cmd->buttons |= BUTTON_WALKING;
@@ -478,14 +494,41 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 		anglespeed = 0.001 * cls.frametime;
 	}
 
-	if ( !kb[KB_STRAFE].active ) {
+	// cl_anglespeedkey is there to make a keyboard turn usable: hold walk and
+	// the arrow keys swing faster. The direct path does not need the help --
+	// what it puts on the look axes is already a rate the player picked, in
+	// degrees per second (in_lookYawSpeed) -- so scaling it because he happens
+	// to be walking only makes the view spin. Same reasoning as the gyro below.
+	if ( padDirect ) {
+		anglespeed = 0.001 * cls.frametime;
+	}
+
+	// +mlook and +strafe swap the look axes with the movement ones. That trade
+	// is worth making on a device with one stick and a keyboard beside it:
+	// holding strafe turns the turn axis into a sidestep, holding mlook turns
+	// the walk axis into a look, and the player is the one holding the key, so
+	// he knows which way round it currently is.
+	//
+	// A pad read by the direct path has two sticks and no such shortage. Left
+	// moves, right looks, and that is the whole layout -- swapping the two
+	// behind the player's back is what had the right stick walking him forwards
+	// instead of aiming. The numbers make it worse than a swapped role: the
+	// look axes carry a turn rate in degrees per second, so several hundred of
+	// them land where a movement byte is expected and ClampChar pins it at a
+	// full run in whichever direction the thumb leaned.
+	//
+	// Nothing here disables the keys. They still swap the mouse and the
+	// keyboard as they always have, including for a player who has put +strafe
+	// on a pad button; it is only the sticks the backend reads itself that stop
+	// listening, because for them the answer is never in doubt.
+	if ( !kb[KB_STRAFE].active || padDirect ) {
 		cl.viewangles[YAW] += anglespeed * yaw;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)right );
 	} else {
 		cl.viewangles[YAW] += anglespeed * right;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)yaw );
 	}
-	if ( kb[KB_MLOOK].active ) {
+	if ( kb[KB_MLOOK].active && !padDirect ) {
 		cl.viewangles[PITCH] += anglespeed * forward;
 		cmd->forwardmove = ClampChar( cmd->forwardmove + (int)pitch );
 	} else {
@@ -494,6 +537,29 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	}
 
 	cmd->upmove = ClampChar( cmd->upmove + (int)up );
+
+	// Gyro aiming, added on top of the sticks rather than replacing them: the
+	// stick makes the large turns and the gyro does the fine correction, which
+	// is how gyro aim is normally played.
+	//
+	// These axes deliberately do not go through j_yaw and j_pitch. Those carry
+	// the stick's direction in their sign and they are signed opposite to one
+	// another -- j_yaw is negative, j_pitch positive -- so multiplying the gyro
+	// by them sent the view one way horizontally and the other way vertically,
+	// and any edit to either cvar silently retuned the gyro as well as the
+	// stick. The input backend now hands over a turn rate it has already worked
+	// out, in the mouse's convention: positive yaw is to the right, positive
+	// pitch is downwards.
+	//
+	// cls.frametime is taken raw rather than through anglespeed, which folds in
+	// cl_anglespeedkey. Speeding a keyboard turn up while walk is held is the
+	// point of that cvar; multiplying a measured wrist movement by it is not.
+	if ( cl.joystickAxis[AXIS_GYRO_PITCH] || cl.joystickAxis[AXIS_GYRO_YAW] ) {
+		float gyrospeed = 0.001 * cls.frametime / GYRO_AXIS_SCALE;
+
+		cl.viewangles[YAW]   -= gyrospeed * cl.joystickAxis[AXIS_GYRO_YAW];
+		cl.viewangles[PITCH] += gyrospeed * cl.joystickAxis[AXIS_GYRO_PITCH];
+	}
 }
 
 /*

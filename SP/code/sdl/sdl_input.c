@@ -944,7 +944,27 @@ GameController never sees it.
 void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force )
 {
 #if TARGET_OS_IPHONE
+	static cvar_t *in_adaptiveTriggers;
+
 	if ( !gamepad ) {
+		return;
+	}
+
+	// The launcher offers this as a switch, so something has to read it. Nothing
+	// did: the value was written to the config on every launch and never looked
+	// at, so turning the triggers off left them on.
+	//
+	// Registered on first use rather than in IN_Init, because IN_Init runs
+	// before the configs are exec'd and would pin the value at its default.
+	if ( !in_adaptiveTriggers ) {
+		in_adaptiveTriggers = Cvar_Get( "in_adaptiveTriggers", "1", CVAR_ARCHIVE );
+	}
+
+	if ( !in_adaptiveTriggers->integer ) {
+		// Off means off, not "stop changing them": a profile set before the
+		// switch was turned off would otherwise stay on the triggers until the
+		// pad was unplugged.
+		Sys_IOS_SetAdaptiveTrigger( side, ADAPTIVE_TRIGGER_OFF, 0.0f, 0.0f, 0.0f );
 		return;
 	}
 
@@ -1618,7 +1638,12 @@ static qboolean IN_CutsceneActive( void )
 
 	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
 	// CL_KeyDownEvent itself tests when deciding that a key means "skip".
+#ifdef IORTCW_MP_BUILD
+	// Multiplayer has no cutscenes, and clientActive_t there has no cameraMode.
+	return qfalse;
+#else
 	return cl.cameraMode ? qtrue : qfalse;
+#endif
 }
 
 static qboolean IN_SkipsCutscene( int button )

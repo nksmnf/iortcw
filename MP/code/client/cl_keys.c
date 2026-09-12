@@ -332,6 +332,14 @@ keyname_t keynames[] =
 	{"PAD0_PADDLE4", K_PAD0_PADDLE4 },
 	{"PAD0_TOUCHPAD", K_PAD0_TOUCHPAD },
 
+	{"PAD0_TOUCH_TAP", K_PAD0_TOUCH_TAP },
+	{"PAD0_TOUCH_SWIPE_LEFT", K_PAD0_TOUCH_SWIPE_LEFT },
+	{"PAD0_TOUCH_SWIPE_RIGHT", K_PAD0_TOUCH_SWIPE_RIGHT },
+	{"PAD0_TOUCH_SWIPE_UP", K_PAD0_TOUCH_SWIPE_UP },
+	{"PAD0_TOUCH_SWIPE_DOWN", K_PAD0_TOUCH_SWIPE_DOWN },
+	{"PAD0_LEFTTRIGGER_HARD", K_PAD0_LEFTTRIGGER_HARD },
+	{"PAD0_RIGHTTRIGGER_HARD", K_PAD0_RIGHTTRIGGER_HARD },
+
 	{NULL,0}
 };
 
@@ -2120,10 +2128,57 @@ static void Key_CompleteBind( char *args, int argNum )
 
 /*
 ===================
+CL_SendKey_f
+
+sendkey <name> [down|up]
+
+Synthesises a key event as though the key had been pressed. With no second
+argument it sends a press followed immediately by a release, which is what a
+menu or a briefing screen expects.
+
+This exists because there is no way to tap the screen from a script on the
+simulator, so an automated run cannot otherwise get past anything that waits
+for input.
+===================
+*/
+void CL_SendKey_f( void ) {
+	int keynum;
+	const char *state;
+
+	if ( Cmd_Argc() < 2 ) {
+		Com_Printf( "usage: sendkey <key> [down|up]\n" );
+		return;
+	}
+
+	keynum = Key_StringToKeynum( Cmd_Argv( 1 ) );
+
+	if ( keynum == -1 ) {
+		Com_Printf( "sendkey: \"%s\" is not a valid key\n", Cmd_Argv( 1 ) );
+		return;
+	}
+
+	state = Cmd_Argc() > 2 ? Cmd_Argv( 2 ) : "";
+
+	if ( !Q_stricmp( state, "down" ) ) {
+		Com_QueueEvent( 0, SE_KEY, keynum, qtrue, 0, NULL );
+	} else if ( !Q_stricmp( state, "up" ) ) {
+		Com_QueueEvent( 0, SE_KEY, keynum, qfalse, 0, NULL );
+	} else {
+		Com_QueueEvent( 0, SE_KEY, keynum, qtrue, 0, NULL );
+		Com_QueueEvent( 0, SE_KEY, keynum, qfalse, 0, NULL );
+	}
+}
+
+/*
+===================
 CL_InitKeyCommands
 ===================
 */
 void CL_InitKeyCommands( void ) {
+	// Lets the on-screen controls press a key the same way a real one
+	// would; the touch overlay uses it for anything that is a binding
+	// rather than a stick.
+	Cmd_AddCommand( "sendkey", CL_SendKey_f );
 	// register our functions
 	Cmd_AddCommand( "bind",Key_Bind_f );
 	Cmd_SetCommandCompletionFunc( "bind", Key_CompleteBind );
