@@ -59,6 +59,26 @@ int SP_IOSBridge_GameDataMask( void );
 int MP_IOSBridge_GameDataMask( void );
 int SP_IOSBridge_ImportLooseData( void );
 int MP_IOSBridge_ImportLooseData( void );
+int SP_IOSBridge_CampaignModCount( void );
+int MP_IOSBridge_CampaignModCount( void );
+const char * SP_IOSBridge_CampaignModDir( int index );
+const char * MP_IOSBridge_CampaignModDir( int index );
+const char * SP_IOSBridge_CampaignModPak( int index );
+const char * MP_IOSBridge_CampaignModPak( int index );
+bool SP_IOSBridge_CampaignModInstalled( int index );
+bool MP_IOSBridge_CampaignModInstalled( int index );
+int SP_IOSBridge_CampaignModMaps( int index );
+int MP_IOSBridge_CampaignModMaps( int index );
+double SP_IOSBridge_CampaignModMegabytes( int index );
+double MP_IOSBridge_CampaignModMegabytes( int index );
+bool SP_IOSBridge_IsCampaignModDir( const char *dir );
+bool MP_IOSBridge_IsCampaignModDir( const char *dir );
+bool SP_IOSBridge_RussianPaksPresent( void );
+bool MP_IOSBridge_RussianPaksPresent( void );
+bool SP_IOSBridge_RussianPaksEnabled( void );
+bool MP_IOSBridge_RussianPaksEnabled( void );
+int SP_IOSBridge_SetRussianPaks( bool on );
+int MP_IOSBridge_SetRussianPaks( bool on );
 void SP_IOSBridge_SetCvar( const char *name, const char *value );
 void MP_IOSBridge_SetCvar( const char *name, const char *value );
 const char * SP_IOSBridge_GetCvar( const char *name );
@@ -73,6 +93,8 @@ void SP_IOSBridge_WriteConfig( void );
 void MP_IOSBridge_WriteConfig( void );
 void SP_IOSBridge_SetStartupCommand( const char *command );
 void MP_IOSBridge_SetStartupCommand( const char *command );
+void SP_IOSBridge_RotateLog( const char *tag );
+void MP_IOSBridge_RotateLog( const char *tag );
 const char * SP_IOSBridge_BuildCommandLine( void );
 const char * MP_IOSBridge_BuildCommandLine( void );
 void SP_IOSBridge_SetExtraArgs( const char *args );
@@ -170,6 +192,96 @@ int IOSBridge_ImportLooseData( void )
 	return SP_IOSBridge_ImportLooseData(  );
 }
 
+int IOSBridge_CampaignModCount( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModCount(  );
+	}
+
+	return SP_IOSBridge_CampaignModCount(  );
+}
+
+const char * IOSBridge_CampaignModDir( int index )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModDir( index );
+	}
+
+	return SP_IOSBridge_CampaignModDir( index );
+}
+
+const char * IOSBridge_CampaignModPak( int index )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModPak( index );
+	}
+
+	return SP_IOSBridge_CampaignModPak( index );
+}
+
+bool IOSBridge_CampaignModInstalled( int index )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModInstalled( index );
+	}
+
+	return SP_IOSBridge_CampaignModInstalled( index );
+}
+
+int IOSBridge_CampaignModMaps( int index )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModMaps( index );
+	}
+
+	return SP_IOSBridge_CampaignModMaps( index );
+}
+
+double IOSBridge_CampaignModMegabytes( int index )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_CampaignModMegabytes( index );
+	}
+
+	return SP_IOSBridge_CampaignModMegabytes( index );
+}
+
+bool IOSBridge_IsCampaignModDir( const char *dir )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_IsCampaignModDir( dir );
+	}
+
+	return SP_IOSBridge_IsCampaignModDir( dir );
+}
+
+bool IOSBridge_RussianPaksPresent( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_RussianPaksPresent(  );
+	}
+
+	return SP_IOSBridge_RussianPaksPresent(  );
+}
+
+bool IOSBridge_RussianPaksEnabled( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_RussianPaksEnabled(  );
+	}
+
+	return SP_IOSBridge_RussianPaksEnabled(  );
+}
+
+int IOSBridge_SetRussianPaks( bool on )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SetRussianPaks( on );
+	}
+
+	return SP_IOSBridge_SetRussianPaks( on );
+}
+
 void IOSBridge_SetCvar( const char *name, const char *value )
 {
 	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
@@ -236,6 +348,16 @@ void IOSBridge_SetStartupCommand( const char *command )
 	}
 
 	SP_IOSBridge_SetStartupCommand( command );
+}
+
+void IOSBridge_RotateLog( const char *tag )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_RotateLog( tag );
+		return;
+	}
+
+	SP_IOSBridge_RotateLog( tag );
 }
 
 const char * IOSBridge_BuildCommandLine( void )
