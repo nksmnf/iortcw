@@ -128,6 +128,7 @@ cvar_t  *cl_waitForFire;
 cvar_t  *cl_language;
 cvar_t  *cl_debugTranslation;
 // -NERVE - SMF
+cvar_t  *cl_menuLanguage;
 cvar_t	*cl_lanForcePackets;
 
 cvar_t	*cl_guidServerUniq;
@@ -3804,6 +3805,15 @@ void CL_Init( void ) {
 	cl_language = Cvar_Get( "cl_language", "0", CVAR_ARCHIVE );
 	cl_debugTranslation = Cvar_Get( "cl_debugTranslation", "0", 0 );
 	// -NERVE - SMF
+
+	// Registered here so the campaign knows the name, not because it uses it.
+	// The iPadOS port is one application carrying both engines and one
+	// launcher writing one ios_launcher.cfg for whichever of them starts, so a
+	// setting multiplayer needs has to be a cvar the campaign has heard of --
+	// otherwise the port's own test run reports a line written to a cvar that
+	// does not exist, and would be right to. The campaign's menus are not
+	// folder-localized at all: SP's Load_Menu reads ui/ and nothing else.
+	cl_menuLanguage = Cvar_Get( "cl_menuLanguage", "-1", CVAR_ARCHIVE );
 
 	//
 	// register our commands

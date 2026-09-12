@@ -211,21 +211,15 @@ struct MultiplayerSettingsView: View {
                     }
                 }
 
+                // No crosshair sliders here any more. They wrote cg_drawCrosshair
+                // and cg_crosshairSize, which are one pair of cvars in one
+                // generated config -- so multiplayer's copies were applied to
+                // the campaign as well, and, being written after the Game tab's,
+                // won over it. The size is on the Game tab, shared like every
+                // other setting; the shape belongs to each game's own options
+                // menu, which is why the launcher seeds it once and then stops
+                // mentioning it (see migrate(from:) in LauncherModel).
                 Panel(L("Экран боя")) {
-                    Field(note: L("0 убирает прицел совсем.")) {
-                        SliderRow(title: L("Вид прицела"),
-                                  value: Binding(
-                                    get: { Double(mp.drawCrosshair) },
-                                    set: { mp.drawCrosshair = Int($0) }),
-                                  range: 0...9, step: 1,
-                                  readout: mp.drawCrosshair == 0 ? L("нет") : "\(mp.drawCrosshair)")
-                    }
-
-                    SliderRow(title: L("Размер прицела"),
-                              value: $mp.crosshairSize,
-                              range: 16...96, step: 4,
-                              readout: String(format: "%.0f", mp.crosshairSize))
-
                     Toggle(L("Счётчик кадров"), isOn: $mp.drawFPS)
                     Toggle(L("Лагометр"), isOn: $mp.lagometer)
                     Toggle(L("Кровь"), isOn: $mp.blood)
@@ -235,21 +229,12 @@ struct MultiplayerSettingsView: View {
                     }
                 }
 
-                Panel(L("Диагностика")) {
-                    Field(note: L("Подробный лог движка в Documents/main/rtcwconsole.log. Пишется построчно, поэтому переживает вылет — на сборке без отладчика это единственный след.")) {
-                        Toggle(L("Подробный лог"), isOn: $model.diagVerboseLog)
-                    }
-
-                    Field(note: L("Счётчик кадров и время кадра поверх игры.")) {
-                        Toggle(L("Счётчики на экране"), isOn: $model.diagPerfHud)
-                    }
-
-                    Field(note: L("Замеры кадра пишутся в лог — по ним видно, где именно просело.")) {
-                        Toggle(L("Профайлинг в лог"), isOn: $model.diagPerfLog)
-                    }
-                }
-
-                Note(L("Графика, чувствительность стиков, гироскоп и раскладка геймпада — на вкладках «Графика» и «Управление»: они общие с одиночной игрой."))
+                // No Diagnostics panel here. There used to be one, with its own
+                // copies of the performance switches, and because both panels
+                // wrote the same two cvars the one further down the commit won:
+                // the panel on the Game tab could not turn the strip on at all.
+                // One setting, one switch, one place.
+                Note(L("Графика, прицел, чувствительность стиков, гироскоп, раскладка геймпада и диагностика — на вкладках «Графика», «Управление» и «Игра»: они общие с одиночной игрой."))
             }
             .padding(Space.xl)
         }

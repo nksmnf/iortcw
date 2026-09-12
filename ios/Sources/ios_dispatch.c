@@ -34,6 +34,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // answer rather than a placeholder: everything the launcher asks for at that
 // point -- where the data folder is, what is in it, what the stored settings
 // say -- is read from files both copies read the same way.
+//
+// The three calls that write the launcher's settings go to both instead. The
+// settings are the player's, not the running game's, and whichever copy ends
+// up writing ios_launcher.cfg has to be holding all of them.
 
 #include "ios_bridge.h"
 #include "ios_dispatch.h"
@@ -113,6 +117,24 @@ int SP_IOSBridge_LogSnapshot( char *out, int outSize );
 int MP_IOSBridge_LogSnapshot( char *out, int outSize );
 unsigned SP_IOSBridge_LogVersion( void );
 unsigned MP_IOSBridge_LogVersion( void );
+void SP_IOSBridge_SelfTestBegin( const char *title );
+void MP_IOSBridge_SelfTestBegin( const char *title );
+void SP_IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail );
+void MP_IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail );
+void SP_IOSBridge_SelfTestEnd( int passed, int failed, int skipped );
+void MP_IOSBridge_SelfTestEnd( int passed, int failed, int skipped );
+int SP_IOSBridge_SelfTestSnapshot( char *out, int outSize );
+int MP_IOSBridge_SelfTestSnapshot( char *out, int outSize );
+int SP_IOSBridge_SelfTestRunning( void );
+int MP_IOSBridge_SelfTestRunning( void );
+unsigned SP_IOSBridge_SelfTestVersion( void );
+unsigned MP_IOSBridge_SelfTestVersion( void );
+void SP_IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped );
+void MP_IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped );
+void SP_IOSBridge_SelfTestTitle( char *out, int outSize );
+void MP_IOSBridge_SelfTestTitle( char *out, int outSize );
+int SP_IOSBridge_SelfTestLoadStored( char *out, int outSize );
+int MP_IOSBridge_SelfTestLoadStored( char *out, int outSize );
 void SP_IOSBridge_ExecCommand( const char *command );
 void MP_IOSBridge_ExecCommand( const char *command );
 bool SP_IOSBridge_ServerRunning( void );
@@ -284,12 +306,10 @@ int IOSBridge_SetRussianPaks( bool on )
 
 void IOSBridge_SetCvar( const char *name, const char *value )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_SetCvar( name, value );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_SetCvar( name, value );
+	MP_IOSBridge_SetCvar( name, value );
 }
 
 const char * IOSBridge_GetCvar( const char *name )
@@ -303,22 +323,18 @@ const char * IOSBridge_GetCvar( const char *name )
 
 void IOSBridge_ForgetCvar( const char *name )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_ForgetCvar( name );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_ForgetCvar( name );
+	MP_IOSBridge_ForgetCvar( name );
 }
 
 void IOSBridge_SetBinding( const char *keyName, const char *action )
 {
-	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
-		MP_IOSBridge_SetBinding( keyName, action );
-		return;
-	}
-
+	// Both copies: this writes the launcher's settings,
+	// which belong to the player and not to a game.
 	SP_IOSBridge_SetBinding( keyName, action );
+	MP_IOSBridge_SetBinding( keyName, action );
 }
 
 const char * IOSBridge_GetBinding( const char *keyName )
@@ -444,6 +460,92 @@ unsigned IOSBridge_LogVersion( void )
 	}
 
 	return SP_IOSBridge_LogVersion(  );
+}
+
+void IOSBridge_SelfTestBegin( const char *title )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestBegin( title );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestBegin( title );
+}
+
+void IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestRow( verdict, group, name, detail );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestRow( verdict, group, name, detail );
+}
+
+void IOSBridge_SelfTestEnd( int passed, int failed, int skipped )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestEnd( passed, failed, skipped );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestEnd( passed, failed, skipped );
+}
+
+int IOSBridge_SelfTestSnapshot( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestSnapshot( out, outSize );
+	}
+
+	return SP_IOSBridge_SelfTestSnapshot( out, outSize );
+}
+
+int IOSBridge_SelfTestRunning( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestRunning(  );
+	}
+
+	return SP_IOSBridge_SelfTestRunning(  );
+}
+
+unsigned IOSBridge_SelfTestVersion( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestVersion(  );
+	}
+
+	return SP_IOSBridge_SelfTestVersion(  );
+}
+
+void IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestCounts( passed, failed, skipped );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestCounts( passed, failed, skipped );
+}
+
+void IOSBridge_SelfTestTitle( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestTitle( out, outSize );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestTitle( out, outSize );
+}
+
+int IOSBridge_SelfTestLoadStored( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestLoadStored( out, outSize );
+	}
+
+	return SP_IOSBridge_SelfTestLoadStored( out, outSize );
 }
 
 void IOSBridge_ExecCommand( const char *command )

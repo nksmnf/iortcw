@@ -123,8 +123,6 @@ final class MultiplayerModel: ObservableObject {
     @Published var autoReload: Bool = true
     @Published var drawFPS: Bool = false
     @Published var lagometer: Bool = false
-    @Published var drawCrosshair: Int = 1
-    @Published var crosshairSize: Double = 48
     @Published var blood: Bool = true
     @Published var simpleItems: Bool = false
     @Published var teamChatHeight: Int = 8
@@ -185,8 +183,6 @@ final class MultiplayerModel: ObservableObject {
         autoReload   = d.object(forKey: "mp.autoreload") as? Bool ?? autoReload
         drawFPS      = d.object(forKey: "mp.drawfps") as? Bool ?? drawFPS
         lagometer    = d.object(forKey: "mp.lagometer") as? Bool ?? lagometer
-        drawCrosshair = d.object(forKey: "mp.crosshair") as? Int ?? drawCrosshair
-        crosshairSize = d.object(forKey: "mp.crosshairsize") as? Double ?? crosshairSize
         blood        = d.object(forKey: "mp.blood") as? Bool ?? blood
         simpleItems  = d.object(forKey: "mp.simpleitems") as? Bool ?? simpleItems
         allowDownload = d.object(forKey: "mp.download") as? Bool ?? allowDownload
@@ -229,8 +225,6 @@ final class MultiplayerModel: ObservableObject {
         d.set(autoReload, forKey: "mp.autoreload")
         d.set(drawFPS, forKey: "mp.drawfps")
         d.set(lagometer, forKey: "mp.lagometer")
-        d.set(drawCrosshair, forKey: "mp.crosshair")
-        d.set(crosshairSize, forKey: "mp.crosshairsize")
         d.set(blood, forKey: "mp.blood")
         d.set(simpleItems, forKey: "mp.simpleitems")
         d.set(allowDownload, forKey: "mp.download")
@@ -273,8 +267,6 @@ final class MultiplayerModel: ObservableObject {
         IOSBridge_SetCvar("cg_autoReload", autoReload ? "1" : "0")
         IOSBridge_SetCvar("cg_drawFPS", drawFPS ? "1" : "0")
         IOSBridge_SetCvar("cg_lagometer", lagometer ? "1" : "0")
-        IOSBridge_SetCvar("cg_drawCrosshair", "\(drawCrosshair)")
-        IOSBridge_SetCvar("cg_crosshairSize", String(format: "%.0f", crosshairSize))
         IOSBridge_SetCvar("cg_showblood", blood ? "1" : "0")
         IOSBridge_SetCvar("cg_simpleItems", simpleItems ? "1" : "0")
         IOSBridge_SetCvar("cg_teamChatHeight", "\(teamChatHeight)")
@@ -285,14 +277,14 @@ final class MultiplayerModel: ObservableObject {
         // path -- slower, but it is the difference between joining and not.
         IOSBridge_SetCvar("cl_allowDownload", allowDownload ? "1" : "0")
 
-        // Multiplayer is not single player: pmove_fixed changes movement
-        // behaviour and a server decides it, not the client.
-        IOSBridge_SetCvar("pmove_fixed", "0")
-
-        // The engine defaults this to 0 on iOS so a single-player game never
-        // triggers the Local Network prompt. Multiplayer needs it on; 1 is IPv4
-        // only, which is what every master and nearly every server speaks.
-        IOSBridge_SetCvar("net_enabled", "1")
+        // net_enabled is deliberately NOT set here, although multiplayer does
+        // need it on. It is read before any config is exec'd, so a value put in
+        // the launcher's file can never take effect -- the command line is the
+        // only place that can carry it, and ios_bridge.c sets it there from
+        // which game is being started. Written here as well it was a line in
+        // the config that disagreed with the running engine for the rest of the
+        // session, which is precisely what the settings check reports as a
+        // fault, and it would have been right to.
 
         // The game's own server browser, set so that it shows what is out there.
         //

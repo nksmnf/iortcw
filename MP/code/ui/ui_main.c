@@ -1335,7 +1335,7 @@ qboolean UI_ParseMenu( const char *menuFile ) {
 
 qboolean Load_Menu( int handle ) {
 	pc_token_t token;
-	int cl_language;    // NERVE - SMF
+	int menuLanguage;   // NERVE - SMF -- which ui_mp folder, see below
 
 	if ( !trap_PC_ReadToken( handle, &token ) ) {
 		return qfalse;
@@ -1359,9 +1359,21 @@ qboolean Load_Menu( int handle ) {
 		}
 
 		// NERVE - SMF - localization crap
-		cl_language = atoi( UI_Cvar_VariableString( "cl_language" ) );
+		//
+		// The folder the menus come from is asked separately from the language
+		// the strings are in: cl_menuLanguage -1 follows cl_language the way a
+		// stock client does, and anything else overrides it. The Russian
+		// anthology needs the two apart -- its strings are in translation.cfg's
+		// French column, which only cl_language 1 reads, while its menus are in
+		// the plain ui_mp/ folder and would otherwise lose to the 38 genuinely
+		// French menus in mp_pak1, 2, 3 and 5. See cl_main.c.
+		menuLanguage = atoi( UI_Cvar_VariableString( "cl_menuLanguage" ) );
 
-		if ( cl_language ) {
+		if ( menuLanguage < 0 ) {
+			menuLanguage = atoi( UI_Cvar_VariableString( "cl_language" ) );
+		}
+
+		if ( menuLanguage > 0 ) {
 			const char *s = NULL; // TTimo: init
 			const char *filename;
 			char out[256];
@@ -1371,13 +1383,13 @@ qboolean Load_Menu( int handle ) {
 
 			filename = COM_SkipPath( token.string );
 
-			if ( cl_language == 1 ) {
+			if ( menuLanguage == 1 ) {
 				s = va( "%s%s", out, "french/" );
-			} else if ( cl_language == 2 ) {
+			} else if ( menuLanguage == 2 ) {
 				s = va( "%s%s", out, "german/" );
-			} else if ( cl_language == 3 ) {
+			} else if ( menuLanguage == 3 ) {
 				s = va( "%s%s", out, "italian/" );
-			} else if ( cl_language == 4 ) {
+			} else if ( menuLanguage == 4 ) {
 				s = va( "%s%s", out, "spanish/" );
 			}
 

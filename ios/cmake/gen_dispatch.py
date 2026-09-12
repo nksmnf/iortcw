@@ -21,6 +21,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HEADER = os.path.join(HERE, '..', 'Sources', 'ios_bridge.h')
 OUTPUT = os.path.join(HERE, '..', 'Sources', 'ios_dispatch.c')
 
+# Calls that go to both engines instead of to the active one.
+#
+# These three write the launcher's own settings table, and that table is not the
+# running game's -- it is the player's one set of settings, which both copies of
+# the bridge have to be holding when either of them writes ios_launcher.cfg.
+# Forwarded to the active engine alone the two tables drift: each one seeds
+# itself from the file at a different moment, so a setting dropped from one
+# (IOSBridge_ForgetCvar) walks straight back in the next time the other writes
+# the file. cg_drawCrosshair did exactly that -- seeded once, forgotten by the
+# campaign copy, written back by the multiplayer copy, and re-applied over the
+# player's own choice on every launch afterwards.
+#
+# Only void calls can be mirrored, and only ones with no return value to
+# disagree about; the generator checks.
+MIRRORED = frozenset((
+    'IOSBridge_SetCvar',
+    'IOSBridge_ForgetCvar',
+    'IOSBridge_SetBinding',
+))
+
 # One declaration per line in the header, which is the style it is written in.
 DECL = re.compile(
     r'^\s*(?P<ret>(?:const\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\**)\s*'
@@ -90,6 +110,10 @@ def main():
         '// answer rather than a placeholder: everything the launcher asks for at that',
         '// point -- where the data folder is, what is in it, what the stored settings',
         '// say -- is read from files both copies read the same way.',
+        '//',
+        '// The three calls that write the launcher\'s settings go to both instead. The',
+        '// settings are the player\'s, not the running game\'s, and whichever copy ends',
+        '// up writing ios_launcher.cfg has to be holding all of them.',
         '',
         '#include "ios_bridge.h"',
         '#include "ios_dispatch.h"',
@@ -134,6 +158,20 @@ def main():
         lines.append('%s %s( %s )' % (ret, name, sig))
         lines.append('{')
         ret_kw = '' if ret == 'void' else 'return '
+
+        if name in MIRRORED:
+            if ret != 'void':
+                sys.exit('%s returns %s and cannot be mirrored' % (name, ret))
+            # Both, in a fixed order, because the two tables are one set of
+            # settings held twice. See MIRRORED.
+            lines.append('\t// Both copies: this writes the launcher\'s settings,')
+            lines.append('\t// which belong to the player and not to a game.')
+            lines.append('\tSP_%s( %s );' % (name, call))
+            lines.append('\tMP_%s( %s );' % (name, call))
+            lines.append('}')
+            lines.append('')
+            continue
+
         lines.append('\tif ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {')
         lines.append('\t\t%sMP_%s( %s );' % (ret_kw, name, call))
         if ret == 'void':

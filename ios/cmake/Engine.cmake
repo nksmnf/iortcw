@@ -28,6 +28,14 @@ include(${CMAKE_CURRENT_LIST_DIR}/StaticVM.cmake)
 # cannot drift. Anything declared there is exported from each tree under its
 # prefix and forwarded by ios_dispatch.c.
 function(iortcw_bridge_symbols out_var)
+    # Read at configure time, so the build has to be told to configure again
+    # when it changes. Without this a function added to the header links against
+    # an export list generated before it existed, and the failure is a page of
+    # "symbol not found ... referenced from -exported_symbols_list", which says
+    # nothing at all about the header being stale.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.h")
+
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.h" _hdr)
     string(REGEX MATCHALL "\n[A-Za-z_][A-Za-z0-9_ *]*[ *](IOSBridge_[A-Za-z0-9_]+|Sys_IOS_Launcher[A-Za-z0-9_]+)[ ]*\\(" _matches "${_hdr}")
 
@@ -136,7 +144,9 @@ function(iortcw_build_engine TREE)
         )
     endif()
 
-    list(APPEND ENGINE_SRC "${_dir}/code/qcommon/vm_static.c")
+    list(APPEND ENGINE_SRC
+        "${_dir}/code/qcommon/vm_static.c"
+        "${_dir}/code/client/cl_selftest.c")
 
     set(BOTLIB_SRC ${ENGINE_SRC})
     list(FILTER BOTLIB_SRC INCLUDE REGEX "code/botlib/")

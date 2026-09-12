@@ -36,7 +36,7 @@ struct LauncherView: View {
     /// The MP application carries two extra tabs -- finding a game and running
     /// one -- and swaps Campaign for the multiplayer settings, so the count is
     /// not a constant.
-    private static var tabCount: Int { 7 }
+    private static var tabCount: Int { 8 }
 
     /// The tab the launcher opens on is decided here rather than being a
     /// constant on `tab`, because the model is built before the view is and by
@@ -58,7 +58,13 @@ struct LauncherView: View {
         // the server browser rather than the campaign.
         // Debug aid: a script driving the simulator has no way to tap a tab, so
         // it can name one instead. Unset in normal use.
-        if let forced = UserDefaults.standard.object(forKey: "IORTCWStartTab") as? Int {
+        // Set by the engine when a test run finishes, and consumed here: the
+        // player is put back on the page they pressed the button on, once, and
+        // the next launch opens wherever it normally would.
+        if UserDefaults.standard.bool(forKey: "IORTCWShowTestTab") {
+            UserDefaults.standard.removeObject(forKey: "IORTCWShowTestTab")
+            _tab = State(initialValue: 7)
+        } else if let forced = UserDefaults.standard.object(forKey: "IORTCWStartTab") as? Int {
             _tab = State(initialValue: forced)
         } else {
             // Whichever half of the game is actually installed decides where to
@@ -87,12 +93,14 @@ struct LauncherView: View {
                 Text(L("Свой сервер")).tag(4)
                 Text(L("Графика")).tag(5)
                 Text(L("Управление")).tag(6)
+                Text(L("Проверка")).tag(7)
             }
             .pickerStyle(.segmented)
-            // Seven tabs now, not four: at 620 the two longest were being
+            // Eight tabs now, not four: at 620 the two longest were being
             // truncated to "Мультипле..." and "Свой серв...", which is worse
-            // than the widget looking a little stretched.
-            .frame(maxWidth: 1000)
+            // than the widget looking a little stretched. Widened again by the
+            // width of the testing tab, for the same reason.
+            .frame(maxWidth: 1120)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Space.xl)
             .padding(.top, Space.l)
@@ -108,7 +116,8 @@ struct LauncherView: View {
                 case 3: MultiplayerSettingsView(model: model, mp: model.mp)
                 case 4: HostView(model: model, mp: model.mp)
                 case 5: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                case 6: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                default: TestingView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
                 }
             }
 
@@ -1718,7 +1727,7 @@ private struct ControlsView: View {
         case touchGyroInvertYaw, touchGyroInvertPitch
         case volume, music
         case autoSwitch, autoActivate, emptySwitch, viewBob, crosshair
-        case perfHud, perfLog, padLog
+        case perfHud, perfLog, verboseLog, padLog
     }
 
     /// What a row does when it is confirmed or pushed sideways. Written as one
@@ -2172,16 +2181,25 @@ private struct ControlsView: View {
                 }
             }
 
+            // The one Diagnostics panel. Multiplayer used to carry a second one
+            // with its own copy of the first two switches; both wrote the same
+            // two cvars and the multiplayer copy was written last, so this one
+            // could not turn the strip on at all.
             Panel(L("Диагностика")) {
-                Field {
+                Field(note: L("note.perfHud")) {
                     Toggle(L("Панель производительности"), isOn: $model.perfHud)
                         .id(Row.perfHud)
                         .padFocus(focused(.perfHud))
                 }
-                Field {
+                Field(note: L("note.perfLog")) {
                     Toggle(L("Запись производительности в perf.csv"), isOn: $model.perfLog)
                         .id(Row.perfLog)
                         .padFocus(focused(.perfLog))
+                }
+                Field(note: L("note.verboseLog")) {
+                    Toggle(L("Подробный лог движка"), isOn: $model.verboseLog)
+                        .id(Row.verboseLog)
+                        .padFocus(focused(.verboseLog))
                 }
                 Field(note: L("note.diag")) {
                     Toggle(L("Запись событий контроллера в лог"), isOn: $model.padLog)
@@ -2260,6 +2278,7 @@ private struct ControlsView: View {
         case .perfHud:       return .flag(\.perfHud)
         case .perfLog:       return .flag(\.perfLog)
         case .padLog:        return .flag(\.padLog)
+        case .verboseLog:    return .flag(\.verboseLog)
         case .test:          return .press { showTest = true }
         case .binds:         return .press { showBinds = true }
         case .reset:         return .press { model.applyDefaultBindings() }

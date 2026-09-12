@@ -78,7 +78,7 @@ done
 # The Russian localisation, when it is in res/. Optional -- the launcher's
 # language switch parks these as *.pk3.off rather than needing them gone.
 for f in sp_zpak_russian_text.pk3 sp_zpak_russian_sound.pk3 \
-         mp_zpak_russian_text.pk3 mp_zzru_french_menus.pk3; do
+         mp_zpak_russian_text.pk3; do
     [ -f "$DATA_SRC/$f" ] || continue
     [ -f "$MAIN/$f" ] || { echo "   $f"; cp "$DATA_SRC/$f" "$MAIN/$f"; }
 done

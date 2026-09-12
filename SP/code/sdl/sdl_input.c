@@ -667,7 +667,8 @@ static int   gyroAxis[2];      // [0] pitch, [1] yaw, as last written to the axe
 // makes a zero from one half quieten that half and nothing else.
 #define GYRO_SRC_PAD     0   // the controller's own sensor
 #define GYRO_SRC_TABLET  1   // the iPad's, out of CoreMotion
-#define GYRO_SRC_COUNT   2
+#define GYRO_SRC_EMU     2   // padtest's, so a run can exercise gyro aiming
+#define GYRO_SRC_COUNT   3
 
 static int gyroSource[GYRO_SRC_COUNT][2];   // [source][0] pitch, [1] yaw
 
@@ -686,6 +687,13 @@ static qboolean IN_PadStickPushedRecently( void );
 static void IN_PadEmuEnsure( void );
 static void IN_PadEmuForget( void );
 static void IN_PadEmuDetach( void );
+
+// The self-test lives in cl_selftest.c and is hooked in from here because
+// this is the one file SP and MP share byte for byte: a registration put in
+// either tree's cl_main.c would have to be kept in step by hand, and the two
+// trees have already drifted everywhere else.
+void CL_SelfTest_Init( void );
+void CL_SelfTestFrame( void );
 
 
 /*
@@ -944,7 +952,27 @@ GameController never sees it.
 void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force )
 {
 #if TARGET_OS_IPHONE
+	static cvar_t *in_adaptiveTriggers;
+
 	if ( !gamepad ) {
+		return;
+	}
+
+	// The launcher offers this as a switch, so something has to read it. Nothing
+	// did: the value was written to the config on every launch and never looked
+	// at, so turning the triggers off left them on.
+	//
+	// Registered on first use rather than in IN_Init, because IN_Init runs
+	// before the configs are exec'd and would pin the value at its default.
+	if ( !in_adaptiveTriggers ) {
+		in_adaptiveTriggers = Cvar_Get( "in_adaptiveTriggers", "1", CVAR_ARCHIVE );
+	}
+
+	if ( !in_adaptiveTriggers->integer ) {
+		// Off means off, not "stop changing them": a profile set before the
+		// switch was turned off would otherwise stay on the triggers until the
+		// pad was unplugged.
+		Sys_IOS_SetAdaptiveTrigger( side, ADAPTIVE_TRIGGER_OFF, 0.0f, 0.0f, 0.0f );
 		return;
 	}
 
@@ -1618,7 +1646,12 @@ static qboolean IN_CutsceneActive( void )
 
 	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
 	// CL_KeyDownEvent itself tests when deciding that a key means "skip".
+#ifdef IORTCW_MP_BUILD
+	// Multiplayer has no cutscenes, and clientActive_t there has no cameraMode.
+	return qfalse;
+#else
 	return cl.cameraMode ? qtrue : qfalse;
+#endif
 }
 
 static qboolean IN_SkipsCutscene( int button )
@@ -3350,6 +3383,10 @@ void IN_Frame( void )
 	// has been turned on. See PAD EMULATION above.
 	IN_PadEmuFrame( );
 
+	// And the self-test, which drives the pad emulator among other things, so it
+	// has to have moved the run on before the frame it is measuring is read.
+	CL_SelfTestFrame( );
+
 	IN_JoyMove( );
 
 	// If not DISCONNECTED (main menu) or ACTIVE (in game), we're loading
@@ -3475,6 +3512,12 @@ typedef struct
 	// Not a thing the step itself checks -- the row after it is what catches
 	// what goes wrong.
 	qboolean flip;
+
+	// Gyro to hold alongside the sticks, in view degrees per second, the way
+	// the player would read it off a settings screen: positive yaw to the
+	// right, positive pitch downwards. Trailing fields, so every row written
+	// before the gyro existed keeps a quiet gyro without being touched.
+	float gyroPitch, gyroYaw;
 } padEmuStep_t;
 
 static const padEmuStep_t padEmuScript[] =
@@ -3516,6 +3559,35 @@ static const padEmuStep_t padEmuScript[] =
 	{ "left stick right, mode switched under it",
 	                                     1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ANY,   PADEMU_ANY,   PADEMU_ZERO, PADEMU_ZERO, qtrue },
 
+	// The gyro on its own, which is the whole of the aim for a player who has
+	// put the sticks down. It goes in through a source of its own rather than
+	// the controller's: the pad is polled every frame and reports a quiet
+	// sensor as zero, so anything written into the controller's row would be
+	// wiped before the frame ended.
+	//
+	// These rows exist because this is precisely what was missing. Multiplayer
+	// carried the 2003 CL_JoystickMove, which reads four axes and stops, so the
+	// gyro axes were filled every frame by a backend that both games share and
+	// then read by neither -- the setting was on, the sensor was working, and
+	// the view did not move. Nothing in the table caught it, because nothing in
+	// the table had ever asked the gyro a question.
+	{ "gyro turning right",              0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO, qfalse,
+	                                       0.0f, 220.0f },
+	{ "gyro turning left",               0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO, qfalse,
+	                                       0.0f, -220.0f },
+	{ "gyro looking up",                 0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_FULL, qfalse,
+	                                    -190.0f,   0.0f },
+	{ "gyro looking down",               0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, qfalse,
+	                                     190.0f,   0.0f },
+
+	// Gyro and stick together, which is how gyro aim is actually played: the
+	// stick makes the big turn and the wrist corrects inside it. The two are
+	// added, so a stick turn with the gyro pulling the other way has to come
+	// out as very little -- if either one wins outright, they are not being
+	// mixed but chosen between.
+	{ "gyro against the stick",          0.00f,  0.00f,  1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_ZERO, qfalse,
+	                                       0.0f, -220.0f },
+
 	// And nothing at all, which has to come out as nothing at all. A row that
 	// fails here is something else writing the axes -- a gyro, a stuck touch,
 	// a direction nobody let go of -- and every other row in the table is worth
@@ -3533,6 +3605,14 @@ static int   padEmuFrame;
 static float padEmuYawStart, padEmuPitchStart;
 static int   padEmuStartTime;
 static int   padEmuPassed, padEmuFailed;
+
+// The names of the rows that failed, kept so a report written somewhere
+// else can say which ones rather than pointing at a console that may not
+// have survived -- the engine truncates its own log on a game restart, and
+// a run that loads a map is exactly the case where that happens.
+#define PADEMU_MAX_NAMED  6
+static char  padEmuFailedNames[PADEMU_MAX_NAMED][48];
+static int   padEmuFailedNamed;
 static qboolean padEmuQuitWhenDone;   // padtest quit -- for scripted runs
 static int   padEmuAttachCount;       // how many times the device has been put in
 static int   padEmuAttachAtStart;     // what it was when the current run began
@@ -3799,6 +3879,12 @@ static void IN_PadEmuMeasure( const padEmuStep_t *step )
 
 	padEmuFailed++;
 
+	if ( padEmuFailedNamed < PADEMU_MAX_NAMED ) {
+		Q_strncpyz( padEmuFailedNames[padEmuFailedNamed], step->what,
+			sizeof( padEmuFailedNames[0] ) );
+		padEmuFailedNamed++;
+	}
+
 	// Named individually, because which output went wrong is the whole
 	// diagnosis: a turn on a movement-only row and a movement on a look-only
 	// row are two different bugs that feel the same.
@@ -3824,6 +3910,21 @@ static void IN_PadEmuMeasure( const padEmuStep_t *step )
 			( abs( step->look ) == PADEMU_DIAG ? "about seven tenths" :
 			( step->look > 0 ? "up" : "down" ) ) ), look );
 	}
+}
+
+/*
+===============
+IN_PadEmuGyro
+
+Holds a gyro reading for as long as a step asks for it, in the units the axes
+are carried in.
+===============
+*/
+static void IN_PadEmuGyro( float pitch, float yaw )
+{
+	IN_GyroContribute( GYRO_SRC_EMU,
+		(int)( pitch * GYRO_AXIS_SCALE ),
+		(int)( yaw   * GYRO_AXIS_SCALE ) );
 }
 
 /*
@@ -3935,10 +4036,42 @@ static void IN_PadEmuFrame( void )
 		// than from wherever the last one left the stick. A digital movement key
 		// that is still held would otherwise be credited to the step after it.
 		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+		IN_PadEmuGyro( 0.0f, 0.0f );
 		return;
 	}
 
 	IN_PadEmuWrite( step->lx, step->ly, step->rx, step->ry );
+	IN_PadEmuGyro( step->gyroPitch, step->gyroYaw );
+}
+
+/*
+===============
+IN_PadTestResult
+
+What the last table came to, and whether one is still running. The counters are
+private to this file; the self-test needs them to say whether the run it started
+actually finished and what it found.
+===============
+*/
+const char *IN_PadTestFailureName( int index )
+{
+	if ( index < 0 || index >= padEmuFailedNamed ) {
+		return NULL;
+	}
+	return padEmuFailedNames[index];
+}
+
+void IN_PadTestResult( int *passed, int *failed, qboolean *running )
+{
+	if ( passed ) {
+		*passed = padEmuPassed;
+	}
+	if ( failed ) {
+		*failed = padEmuFailed;
+	}
+	if ( running ) {
+		*running = ( padEmuStepIndex >= 0 ) ? qtrue : qfalse;
+	}
 }
 
 /*
@@ -3976,11 +4109,22 @@ static void IN_PadTest_f( void )
 	// table would come out all zeroes and read as a pass.
 	if ( CL_UIActive() ) {
 		Com_Printf( "padtest: start a map first -- nothing moves while a menu or a loading screen is up\n" );
+		// Which of the two reasons it was, because from a script they look the
+		// same and the difference decides what to do next: a key catcher means
+		// something is on screen waiting to be dismissed, a connection state
+		// means the map is not running yet and waiting longer is the answer.
+		Com_Printf( "         keycatcher %d, connection state %d\n",
+			Key_GetCatcher(), (int)clc.state );
 		return;
 	}
 
 	Com_Printf( "\npadtest: %d steps. Turn is positive to the right, look is positive upwards.\n",
 		(int)ARRAY_LEN( padEmuScript ) );
+	// The gyro rows put their reading straight onto the shared total, which is
+	// downstream of in_gyro: they ask whether the engine turns the view when
+	// the axes carry something, not whether the switch is on. A run with gyro=0
+	// on the line below and the gyro rows passing is correct, not a contradiction.
+	Com_Printf( "padtest: the gyro rows drive the axes directly, so they do not test the in_gyro switch.\n" );
 	Com_Printf( "padtest: direct=%s digital=%s dpad=%s deadzone=%s yawSpeed=%s pitchSpeed=%s"
 		" stickExpo=%s moveExpo=%s invert=%s gyro=%s gyroSens=%s touchGyro=%s\n\n",
 		Cvar_VariableString( "in_gamepadDirect" ), Cvar_VariableString( "in_moveDigital" ),
@@ -3990,6 +4134,7 @@ static void IN_PadTest_f( void )
 		Cvar_VariableString( "in_invertLook" ), Cvar_VariableString( "in_gyro" ),
 		Cvar_VariableString( "in_gyroSens" ), Cvar_VariableString( "in_touchGyro" ) );
 
+	padEmuFailedNamed = 0;
 	padEmuStepIndex = 0;
 	padEmuFrame = 0;
 	padEmuPassed = 0;
@@ -4128,6 +4273,7 @@ void IN_Init( void *windowData )
 	in_padEmulate->modified = qfalse;
 
 	Cmd_AddCommand( "padtest", IN_PadTest_f );
+	CL_SelfTest_Init();
 
 	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
 	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );

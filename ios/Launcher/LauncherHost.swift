@@ -36,7 +36,18 @@ final class LauncherHost {
     var isSkipping: Bool {
         UserDefaults.standard.bool(forKey: "IORTCWSkipLauncher")
             && IOSBridge_HasGameData()
+            && !reopening
     }
+
+    /// Set while the launcher is being asked for a second time -- by the
+    /// console command, or by a finished test run wanting to show its report.
+    ///
+    /// Without it "skip the launcher" applies to those too, and they do nothing
+    /// at all: the player presses the button, the run happens, and the game
+    /// sits in its own menu with no sign that anything was measured. Skipping
+    /// is about what happens at startup; it was never meant to be an answer to
+    /// somebody asking for the launcher.
+    var reopening = false
 
     /// Debug aid: start hosting straight away, with whatever is stored in the
     /// hosting settings. A script driving the simulator cannot tap the button,
@@ -173,5 +184,27 @@ public func IOSLauncher_RunModal() {
 @_cdecl("IOSLauncher_Show")
 public func IOSLauncher_Show() {
     Sys_IOS_LauncherReset()
+    MainActor.assumeIsolated { LauncherHost.shared.reopening = true }
     IOSLauncher_RunModal()
+    MainActor.assumeIsolated { LauncherHost.shared.reopening = false }
+}
+
+/// Reopen the launcher on the testing page, called by cl_selftest.c when a run
+/// finishes.
+///
+/// Same mechanism as reopening it by hand, which is the point: a run ends with
+/// the player back where they pressed the button, reading the answer, rather
+/// than sitting in a test map with no idea whether anything happened.
+///
+/// Safe to call from inside the engine's frame, where it comes from: the run's
+/// state machine has already put itself back to idle by the time this is
+/// reached, so the frames that keep turning while the runloop is pumped find
+/// nothing left to do.
+@_cdecl("IOSLauncher_ShowSelfTest")
+public func IOSLauncher_ShowSelfTest() {
+    UserDefaults.standard.set(true, forKey: "IORTCWShowTestTab")
+    Sys_IOS_LauncherReset()
+    MainActor.assumeIsolated { LauncherHost.shared.reopening = true }
+    IOSLauncher_RunModal()
+    MainActor.assumeIsolated { LauncherHost.shared.reopening = false }
 }
