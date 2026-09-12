@@ -519,6 +519,8 @@ static void IOSBridge_ScanStrays( const char *dir )
 	closedir( d );
 }
 
+static void IOSBridge_ScanCampaignMods( const char *root );
+
 bool IOSBridge_ScanData( bool rescan )
 {
 	const char *dir;
@@ -542,6 +544,7 @@ bool IOSBridge_ScanData( bool rescan )
 	}
 
 	IOSBridge_ScanStrays( dir );
+	IOSBridge_ScanCampaignMods( dir );
 
 	return dataSets[IOS_DATA_SET_CAMPAIGN].maps > 0;
 }
@@ -748,6 +751,325 @@ IOSBridge_ImportLooseData
 int IOSBridge_ImportLooseData( void )
 {
 	return Sys_IOS_ImportLooseData();
+}
+
+/*
+==============
+Extra campaigns
+
+The fan campaigns are pure data: maps, their AAS, the level and character
+scripts, menus, text and sound, in one pk3 each. What they do not contain is
+compiled code -- the qagame and cgame DLLs the Windows originals shipped are
+not loadable here in any case -- so this engine runs them exactly as they are.
+That is why they can be listed at all: a mod that needed its own game module
+would be a port, not a copy.
+
+Each gets a folder of its own and is played with fs_game pointed at it, rather
+than having its pak dropped into main/. Three reasons, in order of how badly
+they bite:
+
+  - every one of them ships its own ui/*.menu and text/, and in main/ those
+    would override the retail campaign's menus for good;
+  - several reuse a retail map name (crypt1, dam, end), so in one search path
+    the wrong .bsp wins;
+  - savegames, wolfconfig.cfg and the console log then belong to the campaign
+    that made them, which is what a player switching between them wants.
+
+The retail paks stay visible either way: FS_Startup adds main/ first and the
+fs_game folder on top, so a campaign carries only what it changes.
+
+The table lives here rather than in the launcher because the importer needs it
+too -- a pk3 dropped at the top of the container has to be filed into the right
+folder instead of being swept into main/ with the retail data.
+==============
+*/
+typedef struct {
+	const char *dir;	// fs_game folder, and how the launcher names it
+	const char *pak;	// the one pk3 it ships as
+} campaignModDef_t;
+
+static const campaignModDef_t campaignMods[] = {
+	{ "time_gate",                  "time_gate.pk3" },
+	{ "stalingrad",                 "stalingrad.pk3" },
+	{ "saboteur",                   "saboteur.pk3" },
+	{ "ghosts_of_war",              "ghosts_of_war.pk3" },
+	{ "red_alert",                  "red_alert.pk3" },
+	{ "special_forces",             "special_forces.pk3" },
+	{ "project_51",                 "project_51.pk3" },
+	{ "pharaohs_curse",             "pharaohs_curse.pk3" },
+	{ "the_rate_is_more_than_life", "the_rate_is_more_than_life.pk3" },
+	{ "project_x",                  "project_x.pk3" }
+};
+
+static dataFileScan_t campaignModScan[ARRAY_LEN( campaignMods )];
+
+/*
+==============
+IOSBridge_ScanCampaignMods
+
+Same treatment the retail paks get: read the central directory, count the maps,
+and remember size and mtime so a rescan while the user is still copying costs
+one stat per campaign rather than a re-read of 300MB.
+==============
+*/
+static void IOSBridge_ScanCampaignMods( const char *root )
+{
+	int i;
+
+	for ( i = 0; i < (int)ARRAY_LEN( campaignMods ); i++ ) {
+		dataFileScan_t *scan = &campaignModScan[i];
+		char path[MAX_OSPATH];
+		struct stat st;
+
+		Com_sprintf( path, sizeof( path ), "%s/%s/%s",
+			root, campaignMods[i].dir, campaignMods[i].pak );
+
+		if ( stat( path, &st ) != 0 ) {
+			memset( scan, 0, sizeof( *scan ) );
+			continue;
+		}
+
+		if ( scan->scanned && scan->size == st.st_size &&
+			 scan->mtime == st.st_mtime ) {
+			continue;		// unchanged since the last look
+		}
+
+		memset( scan, 0, sizeof( *scan ) );
+		scan->present = qtrue;
+		scan->size = st.st_size;
+		scan->mtime = st.st_mtime;
+
+		IOSBridge_ScanPak( path, scan );
+	}
+}
+
+static const dataFileScan_t *IOSBridge_CampaignModScan( int index )
+{
+	if ( index < 0 || index >= (int)ARRAY_LEN( campaignMods ) ) {
+		return NULL;
+	}
+
+	IOSBridge_ScanData( false );
+
+	return &campaignModScan[index];
+}
+
+int IOSBridge_CampaignModCount( void )
+{
+	return (int)ARRAY_LEN( campaignMods );
+}
+
+const char *IOSBridge_CampaignModDir( int index )
+{
+	if ( index < 0 || index >= (int)ARRAY_LEN( campaignMods ) ) {
+		return "";
+	}
+
+	return campaignMods[index].dir;
+}
+
+const char *IOSBridge_CampaignModPak( int index )
+{
+	if ( index < 0 || index >= (int)ARRAY_LEN( campaignMods ) ) {
+		return "";
+	}
+
+	return campaignMods[index].pak;
+}
+
+bool IOSBridge_CampaignModInstalled( int index )
+{
+	const dataFileScan_t *scan = IOSBridge_CampaignModScan( index );
+
+	// Present and readable as a zip: a pk3 still being copied over the network
+	// is a file of the right name that the engine would refuse at load time,
+	// and offering it in the campaign list would be a promise we cannot keep.
+	return ( scan && scan->present && scan->scanned ) ? true : false;
+}
+
+int IOSBridge_CampaignModMaps( int index )
+{
+	const dataFileScan_t *scan = IOSBridge_CampaignModScan( index );
+
+	return scan ? scan->maps : 0;
+}
+
+double IOSBridge_CampaignModMegabytes( int index )
+{
+	const dataFileScan_t *scan = IOSBridge_CampaignModScan( index );
+
+	return scan ? scan->megabytes : 0.0;
+}
+
+bool IOSBridge_IsCampaignModDir( const char *dir )
+{
+	int i;
+
+	if ( !dir || !*dir ) {
+		return false;
+	}
+
+	for ( i = 0; i < (int)ARRAY_LEN( campaignMods ); i++ ) {
+		if ( !Q_stricmp( dir, campaignMods[i].dir ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+==============
+Game language
+
+The anthology's Russian paks are ordinary pk3s whose names put them last in the
+search order -- FS_AddGameDirectory rewrites a leading "sp_"/"mp_" to "zz", so
+sp_zpak_russian_* sorts after both pak0 and sp_pak1..4 and wins over them. That
+is exactly what makes switching back to English a problem: while the file is in
+main/ there is no cvar that can outrank it.
+
+So the switch is the file itself. The engine lists *.pk3 and nothing else, so a
+pak renamed to *.pk3.off is not in the game at all, and renaming it back costs
+one call and no copying -- which matters for the 163MB of dubbed dialogue.
+==============
+*/
+static const char *russianPaks[] = {
+	"sp_zpak_russian_text.pk3",
+	"sp_zpak_russian_sound.pk3",
+	"mp_zpak_russian_text.pk3",
+
+	// Multiplayer's Russian menus, in the slot a client with cl_language 1
+	// actually reads. The anthology puts its Russian strings in the French slot
+	// of scripts/translation.cfg because a 1.41 client has no Russian one, and
+	// ui_main.c's Load_Menu then looks for ui_mp/french/<file> before falling
+	// back -- where mp_pak0 has real French menus. Without this pak, choosing
+	// Russian in multiplayer gives Russian subtitles under a French menu.
+	"mp_zzru_french_menus.pk3"
+};
+
+#define IOS_PAK_OFF_SUFFIX ".off"
+
+bool IOSBridge_RussianPaksPresent( void )
+{
+	int i;
+
+	for ( i = 0; i < (int)ARRAY_LEN( russianPaks ); i++ ) {
+		char path[MAX_OSPATH];
+
+		Com_sprintf( path, sizeof( path ), "%s/main/%s",
+			Sys_IOS_DataPath(), russianPaks[i] );
+
+		if ( access( path, R_OK ) == 0 ) {
+			return true;
+		}
+
+		Q_strcat( path, sizeof( path ), IOS_PAK_OFF_SUFFIX );
+
+		if ( access( path, R_OK ) == 0 ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool IOSBridge_RussianPaksEnabled( void )
+{
+	int i;
+
+	// Any one of them live counts as on: a player may well have copied the
+	// text pak and skipped the 163MB of sound, and calling that "English"
+	// would then switch the menus back on the next launch.
+	for ( i = 0; i < (int)ARRAY_LEN( russianPaks ); i++ ) {
+		char path[MAX_OSPATH];
+
+		Com_sprintf( path, sizeof( path ), "%s/main/%s",
+			Sys_IOS_DataPath(), russianPaks[i] );
+
+		if ( access( path, R_OK ) == 0 ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int IOSBridge_SetRussianPaks( bool on )
+{
+	int i, changed = 0;
+
+	for ( i = 0; i < (int)ARRAY_LEN( russianPaks ); i++ ) {
+		char live[MAX_OSPATH], parked[MAX_OSPATH];
+		const char *from, *to;
+
+		Com_sprintf( live, sizeof( live ), "%s/main/%s",
+			Sys_IOS_DataPath(), russianPaks[i] );
+		Com_sprintf( parked, sizeof( parked ), "%s%s",
+			live, IOS_PAK_OFF_SUFFIX );
+
+		from = on ? parked : live;
+		to   = on ? live : parked;
+
+		if ( access( from, R_OK ) != 0 ) {
+			continue;		// not there, or already where it should be
+		}
+
+		if ( rename( from, to ) == 0 ) {
+			Com_Printf( "Language: %s %s\n",
+				on ? "enabled" : "parked", russianPaks[i] );
+			changed++;
+		}
+	}
+
+	if ( changed ) {
+		// The set scan counts what is in main/, and two of these are now a
+		// different file to it.
+		IOSBridge_ScanData( true );
+	}
+
+	return changed;
+}
+
+/*
+==============
+IOSBridge_RotateLog
+
+Keep the last two console logs per campaign.
+
+com_logfile 2 truncates rtcwconsole.log on every start, so without this the run
+the player wants to report is already gone by the time they think to ask for it
+-- and with fs_game there is one such file per campaign, each overwritten the
+next time that campaign is played. Two generations rather than a growing pile:
+the interesting run is almost always the last or the one before it, and a folder
+that fills up by itself on a device with no shell to clean it is its own bug.
+==============
+*/
+void IOSBridge_RotateLog( const char *tag )
+{
+	char logs[MAX_OSPATH], src[MAX_OSPATH], keep[MAX_OSPATH], prev[MAX_OSPATH];
+	const char *root = Sys_IOS_DataPath();
+
+	if ( !tag || !*tag || !root || !*root ) {
+		return;
+	}
+
+	Com_sprintf( src, sizeof( src ), "%s/%s/rtcwconsole.log", root, tag );
+
+	if ( access( src, R_OK ) != 0 ) {
+		return;		// nothing to keep -- first run of this campaign
+	}
+
+	Com_sprintf( logs, sizeof( logs ), "%s/logs", root );
+	mkdir( logs, 0755 );
+
+	Com_sprintf( keep, sizeof( keep ), "%s/%s.log", logs, tag );
+	Com_sprintf( prev, sizeof( prev ), "%s/%s-prev.log", logs, tag );
+
+	rename( keep, prev );	// may not exist yet; nothing to do if so
+
+	if ( rename( src, keep ) != 0 ) {
+		Com_Printf( "Could not keep %s\n", src );
+	}
 }
 
 /*

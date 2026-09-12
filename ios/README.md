@@ -53,6 +53,24 @@ Re-signing every 7 days is an *update*, not a reinstall, so the game data and
 your saves survive it — as long as the bundle identifier stays the same, which
 is why `IORTCW_BUNDLE_ID` is pinned rather than generated.
 
+### Extra campaigns and the Russian localisation
+
+Two optional things can be dropped in the same way, at the top level of the
+`iORTCW` folder — the launcher files them where they belong on the next start:
+
+- **Fan campaigns.** Ten of them, pure data, each one pak. Dropping
+  `time_gate.pk3` creates `time_gate/` and moves it there, and the campaign
+  appears in the picker on the Campaign tab. Русская документация:
+  [docs/RU/CAMPAIGNS.md](../docs/RU/CAMPAIGNS.md).
+- **The Russian localisation**, as shipped with the Russian anthology of the
+  game: text, menus and the dubbed campaign dialogue. The launcher's language
+  switch then moves the game with it, parking the paks as `*.pk3.off` for
+  English. Details, including what does and does not survive a pure server:
+  [docs/RU/RUSSIAN.md](../docs/RU/RUSSIAN.md).
+
+Each campaign keeps its own savegames and its own console log; the last two
+runs of each are kept under `iORTCW/logs/`.
+
 ## DualSense
 
 | Feature | How |

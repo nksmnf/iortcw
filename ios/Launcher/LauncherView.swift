@@ -336,6 +336,11 @@ struct LauncherView: View {
                 Button {
                     Loc.select(choice)
                     language = choice
+                    // The game follows the launcher: the Russian paks go out of
+                    // the search path for English and back in for Russian. It
+                    // takes effect on the next start of the engine, which is
+                    // the only moment the file system is read.
+                    model.applyLanguage(choice)
                 } label: {
                     Text(choice.title)
                         .font(TypeScale.status.weight(language == choice ? .semibold : .regular))
@@ -1243,21 +1248,33 @@ private struct CampaignView: View {
     /// leave each tile mostly empty.
     private static let columns = 4
 
-    /// The order the pad walks. The difficulty picker is one control, the way
-    /// the graphics presets are, so it takes a single place at the head of the
-    /// list and left and right choose within it.
+    /// The order the pad walks. The campaign and difficulty pickers are each
+    /// one control, the way the graphics presets are, so each takes a single
+    /// place at the head of the list and left and right choose within it.
     private enum Row: Hashable {
+        case campaign
         case skill
         case mission(String)
     }
 
-    private var missions: [CampaignMission] { CampaignMission.all }
+    private var missions: [CampaignMission] { model.campaign.missions }
+
+    /// Whether there is anything to choose between. With no extra campaign
+    /// installed the picker would be a control with one option, so the page
+    /// goes back to what it was before there were any.
+    private var hasChoice: Bool { model.availableCampaigns.count > 1 }
+
+    /// How many places the pad walks before the mission grid starts.
+    private var headRows: Int { hasChoice ? 2 : 1 }
 
     private func focused(_ row: Row) -> Bool {
         guard pad.connected, pad.isActive(scope) else { return false }
         switch row {
-        case .skill:            return cursor == 0
-        case .mission(let id):  return cursor > 0 && missions[cursor - 1].id == id
+        case .campaign:         return hasChoice && cursor == 0
+        case .skill:            return cursor == headRows - 1
+        case .mission(let id):
+            let index = cursor - headRows
+            return index >= 0 && index < missions.count && missions[index].id == id
         }
     }
 
@@ -1265,6 +1282,10 @@ private struct CampaignView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
+                    if hasChoice {
+                        campaignPicker
+                    }
+
                     VStack(alignment: .leading, spacing: Space.m) {
                         Text(L("Сложность"))
                             .font(TypeScale.section)
@@ -1329,6 +1350,70 @@ private struct CampaignView: View {
         }
     }
 
+    /// Which campaign the grid below belongs to.
+    ///
+    /// A menu rather than the segmented control difficulty gets: eleven names
+    /// do not fit across a bar, and unlike difficulty this is a list that grows
+    /// as the player copies more campaigns across. A pad cannot open a menu, so
+    /// left and right step through the list where the cursor is on the row --
+    /// the same gesture every other one-of-several control in the launcher
+    /// answers to.
+    private var campaignPicker: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            Text(L("Кампания"))
+                .font(TypeScale.section)
+
+            // Half the width, like the difficulty control above the same grid:
+            // a full-width row for a single name would end nowhere near any
+            // edge the columns below it use.
+            HStack(spacing: Space.l) {
+                Menu {
+                    ForEach(model.availableCampaigns) { campaign in
+                        Button {
+                            model.campaignID = campaign.id
+                            cursor = 0
+                        } label: {
+                            if campaign.id == model.campaign.id {
+                                Label(L(campaign.title), systemImage: "checkmark")
+                            } else {
+                                Text(L(campaign.title))
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: Space.s) {
+                        Text(L(model.campaign.title))
+                            .font(TypeScale.row)
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: Space.xs)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.hint)
+                    }
+                    .padding(.horizontal, Space.l)
+                    .padding(.vertical, Space.l)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.card,
+                                in: RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+                }
+                .frame(maxWidth: .infinity)
+                .padFocusRing(focused(.campaign), radius: cardRadius)
+
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: 0)
+            }
+            .id(Row.campaign)
+
+            if let summary = model.campaignSummary(model.campaign) {
+                Text("\(summary.maps) \(L("карт")) · \(Int(summary.megabytes)) \(L("МБ"))")
+                    .font(TypeScale.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     /// One mission.
     ///
     /// The whole tile is the button, so there is nothing for a marker at the
@@ -1374,49 +1459,65 @@ private struct CampaignView: View {
         guard pad.isActive(scope) else { return }
         let count = missions.count
         let cols = CampaignView.columns
+        let head = headRows
 
         switch key {
         case .up:
-            guard cursor > 0 else { return }
-            let index = cursor - 1
-            cursor = index < cols ? 0 : cursor - cols
-
-        case .down:
-            guard cursor > 0 else {
-                cursor = 1
+            guard cursor >= head else {
+                cursor = max(cursor - 1, 0)
                 break
             }
-            let index = cursor - 1
+            let index = cursor - head
+            cursor = index < cols ? head - 1 : cursor - cols
+
+        case .down:
+            guard cursor >= head else {
+                cursor += 1
+                break
+            }
+            let index = cursor - head
             // Off the bottom row the cursor leaves for the footer, rather than
             // sitting against the end of the grid with nowhere to go. A shorter
             // last row catches the cursor at its end instead.
             guard index / cols < (count - 1) / cols else { onFooter(); return }
-            cursor = min(index + cols, count - 1) + 1
+            cursor = min(index + cols, count - 1) + head
 
-        case .left:
-            guard cursor > 0 else {
-                padCycle(&model.skill, through: CampaignView.skills.map(\.value), forward: false)
+        case .left, .right:
+            let forward = key == .right
+
+            // On one of the rows above the grid the stroke chooses within that
+            // control rather than moving the cursor.
+            guard cursor >= head else {
+                if hasChoice && cursor == 0 {
+                    var id = model.campaignID
+                    padCycle(&id, through: model.availableCampaigns.map(\.id), forward: forward)
+                    model.campaignID = id
+                } else {
+                    padCycle(&model.skill, through: CampaignView.skills.map(\.value),
+                             forward: forward)
+                }
                 return
             }
-            cursor = max(cursor - 1, 1)
 
-        case .right:
-            guard cursor > 0 else {
-                padCycle(&model.skill, through: CampaignView.skills.map(\.value), forward: true)
-                return
-            }
-            cursor = min(cursor + 1, count)
+            cursor = forward ? min(cursor + 1, count + head - 1)
+                             : max(cursor - 1, head)
 
         case .confirm:
-            guard cursor > 0, model.canPlay else { return }
-            model.startMission(missions[cursor - 1])
+            guard cursor >= head, model.canPlay else { return }
+            model.startMission(missions[cursor - head])
             return
 
         default:
             return
         }
 
-        let row: Row = cursor == 0 ? .skill : .mission(missions[cursor - 1].id)
+        let row: Row
+        if cursor < head {
+            row = ( hasChoice && cursor == 0 ) ? .campaign : .skill
+        } else {
+            row = .mission(missions[min(cursor - head, max(count - 1, 0))].id)
+        }
+
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(row, anchor: .center)
         }

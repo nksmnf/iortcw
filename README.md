@@ -1,6 +1,26 @@
  ![iortcw logo](https://raw.githubusercontent.com/iortcw/iortcw/master/MP/misc/wolf128.png)                       
                                
 
+## About this fork
+
+This is a fork of [iortcw/iortcw](https://github.com/iortcw/iortcw) that adds an
+iPadOS port of both the single-player and multiplayer games: a SwiftUI launcher,
+native controller support including DualSense gyro aim and adaptive triggers, an
+on-screen touch layout, and a dedicated server that runs on the tablet itself.
+
+  * **[ios/README.md](ios/README.md)** — building the `.ipa`, the launcher, controls, multiplayer.
+  * **[docs/RU/](docs/RU/)** — notes in Russian: multiplayer, running a server, controller sticks, mission data, the ten fan campaigns and the Russian localisation.
+
+The upstream history is preserved in full. Everything on top of the iortcw
+baseline lives in `ios/` and `docs/RU/`, plus targeted changes across `SP/` and
+`MP/`.
+
+**No game data is included here.** Return to Castle Wolfenstein is commercial
+software: the `.pk3` files have to come from your own copy of the game, exactly
+as upstream iortcw requires. See the Quick Start Guide below.
+
+Licensed under the GPLv3, the same as upstream — see [LICENCE.md](LICENCE.md).
+
 ## iortcw
 
 The intent of this project is to provide a baseline RTCW which may be used

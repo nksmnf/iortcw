@@ -57,7 +57,54 @@ int IOSBridge_GameDataMask( void );
 // how data copied from a Mac actually gets where the engine looks for it.
 // Returns how many files were moved. Safe to call repeatedly; it ignores files
 // that are still being written.
+//
+// A pk3 belonging to one of the extra campaigns below is filed into that
+// campaign's own folder instead, and those folders are never swept.
 int IOSBridge_ImportLooseData( void );
+
+// --- extra campaigns -------------------------------------------------------
+//
+// The fan campaigns from the Russian anthology are pure data -- maps, AAS,
+// scripts, menus -- so this engine runs them as they are. Each lives in a
+// folder of its own and is played by starting the engine with fs_game set to
+// it; see the table in ios_bridge.c for why a folder and not main/.
+//
+// index runs 0 .. IOSBridge_CampaignModCount() - 1. Out-of-range arguments
+// answer "", 0 or false rather than trapping.
+
+int         IOSBridge_CampaignModCount( void );
+const char *IOSBridge_CampaignModDir( int index );   // "time_gate"
+const char *IOSBridge_CampaignModPak( int index );   // "time_gate.pk3"
+
+// Is it on the device, and readable as a zip? Cached like the main scan; pass
+// true to IOSBridge_ScanData to pick up files that have just been copied.
+bool        IOSBridge_CampaignModInstalled( int index );
+
+// What is inside it, for the launcher's one-line summary. Zero until the
+// campaign is installed and scanned.
+int         IOSBridge_CampaignModMaps( int index );
+double      IOSBridge_CampaignModMegabytes( int index );
+
+// Does this folder name belong to a campaign? Used by the importer, which must
+// leave such folders alone.
+bool        IOSBridge_IsCampaignModDir( const char *dir );
+
+// --- game language ---------------------------------------------------------
+//
+// The anthology's Russian paks are ordinary pk3s that override the retail text,
+// menus, fonts and -- for the campaign -- the spoken dialogue. Switching the
+// launcher to English has to take them back out of the search path, and the
+// cheapest honest way to do that is to rename them: the engine only ever looks
+// at *.pk3, so a pak parked as *.pk3.off is simply not there.
+
+// Are the Russian paks on the device at all (enabled or not)?
+bool IOSBridge_RussianPaksPresent( void );
+
+// Are they currently active?
+bool IOSBridge_RussianPaksEnabled( void );
+
+// Turn them on or off. Returns how many files were renamed.
+int  IOSBridge_SetRussianPaks( bool on );
 
 // --- settings --------------------------------------------------------------
 //
@@ -91,6 +138,19 @@ void IOSBridge_WriteConfig( void );
 // launcher's "start campaign" button, which exists because RTCW's own menus are
 // awkward to drive without a mouse.
 void IOSBridge_SetStartupCommand( const char *command );
+
+// Keep the console log of the run that is about to be replaced.
+//
+// The engine writes rtcwconsole.log into the game directory and truncates it on
+// every start, so each launch destroys the evidence of the last one -- and with
+// fs_game in play there is now one such file per campaign, each overwritten the
+// next time that campaign is played. This moves the previous run's log to
+// Documents/logs/<tag>.log (and the one before it to <tag>-prev.log) before the
+// engine opens a new one, so a session that went wrong can still be read
+// afterwards, from Files.app or over devicectl.
+//
+// tag is the campaign folder, or "main" for the retail campaign.
+void IOSBridge_RotateLog( const char *tag );
 
 // Extra arguments the engine should start with, as a single string. Built from
 // the launcher's choices for the values that must be set before the configs are
