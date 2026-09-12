@@ -22,6 +22,9 @@ Every script takes `IORTCW_TREE=MP` to build the multiplayer application
 instead; each tree has its own build directory, so the two never collide.
 
 ```sh
+# Build signed and install straight onto the paired iPad
+ios/scripts/install-device.sh
+
 # An .ipa for AltStore
 ios/scripts/build-ipa.sh            # -> build/ipa/iORTCW.ipa
 IORTCW_TREE=MP ios/scripts/build-ipa.sh   # -> build/ipa-mp/iORTCW-MP.ipa
@@ -34,13 +37,26 @@ ios/scripts/gen-xcode.sh simulator  # -> build/ios-sim/iortcw_sp.xcodeproj
 IORTCW_DATA_DIR=/path/to/rtcw/Main ios/scripts/sim-run.sh
 ```
 
-The `.ipa` is deliberately unsigned — AltStore re-signs it with your own
-certificate on install. To run from Xcode instead, open the project, select the
-`iORTCW` target and set your signing team.
+Two ways onto the device, and the first is the short one.
+
+`install-device.sh` signs with the developer account already set up on this Mac
+— it finds the team from the provisioning profile for the bundle identifier —
+and hands the app to the iPad over the CoreDevice tunnel. Nothing to move, and
+no 7-day re-sign to remember. It needs the iPad paired and trusted, which is to
+say showing up in `xcrun devicectl list devices`.
+
+The `.ipa` is the other way, and it is deliberately unsigned — AltStore re-signs
+it with your own certificate on install. Use it when the Mac that builds is not
+the Mac the iPad is paired with.
+
+Either way it is an *update*: the app container survives, so the game data and
+the savegames stay put. That holds only while the bundle identifier does, which
+is why `IORTCW_BUNDLE_ID` is pinned rather than generated.
 
 ## Installing
 
-1. Send `iORTCW.ipa` to the iPad and open it with AltStore (or use AltServer).
+1. `ios/scripts/install-device.sh`, or send `iORTCW.ipa` to the iPad and open it
+   with AltStore (or use AltServer).
 2. Launch it once. The launcher will report that the game data is missing.
 3. In **Files → On My iPad → iORTCW → main**, copy in from your RTCW
    installation:
@@ -49,9 +65,8 @@ certificate on install. To run from Xcode instead, open the project, select the
 4. Pair a DualSense over Bluetooth (Settings → Bluetooth, hold Create + PS until
    the light bar flashes) and set your bindings in the launcher.
 
-Re-signing every 7 days is an *update*, not a reinstall, so the game data and
-your saves survive it — as long as the bundle identifier stays the same, which
-is why `IORTCW_BUNDLE_ID` is pinned rather than generated.
+AltStore's re-sign every 7 days is an *update* too, not a reinstall, so nothing
+copied in is lost to it either.
 
 ### Extra campaigns and the Russian localisation
 
