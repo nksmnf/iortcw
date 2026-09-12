@@ -113,6 +113,24 @@ int SP_IOSBridge_LogSnapshot( char *out, int outSize );
 int MP_IOSBridge_LogSnapshot( char *out, int outSize );
 unsigned SP_IOSBridge_LogVersion( void );
 unsigned MP_IOSBridge_LogVersion( void );
+void SP_IOSBridge_SelfTestBegin( const char *title );
+void MP_IOSBridge_SelfTestBegin( const char *title );
+void SP_IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail );
+void MP_IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail );
+void SP_IOSBridge_SelfTestEnd( int passed, int failed, int skipped );
+void MP_IOSBridge_SelfTestEnd( int passed, int failed, int skipped );
+int SP_IOSBridge_SelfTestSnapshot( char *out, int outSize );
+int MP_IOSBridge_SelfTestSnapshot( char *out, int outSize );
+int SP_IOSBridge_SelfTestRunning( void );
+int MP_IOSBridge_SelfTestRunning( void );
+unsigned SP_IOSBridge_SelfTestVersion( void );
+unsigned MP_IOSBridge_SelfTestVersion( void );
+void SP_IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped );
+void MP_IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped );
+void SP_IOSBridge_SelfTestTitle( char *out, int outSize );
+void MP_IOSBridge_SelfTestTitle( char *out, int outSize );
+int SP_IOSBridge_SelfTestLoadStored( char *out, int outSize );
+int MP_IOSBridge_SelfTestLoadStored( char *out, int outSize );
 void SP_IOSBridge_ExecCommand( const char *command );
 void MP_IOSBridge_ExecCommand( const char *command );
 bool SP_IOSBridge_ServerRunning( void );
@@ -444,6 +462,92 @@ unsigned IOSBridge_LogVersion( void )
 	}
 
 	return SP_IOSBridge_LogVersion(  );
+}
+
+void IOSBridge_SelfTestBegin( const char *title )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestBegin( title );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestBegin( title );
+}
+
+void IOSBridge_SelfTestRow( int verdict, const char *group, const char *name, const char *detail )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestRow( verdict, group, name, detail );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestRow( verdict, group, name, detail );
+}
+
+void IOSBridge_SelfTestEnd( int passed, int failed, int skipped )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestEnd( passed, failed, skipped );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestEnd( passed, failed, skipped );
+}
+
+int IOSBridge_SelfTestSnapshot( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestSnapshot( out, outSize );
+	}
+
+	return SP_IOSBridge_SelfTestSnapshot( out, outSize );
+}
+
+int IOSBridge_SelfTestRunning( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestRunning(  );
+	}
+
+	return SP_IOSBridge_SelfTestRunning(  );
+}
+
+unsigned IOSBridge_SelfTestVersion( void )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestVersion(  );
+	}
+
+	return SP_IOSBridge_SelfTestVersion(  );
+}
+
+void IOSBridge_SelfTestCounts( int *passed, int *failed, int *skipped )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestCounts( passed, failed, skipped );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestCounts( passed, failed, skipped );
+}
+
+void IOSBridge_SelfTestTitle( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		MP_IOSBridge_SelfTestTitle( out, outSize );
+		return;
+	}
+
+	SP_IOSBridge_SelfTestTitle( out, outSize );
+}
+
+int IOSBridge_SelfTestLoadStored( char *out, int outSize )
+{
+	if ( iortcwActiveGame == IORTCW_GAME_MULTIPLAYER ) {
+		return MP_IOSBridge_SelfTestLoadStored( out, outSize );
+	}
+
+	return SP_IOSBridge_SelfTestLoadStored( out, outSize );
 }
 
 void IOSBridge_ExecCommand( const char *command )

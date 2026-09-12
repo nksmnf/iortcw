@@ -35,6 +35,15 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "itemnext",   title: "Следующий предмет",  group: "Действия"),
         GameAction(id: "+kick",      title: "Удар ногой",         group: "Действия"),
         GameAction(id: "notebook",   title: "Журнал",             group: "Действия"),
+        // Multiplayer's own commands. The campaign does not register these and
+        // the campaign's notebook is not registered in multiplayer -- one
+        // binding list, two games, and a binding the running game has never
+        // heard of simply does nothing.
+        GameAction(id: "+dropweapon", title: "Бросить оружие",    group: "Мультиплеер"),
+        GameAction(id: "help",        title: "Помощь (MP)",       group: "Мультиплеер"),
+        GameAction(id: "+scores",     title: "Таблица очков",     group: "Мультиплеер"),
+        GameAction(id: "messagemode", title: "Написать всем",     group: "Мультиплеер"),
+        GameAction(id: "messagemode2", title: "Написать команде", group: "Мультиплеер"),
         // The names default.cfg binds to F5 and F9. "save quick" was neither a
         // command nor an argument the engine knows, so binding it did nothing.
         GameAction(id: "savegame quicksave", title: "Быстрое сохранение", group: "Система"),
@@ -42,7 +51,7 @@ struct GameAction: Identifiable, Hashable {
         GameAction(id: "togglemenu", title: "Меню",               group: "Система"),
     ]
 
-    static var groups: [String] { ["Бой", "Движение", "Действия", "Система"] }
+    static var groups: [String] { ["Бой", "Движение", "Действия", "Мультиплеер", "Система"] }
 }
 
 /// The DualSense inputs a player can bind, named the way the engine names them.
@@ -1274,6 +1283,25 @@ final class LauncherModel: ObservableObject {
         IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
         commit()
         mp.applyHosting()
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Hand over to the engine to run the self-test rather than to play.
+    ///
+    /// Goes through commit() like every other way out of the launcher, and that
+    /// is the point rather than a side effect: the run's first and most useful
+    /// check reads ios_launcher.cfg back and asks the engine whether it agrees
+    /// with it, so the file has to be the one this launcher just wrote.
+    func runSelfTest(full: Bool, multiplayer: Bool) {
+        IOSDispatch_SetGame(Int32(multiplayer ? IORTCW_GAME_MULTIPLAYER
+                                              : IORTCW_GAME_CAMPAIGN))
+        commit()
+        if multiplayer {
+            mp.save()
+            mp.commitClient()
+        }
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_SetStartupCommand(full ? "selftest full" : "selftest")
         IOSBridge_LauncherFinished()
     }
 

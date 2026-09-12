@@ -289,10 +289,14 @@ final class MultiplayerModel: ObservableObject {
         // behaviour and a server decides it, not the client.
         IOSBridge_SetCvar("pmove_fixed", "0")
 
-        // The engine defaults this to 0 on iOS so a single-player game never
-        // triggers the Local Network prompt. Multiplayer needs it on; 1 is IPv4
-        // only, which is what every master and nearly every server speaks.
-        IOSBridge_SetCvar("net_enabled", "1")
+        // net_enabled is deliberately NOT set here, although multiplayer does
+        // need it on. It is read before any config is exec'd, so a value put in
+        // the launcher's file can never take effect -- the command line is the
+        // only place that can carry it, and ios_bridge.c sets it there from
+        // which game is being started. Written here as well it was a line in
+        // the config that disagreed with the running engine for the rest of the
+        // session, which is precisely what the settings check reports as a
+        // fault, and it would have been right to.
 
         // The game's own server browser, set so that it shows what is out there.
         //
