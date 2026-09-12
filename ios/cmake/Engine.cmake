@@ -137,6 +137,7 @@ function(iortcw_build_engine TREE)
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_icons.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_perf.m"
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_gyro.m"
             "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.c"

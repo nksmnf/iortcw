@@ -38,6 +38,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //   four-finger tap  -> console
 
 #include "ios_engine.h"
+#include "ios_icons.h"
 #ifdef IORTCW_MP_BUILD
 #include "../../MP/code/client/keycodes.h"
 #else
@@ -87,10 +88,18 @@ extern int  Key_GetCatcher( void );
 #define MENU_TAP_SLOP     6.0f
 
 
-// A button on the overlay: a circle with a label, bound to one key.
+// A button on the overlay: a circle with a glyph, bound to one key.
+//
+// It used to be a circle with a word in it -- FIRE, JUMP, RELOAD. Three things
+// were wrong with that. The words are English, on a port whose launcher and
+// whose game both speak Russian. They are read rather than recognised, and a
+// button over the game has to be found without a glance. And set semibold they
+// carried far more ink than the 2pt ring around them, so the control read as a
+// caption with a circle drawn round it. The glyphs are in ios_icons.c, drawn to
+// the ring's own weight; ios/tools/icon_sheet.c renders them to a sheet.
 @interface IORTCWTouchButton : UIView
 @property (nonatomic) int keyCode;
-@property (nonatomic, copy) NSString *label;
+@property (nonatomic) iortcwIcon_t icon;
 @property (nonatomic) BOOL held;
 @end
 
@@ -98,26 +107,8 @@ extern int  Key_GetCatcher( void );
 
 - (void)drawRect:(CGRect)rect
 {
-	CGContextRef ctx = UIGraphicsGetCurrentContext();
-	CGFloat alpha = self.held ? 0.55 : 0.28;
-
-	CGContextSetRGBFillColor( ctx, 1, 1, 1, alpha * 0.5 );
-	CGContextFillEllipseInRect( ctx, CGRectInset( rect, 3, 3 ) );
-	CGContextSetRGBStrokeColor( ctx, 1, 1, 1, alpha + 0.2 );
-	CGContextSetLineWidth( ctx, 2.0 );
-	CGContextStrokeEllipseInRect( ctx, CGRectInset( rect, 3, 3 ) );
-
-	if ( self.label.length ) {
-		UIFont *font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-		NSDictionary *attrs = @{
-			NSFontAttributeName: font,
-			NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.9]
-		};
-		CGSize size = [self.label sizeWithAttributes:attrs];
-		[self.label drawAtPoint:CGPointMake( ( rect.size.width - size.width ) / 2,
-											 ( rect.size.height - size.height ) / 2 )
-				 withAttributes:attrs];
-	}
+	IORTCWIcon_DrawButton( UIGraphicsGetCurrentContext(), rect,
+						   self.icon, self.held ? 1 : 0 );
 }
 
 @end
@@ -205,24 +196,24 @@ extern int  Key_GetCatcher( void );
 	[self addSubview:self.stick];
 
 	// Right-hand cluster: the things needed to actually play a level.
-	struct { const char *label; int key; int col; int row; } layout[] = {
+	struct { iortcwIcon_t icon; int key; int col; int row; } layout[] = {
 		// The keys are the game's own: these go through the normal bindings, so
 		// they follow whatever the player has set in the Controls menu.
-		{ "FIRE",   K_MOUSE1,  0, 0 },
-		{ "JUMP",   K_SPACE,   1, 0 },
-		{ "RELOAD", 'r',       2, 0 },
+		{ IORTCW_ICON_FIRE,        K_MOUSE1,  0, 0 },
+		{ IORTCW_ICON_JUMP,        K_SPACE,   1, 0 },
+		{ IORTCW_ICON_RELOAD,      'r',       2, 0 },
 
 		// Kick earns a button: it opens doors, breaks crates and finishes
 		// people without spending ammunition, and touch had no way to do it.
-		{ "KICK",   'g',       3, 0 },
+		{ IORTCW_ICON_KICK,        'g',       3, 0 },
 
-		{ "USE",    'f',       0, 1 },
-		{ "CROUCH", 'c',       1, 1 },
+		{ IORTCW_ICON_USE,         'f',       0, 1 },
+		{ IORTCW_ICON_CROUCH,      'c',       1, 1 },
 
 		// '[' is weapnext and ']' is weapprev in default.cfg. The single button
 		// here was labelled NEXT and bound to ']', so it cycled backwards.
-		{ "NEXT",   '[',       2, 1 },
-		{ "PREV",   ']',       3, 1 },
+		{ IORTCW_ICON_WEAPON_NEXT, '[',       2, 1 },
+		{ IORTCW_ICON_WEAPON_PREV, ']',       3, 1 },
 	};
 
 	// Escape, where it can be found. A three-finger tap does the same and still
@@ -236,7 +227,7 @@ extern int  Key_GetCatcher( void );
 		b.opaque = NO;
 		b.userInteractionEnabled = NO;
 		b.keyCode = K_ESCAPE;
-		b.label = @"MENU";
+		b.icon = IORTCW_ICON_MENU;
 		[self addSubview:b];
 		[self.buttons addObject:b];
 	}
@@ -251,7 +242,7 @@ extern int  Key_GetCatcher( void );
 		b.opaque = NO;
 		b.userInteractionEnabled = NO;
 		b.keyCode = layout[i].key;
-		b.label = [NSString stringWithUTF8String:layout[i].label];
+		b.icon = layout[i].icon;
 		[self addSubview:b];
 		[self.buttons addObject:b];
 	}
