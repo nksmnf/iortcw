@@ -53,3 +53,5 @@ cmake-build-*/
 .claude
 
 res/
+
+CLAUDE.md

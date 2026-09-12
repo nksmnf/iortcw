@@ -125,7 +125,7 @@ for (index = 2; index < MAX_MASTER_SERVERS; index++)
 else if ( !Q_stricmp( com_gamename->string, LEGACY_MASTER_GAMENAME ) )
         Com_sprintf(command, sizeof(command), "getservers %s", Cmd_Argv(2));
 else
-        Com_sprintf(command, sizeof(command), "getservers %s %s", com_gamename->string, Cmd_Argv(2));
+        Com_sprintf(command, si zeof(command), "getservers %s %s", com_gamename->string, Cmd_Argv(2));
 ```
 
 `LEGACY_MASTER_GAMENAME` — это `"wolfmp"` (`MP/code/qcommon/q_shared.h:87`), и
