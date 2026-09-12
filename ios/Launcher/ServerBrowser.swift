@@ -59,6 +59,23 @@ struct GameServer: Identifiable, Equatable {
 
     var isEmpty: Bool { humans == 0 }
 
+    /// Mods that check the client's own version and refuse anything that is not
+    /// their official build.
+    ///
+    /// Their game code ships as an x86 library, which this device cannot run, so
+    /// the statically linked module is used instead -- and a mod that looks at
+    /// the version sees a stranger and says so:
+    ///
+    ///     Invalid client version. Server running version RtcwPro 1.4.17.
+    ///
+    /// Nothing on this side fixes that: joining would mean running their code,
+    /// and their code is not built for this architecture. Worth saying in the
+    /// list rather than after a minute of downloading.
+    var refusesForeignClients: Bool {
+        let m = mod.lowercased()
+        return m.contains("wolfpro") || m.contains("rtcwpro")
+    }
+
     /// The engine build, coarsely. Useful because the 1.0 competitive line and
     /// the 1.4 line cannot see each other.
     var family: String {
