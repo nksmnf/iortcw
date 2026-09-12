@@ -215,7 +215,7 @@ enum Loc {
         "Огонь": "Fire",
         "Бой": "Combat",
         "Альт. огонь": "Alt fire",
-        "Прицел": "Aim",
+        "Бинокль": "Binoculars",
         "Кратность +": "Zoom in",
         "Кратность −": "Zoom out",
         "Перезарядка": "Reload",

@@ -16,7 +16,10 @@ struct GameAction: Identifiable, Hashable {
     static let all: [GameAction] = [
         GameAction(id: "+attack",    title: "Огонь",              group: "Бой"),
         GameAction(id: "+attack2",   title: "Альт. огонь",        group: "Бой"),
-        GameAction(id: "+zoom",      title: "Прицел",             group: "Бой"),
+        // Not "aim": it raises the binoculars, and while it is held the game
+        // refuses to fire at all (bg_pmove.c). Named for what it does, so it
+        // does not end up on the aim trigger again.
+        GameAction(id: "+zoom",      title: "Бинокль",            group: "Бой"),
         GameAction(id: "zoomin",     title: "Кратность +",        group: "Бой"),
         GameAction(id: "zoomout",    title: "Кратность −",        group: "Бой"),
         GameAction(id: "+reload",    title: "Перезарядка",        group: "Бой"),
@@ -822,57 +825,70 @@ final class LauncherModel: ObservableObject {
     /// game ships with. Applied on first run and by the Reset button.
     func applyDefaultBindings() {
         bindings = [
-            // Triggers do the shooting. Above them the shoulders move the
-            // player, and the face buttons change the weapon -- the opposite
-            // way round from the usual console layout, and on purpose.
+            // The layout every console shooter has taught the hands, because
+            // there is nothing to be gained by teaching them another one.
             //
-            // Of the two shoulders R1 is the one under the stronger finger,
-            // the one already lying over the fire trigger, and it goes to jump.
-            // Jump is the timed action of the pair: it has to land on an exact
-            // moment -- a gap, a ledge, a grenade at the feet -- and a jump a
-            // beat late is a jump that did not happen. Crouch is held rather
-            // than aimed. It goes down before the shooting starts and stays
-            // down, which is what a finger resting on L1 does well, and the
-            // right hand is left free to keep firing while it is held. This is
-            // the way round it was played on the device; the first pass had the
-            // two swapped, on the reasoning that crouch belongs under the
-            // trigger finger, and that turned out to be the wrong half of the
-            // pair to spend the good finger on.
+            // R2 shoots, Cross jumps, Circle crouches, Square reloads, Triangle
+            // is the hand that opens things. L1 is sprint -- held for as long as
+            // the player is running, which is what a finger lying on a shoulder
+            // does well and what a clicked stick does badly. R1 changes weapon.
             //
-            // Changing weapon is the opposite kind of act -- it happens between
-            // fights, not during one -- so it goes to the face buttons, where
-            // the thumb has time to leave the stick for it.
-            "PAD0_RIGHTTRIGGER":      "+attack",
-            "PAD0_LEFTTRIGGER":       "+zoom",
-            "PAD0_RIGHTSHOULDER":     "+moveup",     // R1 -- jump, over the trigger
-            "PAD0_LEFTSHOULDER":      "+movedown",   // L1 -- crouch, over the aim
+            // Earlier passes had the shoulders moving the player and the face
+            // buttons changing the weapon, on the reasoning that a weapon
+            // change happens between fights and can afford the thumb leaving
+            // the stick. It reads well and plays badly: jump is the one action
+            // that has to land on an exact moment, and on this layout it is
+            // where every other game on the device has put it.
+            "PAD0_RIGHTTRIGGER":      "+attack",     // R2 -- fire
 
-            "PAD0_A":                 "weapprev",    // Cross  -- previous weapon
-            "PAD0_B":                 "weapnext",    // Circle -- next weapon
-            "PAD0_X":                 "+reload",     // Square -- reload
+            // L2 is the scope, not the binoculars.
+            //
+            // "+zoom" is the binocular key, and RTCW means that literally:
+            // while it is held, bg_pmove.c refuses to set EF_FIRING at all, so
+            // the trigger beside it stops working. It was the default on L2 --
+            // the aim trigger on every other game -- so pressing aim raised the
+            // binoculars and killed the shooting. That is the one thing this
+            // trigger must not do.
+            //
+            // weapalt is what the game has instead of aiming down sights: it
+            // swaps a weapon for its scoped twin where there is one (Mauser to
+            // sniper, FG42 to FG42 scope) and does nothing where there is not.
+            // Nothing it can do stops a shot.
+            "PAD0_LEFTTRIGGER":       "weapalt",     // L2 -- scope, where it has one
+
+            "PAD0_LEFTSHOULDER":      "+sprint",     // L1 -- held while running
+            "PAD0_RIGHTSHOULDER":     "weapnext",    // R1 -- next weapon
+
+            "PAD0_A":                 "+moveup",     // Cross    -- jump
+            "PAD0_B":                 "+movedown",   // Circle   -- crouch
+            "PAD0_X":                 "+reload",     // Square   -- reload
             "PAD0_Y":                 "+activate",   // Triangle -- use/open
 
-            // Sprint is held down for as long as the player is running, and
-            // clicking the stick that is being shoved into a corner at the same
-            // time is both awkward and easy to set off by accident. So it sits
-            // on the aiming stick, and the kick -- one deliberate tap, never
-            // held -- takes the movement stick.
-            "PAD0_LEFTSTICK_CLICK":   "+kick",
-            "PAD0_RIGHTSTICK_CLICK":  "+sprint",
+            // Cycling back is the rarer half of changing weapon, so it takes
+            // the stick click; the kick is one deliberate tap and sits where
+            // melee sits on every pad.
+            "PAD0_LEFTSTICK_CLICK":   "weapprev",
+            "PAD0_RIGHTSTICK_CLICK":  "+kick",
 
             "PAD0_START":             "togglemenu",
-            "PAD0_BACK":              "notebook",
+
+            // The binoculars, as far from the fire trigger as the pad goes.
+            // They are worth a real button -- held, like the key they are --
+            // and Create is the button nothing else wants.
+            "PAD0_BACK":              "+zoom",
             "PAD0_TOUCHPAD":          "+useitem",
 
             // The touchpad handles what a pad has no buttons left for. Up and
             // down are the scope's magnification, which the sniper rifle,
             // snooper and binoculars all use and which is otherwise only on the
-            // mouse wheel.
-            "PAD0_TOUCH_SWIPE_LEFT":  "weapprev",
-            "PAD0_TOUCH_SWIPE_RIGHT": "weapnext",
+            // mouse wheel. The journal is here rather than on Create because
+            // multiplayer does not register "notebook" at all -- a tap that
+            // does nothing in half the app costs less than a button that does.
+            "PAD0_TOUCH_SWIPE_LEFT":  "itemnext",
+            "PAD0_TOUCH_SWIPE_RIGHT": "+quickgren",
             "PAD0_TOUCH_SWIPE_UP":    "zoomin",
             "PAD0_TOUCH_SWIPE_DOWN":  "zoomout",
-            "PAD0_TOUCH_TAP":         "itemnext",
+            "PAD0_TOUCH_TAP":         "notebook",
 
             // The D-pad is deliberately absent: it walks, like the arrow keys.
             //
@@ -895,7 +911,24 @@ final class LauncherModel: ObservableObject {
     /// `in_tuningVersion` could not be read back before the engine was up it
     /// fired on every single launch instead of once. Each bump now names the
     /// one-off fix it needs and touches nothing else; see `migrate(from:)`.
-    private static let tuningVersion = 6
+    private static let tuningVersion = 7
+
+    /// What version 7 moves, as (button, what version 6 left there, what it
+    /// becomes). Kept beside the bump rather than inside migrate(), because it
+    /// is a fact about two shipped layouts and not a piece of control flow.
+    private static let layout7: [(String, String, String)] = [
+        ("PAD0_A",                 "weapprev",  "+moveup"),
+        ("PAD0_B",                 "weapnext",  "+movedown"),
+        ("PAD0_LEFTSHOULDER",      "+movedown", "+sprint"),
+        ("PAD0_RIGHTSHOULDER",     "+moveup",   "weapnext"),
+        ("PAD0_LEFTTRIGGER",       "+zoom",     "weapalt"),
+        ("PAD0_LEFTSTICK_CLICK",   "+kick",     "weapprev"),
+        ("PAD0_RIGHTSTICK_CLICK",  "+sprint",   "+kick"),
+        ("PAD0_BACK",              "notebook",  "+zoom"),
+        ("PAD0_TOUCH_TAP",         "itemnext",  "notebook"),
+        ("PAD0_TOUCH_SWIPE_LEFT",  "weapprev",  "itemnext"),
+        ("PAD0_TOUCH_SWIPE_RIGHT", "weapnext",  "+quickgren"),
+    ]
 
     /// gfx/2d/crosshairi: four detached ticks around an open centre with a dot
     /// in it. cg_drawCrosshair indexes gfx/2d/crosshair'a'+n (cg_main.c), and of
@@ -1055,6 +1088,23 @@ final class LauncherModel: ObservableObject {
         // anything else was chosen in the control that replaced it.
         if stored < 6, autoSwitch == 1 {
             autoSwitch = 2
+        }
+
+        // 7: the pad layout became the one every console shooter uses, and the
+        // binoculars came off the aim trigger. See applyDefaultBindings() for
+        // what moved where and why; the short of it is that "+zoom" on L2 was
+        // not aiming, it was the binoculars, and while they are up the game
+        // will not fire.
+        //
+        // Per button rather than all at once, and only where the button still
+        // holds exactly what version 6 put there. A player who moved one thing
+        // chose that one thing; every button they left alone is still ours to
+        // correct, and leaving the broken trigger behind because they had
+        // reassigned some unrelated key would be the worse answer.
+        if stored < 7 {
+            for (key, was, now) in LauncherModel.layout7 where bindings[key] == was {
+                bindings[key] = now
+            }
         }
 
         // The crosshair shape is seeded, not owned. There is no crosshair

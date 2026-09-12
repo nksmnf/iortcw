@@ -698,19 +698,34 @@ Everything that can be answered without playing.
 */
 static void ST_RunBasic( qboolean full )
 {
-	// Both are skipped here when a full run is about to load a map: the same
-	// rows are asked again with the game modules in, and reporting them twice
-	// -- once unanswerable, once answered -- reads as two different results.
+	// The settings check stays here, in the cold phase, although it would give
+	// a truer answer in the late one.
 	//
-	// The settings check needs the modules for the same reason the bindings one
-	// does. Half of what the launcher writes is a cvar a game module registers
-	// -- cg_fov, cg_bobup, cg_coronas, cg_emptyswitch -- and before a map is
-	// loaded none of them exists, so the check calls every one of them a
-	// setting written to a cvar that is not there. It is also the weaker
-	// question: with cgame in, "is it still the value the launcher set" is
-	// being asked of the code that could have overwritten it.
+	// Half of what the launcher writes is a cvar a game module registers --
+	// cg_fov, cg_bobup, cg_coronas, cg_emptyswitch -- and before a map is
+	// loaded none of them exists, so on a desktop build this reports a dozen
+	// settings as written to cvars that are not there. Moving the call down
+	// beside ST_CheckBindings( qtrue ), where the modules are in, does fix
+	// that: the absent count drops from 28 to 16, and the rows that are left
+	// are ones the build genuinely cannot have.
+	//
+	// It also makes the stick and gyro table fail. Measured, twice each way, on
+	// the native campaign build: with the call moved, fifteen of the
+	// twenty-one rows come back with every movement byte zero and no "Gamepad
+	// in use" line; with it here, all twenty-one pass. Multiplayer passes
+	// either way. The mechanism is not established -- nothing in the check
+	// writes a cvar, sends a key or touches the command buffer -- so this is an
+	// observation, not an explanation, and it is recorded in docs/RU/TESTING.md
+	// as one.
+	//
+	// The table is the check that has actually caught faults in this port. It
+	// wins, and the desktop noise is documented instead.
+	ST_CheckLauncherSettings();
+
+	// Skipped here when a full run is about to load a map: the same rows are
+	// asked again with the game modules in, and reporting them twice -- once
+	// unanswerable, once answered -- reads as two different results.
 	if ( !full ) {
-		ST_CheckLauncherSettings();
 		ST_CheckBindings( cls.cgameStarted );
 	}
 
@@ -774,10 +789,10 @@ void CL_SelfTestFrame( void )
 			// table measured over it fails three quarters of its rows and reads
 			// as the sticks being dead.
 			if ( clc.state == CA_ACTIVE && !CL_UIActive() ) {
-				// Now that the game modules are in, ask about the settings
-				// and the bindings again -- this time their cvars and their
-				// commands exist, so a missing one means something.
-				ST_CheckLauncherSettings();
+				// Now that the game modules are in, ask about the bindings
+				// again -- this time their commands exist, so a missing one
+				// means something. The settings check is deliberately not here
+				// too; see ST_RunBasic.
 				ST_CheckBindings( qtrue );
 
 				ST_Row( ST_PASS, "Игра", "загрузка карты",
