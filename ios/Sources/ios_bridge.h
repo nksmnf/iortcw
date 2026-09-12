@@ -110,6 +110,31 @@ void IOSBridge_SetExtraArgs( const char *args );
 // exists so one launcher source can serve both.
 bool IOSBridge_IsMultiplayer( void );
 
+// --- which game ------------------------------------------------------------
+//
+// The application carries both. The launcher decides which one this launch is
+// and says so here; everything the bridge does afterwards goes to that engine.
+// Declared in this header, rather than only in ios_dispatch.h, because this is
+// the launcher's bridging header and Swift is what makes the choice.
+
+#define IORTCW_GAME_CAMPAIGN     0
+#define IORTCW_GAME_MULTIPLAYER  1
+
+void IOSDispatch_SetGame( int game );
+int  IOSDispatch_Game( void );
+
+// --- startup ---------------------------------------------------------------
+//
+// Called once, before either engine runs, by the application's main(). They are
+// on the bridge rather than called directly because the platform layer lives
+// inside each engine object and is hidden along with it; the dispatcher picks a
+// copy, and either will do -- both create the same folders and set the same
+// hints.
+
+void IOSBridge_InitPaths( void );          // creates main/ and main/save/
+void IOSBridge_InitAudioSession( void );   // before SDL_Init(SDL_INIT_AUDIO)
+void IOSBridge_InitSDLHints( void );       // before SDL creates its window
+
 // --- console ---------------------------------------------------------------
 //
 // A copy of everything the engine prints, kept so the launcher can show it.

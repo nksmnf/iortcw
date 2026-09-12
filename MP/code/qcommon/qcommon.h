@@ -1095,6 +1095,10 @@ void CL_InitKeyCommands( void );
 // config files, but the rest of client startup will happen later
 
 void CL_Init( void );
+#define AXIS_GYRO_PITCH 5
+#define AXIS_GYRO_YAW   6
+qboolean CL_UIActive( void );   // UI owns the screen (menus, console, briefing)
+void IN_MenuCursorTo( int x, int y ); // place the menu cursor, in the UI's 640x480 space
 void CL_Disconnect( qboolean showMainMenu );
 void CL_Shutdown(char *finalmsg, qboolean disconnect, qboolean quit);
 void CL_Frame( int msec );

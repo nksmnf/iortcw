@@ -739,12 +739,10 @@ int main( int argc, char **argv )
 	Sys_IOS_InitAudioSession( );
 	Sys_IOS_InitSDLHints( );
 
-	// The launcher runs before Com_Init. SDL's delegate has finished launching
-	// by now, so UIKit and the runloop are live, but SDL has not created its
-	// window yet (that happens inside Com_Init), so there is nothing to fight
-	// over. It also catches the missing-game-data case here, where we can
-	// explain it, rather than in FS_Startup, where it is a fatal error.
-	IOSLauncher_RunModal();
+	// The launcher no longer runs from here. The application carries both games
+	// and has to know which one to enter before entering either, so it runs the
+	// launcher itself and then calls this engine or the other one. See
+	// ios/Sources/ios_app_main.c.
 #elif defined(__APPLE__)
 	// This is passed if we are launched by double-clicking
 	if ( argc >= 2 && Q_strncmp ( argv[1], "-psn", 4 ) == 0 )

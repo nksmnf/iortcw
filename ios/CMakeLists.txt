@@ -306,101 +306,85 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Vendored libraries as their own targets, so their warnings stay contained
+# The engines
+#
+# On iOS the application carries both games. SP/ and MP/ are two copies of one
+# engine and share 2132 global symbol names, so each is compiled separately and
+# collapsed into its own object with everything but its entry point and its copy
+# of the bridge made local -- see cmake/Engine.cmake.
+#
+# On macOS, which exists here as a test bed, one tree is built at a time
+# (-DIORTCW_TREE=SP or MP) and linked the ordinary way.
 # ---------------------------------------------------------------------------
-iortcw_abs(JPEG_SRC ${IORTCW_JPEG_SOURCES})
-add_library(iortcw_jpeg STATIC ${JPEG_SRC})
-target_link_libraries(iortcw_jpeg PRIVATE iortcw_common)
-
-iortcw_abs(FT_SRC ${IORTCW_FREETYPE_SOURCES})
-add_library(iortcw_freetype STATIC ${FT_SRC})
-target_link_libraries(iortcw_freetype PRIVATE iortcw_common)
-
-# ---------------------------------------------------------------------------
-# Renderer (statically linked; USE_RENDERER_DLOPEN=0)
-# ---------------------------------------------------------------------------
-iortcw_abs(REND_SRC ${IORTCW_RENDERER_SOURCES})
-add_library(iortcw_renderer STATIC ${REND_SRC})
-target_link_libraries(iortcw_renderer PRIVATE iortcw_common)
-target_compile_definitions(iortcw_renderer PRIVATE USE_BLOOM)
 if(IORTCW_IOS)
-    # GLimp lives in the renderer, so it needs SDL's headers. Linking the target
-    # is the tidy way to inherit them from FetchContent.
-    target_link_libraries(iortcw_renderer PRIVATE ${IORTCW_SDL_TARGET})
+    # What ld needs to know to collapse a tree, and the symbol the tree's main()
+    # actually has: SDL.h redefines main to SDL_main, so that is what is there.
+    set(IORTCW_ENTRY_SYMBOL "_SDL_main")
+
+    if(IORTCW_IOS_SIMULATOR)
+        set(IORTCW_LD_SDK iphonesimulator)
+        set(IORTCW_LD_PLATFORM_ARGS -platform_version ios-simulator
+            ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
+    else()
+        set(IORTCW_LD_SDK iphoneos)
+        set(IORTCW_LD_PLATFORM_ARGS -platform_version ios
+            ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
+    endif()
+
+    include(cmake/Engine.cmake)
+
+    iortcw_build_engine(SP)
+    iortcw_build_engine(MP)
 else()
+    # ---- single tree, linked conventionally ----
+    iortcw_abs(JPEG_SRC ${IORTCW_JPEG_SOURCES})
+    add_library(iortcw_jpeg STATIC ${JPEG_SRC})
+    target_link_libraries(iortcw_jpeg PRIVATE iortcw_common)
+
+    iortcw_abs(FT_SRC ${IORTCW_FREETYPE_SOURCES})
+    add_library(iortcw_freetype STATIC ${FT_SRC})
+    target_link_libraries(iortcw_freetype PRIVATE iortcw_common)
+
+    iortcw_abs(REND_SRC ${IORTCW_RENDERER_SOURCES})
+    add_library(iortcw_renderer STATIC ${REND_SRC})
+    target_link_libraries(iortcw_renderer PRIVATE iortcw_common)
+    target_compile_definitions(iortcw_renderer PRIVATE USE_BLOOM)
     target_include_directories(iortcw_renderer PRIVATE "${TREE_DIR}/code/SDL2/include")
+
+    iortcw_abs(ENGINE_SRC ${IORTCW_ENGINE_SOURCES})
+    list(APPEND ENGINE_SRC "${TREE_DIR}/code/qcommon/vm_static.c")
+
+    set(BOTLIB_SRC ${ENGINE_SRC})
+    list(FILTER BOTLIB_SRC INCLUDE REGEX "code/botlib/")
+    list(FILTER ENGINE_SRC EXCLUDE REGEX "code/botlib/")
+
+    add_library(iortcw_botlib STATIC ${BOTLIB_SRC})
+    target_link_libraries(iortcw_botlib PRIVATE iortcw_common)
+    target_compile_definitions(iortcw_botlib PRIVATE BOTLIB)
+
+    add_library(iortcw_engine STATIC ${ENGINE_SRC})
+    target_link_libraries(iortcw_engine PRIVATE iortcw_common)
+    target_compile_definitions(iortcw_engine PRIVATE USE_CODEC_VORBIS USE_BLOOM)
+    target_include_directories(iortcw_engine PRIVATE
+        "${TREE_DIR}/code/libvorbis-1.3.6/include"
+        "${TREE_DIR}/code/libvorbis-1.3.6/lib"
+        "${TREE_DIR}/code/libogg-1.3.3/include")
+
+    set(VM_INCLUDES "${TREE_DIR}/code/SDL2/include")
+    iortcw_abs(GAME_SRC  ${IORTCW_GAME_SOURCES})
+    iortcw_abs(CGAME_SRC ${IORTCW_CGAME_SOURCES})
+    iortcw_abs(UI_SRC    ${IORTCW_UI_SOURCES})
+
+    iortcw_add_vm_module(qagame SOURCES ${GAME_SRC}
+        DEFINES GAMEDLL QAGAME PRODUCT_VERSION="${IORTCW_VERSION}"
+        INCLUDES ${VM_INCLUDES})
+    iortcw_add_vm_module(cgame SOURCES ${CGAME_SRC}
+        DEFINES CGAMEDLL CGAME PRODUCT_VERSION="${IORTCW_VERSION}"
+        INCLUDES ${VM_INCLUDES})
+    iortcw_add_vm_module(ui SOURCES ${UI_SRC}
+        DEFINES UI PRODUCT_VERSION="${IORTCW_VERSION}"
+        INCLUDES ${VM_INCLUDES})
 endif()
-
-# ---------------------------------------------------------------------------
-# Engine (client + server + qcommon + botlib + sdl + sys)
-# ---------------------------------------------------------------------------
-iortcw_abs(ENGINE_SRC ${IORTCW_ENGINE_SOURCES})
-
-# sys_osx.m is Cocoa/Carbon; con_tty.c wants a terminal. Both are replaced on iOS.
-if(IORTCW_IOS)
-    list(FILTER ENGINE_SRC EXCLUDE REGEX "code/sys/sys_osx\\.m$")
-    list(FILTER ENGINE_SRC EXCLUDE REGEX "code/sys/con_tty\\.c$")
-    list(APPEND ENGINE_SRC
-        "${TREE_DIR}/code/sys/con_passive.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/sys_ios.m"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dualsense.m"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_touch.m"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_perf.m"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_gyro.m"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_bridge.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_keepalive.m"
-    )
-endif()
-
-# vm_static.c is new and therefore not in the Makefile-derived list.
-list(APPEND ENGINE_SRC "${TREE_DIR}/code/qcommon/vm_static.c")
-
-# botlib only compiles with -DBOTLIB (its headers key their type definitions off
-# it), so it needs its own target rather than riding along with the engine.
-set(BOTLIB_SRC ${ENGINE_SRC})
-list(FILTER BOTLIB_SRC INCLUDE REGEX "code/botlib/")
-list(FILTER ENGINE_SRC EXCLUDE REGEX "code/botlib/")
-
-add_library(iortcw_botlib STATIC ${BOTLIB_SRC})
-target_link_libraries(iortcw_botlib PRIVATE iortcw_common)
-target_compile_definitions(iortcw_botlib PRIVATE BOTLIB)
-
-add_library(iortcw_engine STATIC ${ENGINE_SRC})
-target_link_libraries(iortcw_engine PRIVATE iortcw_common)
-target_compile_definitions(iortcw_engine PRIVATE
-    USE_CODEC_VORBIS
-    USE_BLOOM
-)
-target_include_directories(iortcw_engine PRIVATE
-    "${TREE_DIR}/code/libvorbis-1.3.6/include"
-    "${TREE_DIR}/code/libvorbis-1.3.6/lib"
-    "${TREE_DIR}/code/libogg-1.3.3/include"
-)
-if(IORTCW_IOS)
-    target_link_libraries(iortcw_engine PRIVATE ${IORTCW_SDL_TARGET})
-endif()
-
-# ---------------------------------------------------------------------------
-# Game modules, linked in rather than dlopen'd
-# ---------------------------------------------------------------------------
-set(VM_INCLUDES "${TREE_DIR}/code/SDL2/include")
-if(IORTCW_IOS)
-    set(VM_INCLUDES "")
-endif()
-
-iortcw_abs(GAME_SRC  ${IORTCW_GAME_SOURCES})
-iortcw_abs(CGAME_SRC ${IORTCW_CGAME_SOURCES})
-iortcw_abs(UI_SRC    ${IORTCW_UI_SOURCES})
-
-iortcw_add_vm_module(qagame SOURCES ${GAME_SRC}
-    DEFINES GAMEDLL QAGAME PRODUCT_VERSION="${IORTCW_VERSION}"
-    INCLUDES ${VM_INCLUDES})
-iortcw_add_vm_module(cgame SOURCES ${CGAME_SRC}
-    DEFINES CGAMEDLL CGAME PRODUCT_VERSION="${IORTCW_VERSION}"
-    INCLUDES ${VM_INCLUDES})
-iortcw_add_vm_module(ui SOURCES ${UI_SRC}
-    DEFINES UI PRODUCT_VERSION="${IORTCW_VERSION}"
-    INCLUDES ${VM_INCLUDES})
 
 # ---------------------------------------------------------------------------
 # Launcher (Swift). Kept in its own target so the Swift driver never sees the
@@ -427,35 +411,34 @@ endif()
 # The application
 # ---------------------------------------------------------------------------
 if(IORTCW_IOS)
-    # No space in the product name: it becomes the .app filename and the
-    # executable inside it, and both are handled by shell scripts. The name the
-    # player sees is CFBundleDisplayName, set just below.
-    if(IORTCW_IS_MP)
-        set(APP_NAME iORTCW-MP)
-        set(IORTCW_DISPLAY_NAME "iORTCW MP")
-    else()
-        set(APP_NAME iORTCW)
-        set(IORTCW_DISPLAY_NAME "iORTCW")
-    endif()
+    set(APP_NAME iORTCW)
+    set(IORTCW_DISPLAY_NAME "iORTCW")
+
     # The asset catalogue carries the app icon. It has to be a source of the
     # target, not just a bundle resource, so Xcode runs actool over it.
     set(ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets")
     set_source_files_properties(${ASSET_CATALOG} PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources)
 
+    # Both engines, the dispatcher that picks between them, and our own main.
     add_executable(${APP_NAME} MACOSX_BUNDLE
-        ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ}
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_app_main.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources/ios_dispatch.c"
+        ${SP_ENGINE_OBJ}
+        ${MP_ENGINE_OBJ}
         ${ASSET_CATALOG})
 
-    if(IORTCW_IS_MP)
-        set(IORTCW_DEFAULT_BUNDLE_ID "com.iortcw.mp")
-    else()
-        set(IORTCW_DEFAULT_BUNDLE_ID "com.iortcw.sp")
-    endif()
-    set(IORTCW_BUNDLE_ID "${IORTCW_DEFAULT_BUNDLE_ID}" CACHE STRING
+    add_dependencies(${APP_NAME} SP_engine_obj MP_engine_obj)
+
+    target_include_directories(${APP_NAME} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/Sources")
+    target_link_libraries(${APP_NAME} PRIVATE ${IORTCW_SDL_TARGET})
+
+    set(IORTCW_BUNDLE_ID "com.iortcw.sp" CACHE STRING
         "Bundle identifier. Keep it stable: AltStore preserves the app's
          container -- and therefore the game data and saves -- only while the
-         bundle ID and signing team stay the same.")
+         bundle ID and signing team stay the same. It says 'sp' for history:
+         changing it now would orphan every install's data.")
 
     set_target_properties(${APP_NAME} PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Info.plist.in"
@@ -469,34 +452,13 @@ if(IORTCW_IOS)
         XCODE_ATTRIBUTE_ENABLE_BITCODE NO
         XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
     )
-else()
-    if(IORTCW_IS_MP)
-        set(APP_NAME iowolfmp_cmake)
-    else()
-        set(APP_NAME iowolfsp_cmake)
-    endif()
-    add_executable(${APP_NAME}
-        ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ})
-endif()
 
-add_dependencies(${APP_NAME} qagame_mod cgame_mod ui_mod)
-
-if(IORTCW_IOS)
     target_link_libraries(${APP_NAME} PRIVATE iortcw_launcher)
-endif()
 
-target_link_libraries(${APP_NAME} PRIVATE
-    iortcw_engine
-    iortcw_botlib
-    iortcw_renderer
-    iortcw_jpeg
-    iortcw_freetype
-    iortcw_common
-)
-
-if(IORTCW_IOS)
     target_link_libraries(${APP_NAME} PRIVATE
-        ${IORTCW_SDL_TARGET} ${IORTCW_SDL_MAIN}
+        # The splines code is C++, and collapsing the engine into a plain object
+        # loses the language tag CMake would otherwise use to pull this in.
+        c++
         "-framework OpenGLES"
         "-framework UIKit"
         "-framework GameController"
@@ -510,7 +472,23 @@ if(IORTCW_IOS)
         "-framework CoreGraphics"
     )
 else()
+    if(IORTCW_IS_MP)
+        set(APP_NAME iowolfmp_cmake)
+    else()
+        set(APP_NAME iowolfsp_cmake)
+    endif()
+
+    add_executable(${APP_NAME}
+        ${qagame_MOD_OBJ} ${cgame_MOD_OBJ} ${ui_MOD_OBJ})
+    add_dependencies(${APP_NAME} qagame_mod cgame_mod ui_mod)
+
     target_link_libraries(${APP_NAME} PRIVATE
+        iortcw_engine
+        iortcw_botlib
+        iortcw_renderer
+        iortcw_jpeg
+        iortcw_freetype
+        iortcw_common
         ${IORTCW_SDL_TARGET}
         "-framework Cocoa"
         "-framework IOKit"

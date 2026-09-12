@@ -36,7 +36,7 @@ struct LauncherView: View {
     /// The MP application carries two extra tabs -- finding a game and running
     /// one -- and swaps Campaign for the multiplayer settings, so the count is
     /// not a constant.
-    private static var tabCount: Int { IOSBridge_IsMultiplayer() ? 6 : 4 }
+    private static var tabCount: Int { 7 }
 
     /// The tab the launcher opens on is decided here rather than being a
     /// constant on `tab`, because the model is built before the view is and by
@@ -60,12 +60,12 @@ struct LauncherView: View {
         // it can name one instead. Unset in normal use.
         if let forced = UserDefaults.standard.object(forKey: "IORTCWStartTab") as? Int {
             _tab = State(initialValue: forced)
-        } else if IOSBridge_IsMultiplayer() {
-            let mpReady = model.dataSet(.multiplayer)?.isPlayable ?? false
-            _tab = State(initialValue: mpReady ? 1 : 0)
         } else {
+            // Whichever half of the game is actually installed decides where to
+            // open. Campaign first, because that is the one most copies have.
             let campaignReady = model.dataSet(.campaign)?.isPlayable ?? false
-            _tab = State(initialValue: campaignReady ? 1 : 0)
+            let mpReady = model.dataSet(.multiplayer)?.isPlayable ?? false
+            _tab = State(initialValue: campaignReady ? 1 : (mpReady ? 2 : 0))
         }
     }
 
@@ -80,22 +80,19 @@ struct LauncherView: View {
             // at one look. It starts on the same left line as the emblem above
             // it and the content below, so the screen hangs off one edge.
             Picker("", selection: $tab) {
-                if model.isMultiplayer {
-                    Text(L("Данные")).tag(0)
-                    Text(L("Серверы")).tag(1)
-                    Text(L("Мультиплеер")).tag(2)
-                    Text(L("Свой сервер")).tag(3)
-                    Text(L("Графика")).tag(4)
-                    Text(L("Управление")).tag(5)
-                } else {
-                    Text(L("Данные")).tag(0)
-                    Text(L("Кампания")).tag(1)
-                    Text(L("Графика")).tag(2)
-                    Text(L("Управление")).tag(3)
-                }
+                Text(L("Данные")).tag(0)
+                Text(L("Кампания")).tag(1)
+                Text(L("Серверы")).tag(2)
+                Text(L("Мультиплеер")).tag(3)
+                Text(L("Свой сервер")).tag(4)
+                Text(L("Графика")).tag(5)
+                Text(L("Управление")).tag(6)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 620)
+            // Seven tabs now, not four: at 620 the two longest were being
+            // truncated to "Мультипле..." and "Свой серв...", which is worse
+            // than the widget looking a little stretched.
+            .frame(maxWidth: 1000)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Space.xl)
             .padding(.top, Space.l)
@@ -104,22 +101,14 @@ struct LauncherView: View {
             Divider()
 
             Group {
-                if model.isMultiplayer {
-                    switch tab {
-                    case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    case 1: ServersView(model: model, mp: model.mp)
-                    case 2: MultiplayerSettingsView(mp: model.mp)
-                    case 3: HostView(model: model, mp: model.mp)
-                    case 4: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    }
-                } else {
-                    switch tab {
-                    case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    case 1: CampaignView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    case 2: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
-                    }
+                switch tab {
+                case 0: DataView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                case 1: CampaignView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                case 2: ServersView(model: model, mp: model.mp)
+                case 3: MultiplayerSettingsView(mp: model.mp)
+                case 4: HostView(model: model, mp: model.mp)
+                case 5: GraphicsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
+                default: ControlsView(model: model, pad: pad, scope: scope, onFooter: enterFooter)
                 }
             }
 
@@ -277,6 +266,7 @@ struct LauncherView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.trailing)
                 }
+                multiplayerButton
                 campaignButton
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -472,7 +462,7 @@ struct LauncherView: View {
             // the wordmark's 1: capitals want more air the smaller they are set,
             // and this lands the label between the wordmark's tight lock-up and
             // the wide-spaced line above it, which is where a button belongs.
-            Text(L(model.isMultiplayer ? "Играть" : "Кампания"))
+            Text(L("Кампания"))
                 .font(.system(size: 20, weight: .heavy))
                 .fontWidth(.condensed)
                 .textCase(.uppercase)
@@ -483,15 +473,45 @@ struct LauncherView: View {
                 .minimumScaleFactor(0.75)
                 .padding(.horizontal, Space.m)
                 .frame(width: LauncherView.tileWidth, height: LauncherView.tileHeight)
-                .foregroundStyle(model.canPlay ? Theme.onAction : Color.secondary)
+                .foregroundStyle(model.canPlayCampaign ? Theme.onAction : Color.secondary)
                 .background(
                     RoundedRectangle(cornerRadius: LauncherView.tileRadius, style: .continuous)
-                        .fill(model.canPlay ? Theme.action : Theme.fill(0.10))
+                        .fill(model.canPlayCampaign ? Theme.action : Theme.fill(0.10))
                 )
         }
         .buttonStyle(TilePress())
-        .disabled(!model.canPlay)
+        .disabled(!model.canPlayCampaign)
         .padFocusRing(footerFocused, radius: LauncherView.tileRadius)
+    }
+
+    /// The other half of the game, next to the campaign rather than instead of
+    /// it: one binary carries both, and which one a launch is only gets decided
+    /// here.
+    ///
+    /// Drawn in the same block as the campaign but in the neutral fill, because
+    /// the two are not equals on this screen -- the campaign is what most
+    /// copies of RTCW are, and the brand red belongs to it.
+    private var multiplayerButton: some View {
+        Button {
+            model.mp.play()
+        } label: {
+            Text(L("Мультиплеер"))
+                .font(.system(size: 20, weight: .heavy))
+                .fontWidth(.condensed)
+                .textCase(.uppercase)
+                .tracking(1.5)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .padding(.horizontal, Space.m)
+                .frame(width: LauncherView.tileWidth, height: LauncherView.tileHeight)
+                .foregroundStyle(model.canPlayMultiplayer ? Color.primary : Color.secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: LauncherView.tileRadius, style: .continuous)
+                        .fill(Theme.fill(model.canPlayMultiplayer ? 0.16 : 0.10))
+                )
+        }
+        .buttonStyle(TilePress())
+        .disabled(!model.canPlayMultiplayer)
     }
 }
 

@@ -2475,6 +2475,35 @@ void Key_ClearStates( void ) {
 static int keyCatchers = 0;
 
 /*
+===================
+CL_UIActive
+
+Whether something other than the running game owns the screen: a menu, the
+console, or a loading screen.
+
+The loading screen matters as much as the menus here. In single player it is the
+mission briefing, drawn by the UI without setting KEYCATCH_UI, so anything that
+tests the catcher alone mistakes it for gameplay -- which is how the on-screen
+controls ended up drawn on top of the briefing.
+
+Asking the UI which menu is active does not work: menutype is only ever reset by
+UIMENU_NONE, which nothing sends when a level finishes loading, so it would read
+as "briefing" for the rest of the session.
+===================
+*/
+qboolean CL_UIActive( void ) {
+	if ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) {
+		return qtrue;
+	}
+
+	if ( clc.state != CA_ACTIVE && clc.state != CA_CINEMATIC ) {
+		return qtrue;
+	}
+
+	return qfalse;
+}
+
+/*
 ====================
 Key_GetCatcher
 ====================

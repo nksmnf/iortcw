@@ -26,6 +26,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #	include <SDL.h>
 #endif
 
+#if TARGET_OS_IPHONE
+#ifdef USE_LOCAL_HEADERS
+#	include "SDL_syswm.h"
+#else
+#	include <SDL_syswm.h>
+#endif
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,8 +50,16 @@ static cvar_t *in_keyboardDebug     = NULL;
 static SDL_GameController *gamepad = NULL;
 static SDL_Joystick *stick = NULL;
 
+// Instance id of the device `stick` was opened from, or -1 for nothing open.
+// An instance id names one physical arrival of one device and is never reused,
+// which is what lets a device event be told apart from a repeat of one; the
+// device *index* an add event carries cannot do that. See
+// IN_ControllerEventChangesDevice.
+static SDL_JoystickID openedInstance = -1;
+
 static qboolean mouseAvailable = qfalse;
 static qboolean mouseActive = qfalse;
+
 
 static cvar_t *in_mouse             = NULL;
 static cvar_t *in_nograb;
@@ -53,9 +69,131 @@ static cvar_t *in_joystickThreshold = NULL;
 static cvar_t *in_joystickNo        = NULL;
 static cvar_t *in_joystickUseAnalog = NULL;
 
+// DualSense (and any other controller that exposes the same features).
+static cvar_t *in_gyro              = NULL;  // 0 off, 1 always on, 2 only while aiming
+static cvar_t *in_gyroSens          = NULL;  // degrees of view per degree of tilt, both axes
+static cvar_t *in_gyroYawSens       = NULL;  // per-axis overrides; 0 means "use in_gyroSens"
+static cvar_t *in_gyroPitchSens     = NULL;
+static cvar_t *in_gyroDeadzone      = NULL;  // rad/s taken off the tilt before it counts
+static cvar_t *in_gyroInvertYaw     = NULL;  // for a controller whose gyro does not match SDL's frame
+static cvar_t *in_gyroInvertPitch   = NULL;  // the iPad's own sensor has its own pair, in ios_gyro.m
+static cvar_t *in_gyroYawSource     = NULL;  // which turn of the pad moves the view sideways
+static cvar_t *in_touchpad          = NULL;  // 0 off, 1 gestures, 2 gestures + drag-to-look
+static cvar_t *in_touchpadSens      = NULL;
+static cvar_t *in_triggerSoft       = NULL;  // fraction of travel that counts as pressed
+static cvar_t *in_triggerHard       = NULL;  // deeper threshold, bound separately
+static cvar_t *in_rumble            = NULL;  // master scale, 0 disables
+static cvar_t *in_ledFeedback       = NULL;  // tint the light bar by player health
+static cvar_t *in_gamepadDirect     = NULL;  // read sticks directly, bypassing the key/bind indirection
+static cvar_t *in_debugTouch        = NULL;  // log touch and synthesised-mouse events
+static cvar_t *in_debugPad          = NULL;  // log gamepad buttons and sticks
+static cvar_t *in_padPointerGuard   = NULL;  // ignore the system pointer while a stick is pushed
+static cvar_t *in_touchLookSens     = NULL;  // how fast a finger turns the view, both axes
+static cvar_t *in_touchLookYawSens  = NULL;  // per-axis overrides; 0 means "use in_touchLookSens"
+static cvar_t *in_touchLookPitchSens = NULL;
+static cvar_t *in_stickExpo         = NULL;  // look curve: 0 linear, 1 fully cubed
+static cvar_t *in_moveExpo          = NULL;  // movement curve, deliberately flatter
+static cvar_t *in_moveDigital       = NULL;  // quantise the movement stick to eight directions
+static cvar_t *in_dpadMove          = NULL;  // D-pad walks, like the arrow keys
+static cvar_t *in_invertLook        = NULL;
+static cvar_t *in_menuCursorSpeed   = NULL;  // pixels per frame at full deflection
+static cvar_t *in_lookYawSpeed      = NULL;  // degrees per second at full deflection
+static cvar_t *in_lookPitchSpeed    = NULL;
+
 static int vidRestartTime = 0;
 
 static int in_eventTime = 0;
+
+// Where the UI's cursor is, in its own 640x480 space. Kept in step with
+// _UI_MouseEvent, which is the only thing that moves it and clamps it exactly
+// like this. Touch needs it because a finger is an absolute position and the UI
+// only accepts relative ones.
+static int menuCursorX = 0;
+static int menuCursorY = 0;
+
+// Set once the player touches the pad. See IOSTouch_ControllerConnected.
+static qboolean gamepadUsed = qfalse;
+
+static void IN_NoteGamepadActivity( void )
+{
+	int i;
+
+	if ( gamepadUsed || !gamepad ) {
+		return;
+	}
+
+	for ( i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++ ) {
+		if ( SDL_GameControllerGetButton( gamepad, i ) ) {
+			gamepadUsed = qtrue;
+			Com_Printf( "Gamepad in use\n" );
+			return;
+		}
+	}
+
+	for ( i = 0; i < SDL_CONTROLLER_AXIS_MAX; i++ ) {
+		if ( abs( SDL_GameControllerGetAxis( gamepad, i ) ) > 8000 ) {
+			gamepadUsed = qtrue;
+			Com_Printf( "Gamepad in use\n" );
+			return;
+		}
+	}
+}
+
+static void IN_QueueMouseDelta( int dx, int dy )
+{
+	if ( !dx && !dy ) {
+		return;
+	}
+
+	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
+	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
+
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+}
+
+/*
+===============
+IN_MenuCursorTo
+
+Put the menu cursor on a point now, without going through the event queue.
+
+Queueing would be too late for a keypress that has to act on a particular item:
+Com_EventLoop is already handling that key, so anything queued from here is
+processed after it.
+===============
+*/
+void IN_MenuCursorTo( int x, int y )
+{
+	int dx = x - menuCursorX;
+	int dy = y - menuCursorY;
+
+	if ( !dx && !dy ) {
+		return;
+	}
+
+	menuCursorX = Com_Clamp( 0, 640, menuCursorX + dx );
+	menuCursorY = Com_Clamp( 0, 480, menuCursorY + dy );
+
+	CL_MouseEvent( dx, dy, 0 );
+}
+
+/*
+===============
+IN_ResetMenuCursor
+
+Called when the UI is (re)started, which puts its cursor back at the origin.
+
+Resynchronising any other way is not possible: Com_QueueEvent folds consecutive
+mouse events into one, so the obvious trick of slamming the cursor into a corner
+and then moving it out lands in the corner and stays there.
+===============
+*/
+void IN_ResetMenuCursor( void )
+{
+	menuCursorX = 0;
+	menuCursorY = 0;
+}
+
 
 static SDL_Window *SDL_window = NULL;
 
@@ -440,11 +578,139 @@ static int hat_keys[16] = {
 struct
 {
 	qboolean buttons[SDL_CONTROLLER_BUTTON_MAX + 1]; // +1 because old max was 16, current SDL_CONTROLLER_BUTTON_MAX is 15
+
+	// How each held button was delivered, so its release can be delivered the
+	// same way even if the game changed underneath it. See IN_GamepadMove.
+	byte     buttonRoute[SDL_CONTROLLER_BUTTON_MAX + 1];
 	unsigned int oldaxes;
 	int oldaaxes[MAX_JOYSTICK_AXIS];
 	unsigned int oldhats;
+
+	// Second stage of the analogue triggers, tracked separately from the
+	// K_PAD0_*TRIGGER keys the axis loop already emits at the soft threshold.
+	qboolean triggerHard[2];
+
+	// Touchpad. SDL reports normalised 0..1 coordinates per finger; we keep the
+	// press origin so a release can be classified as a tap or a swipe.
+	qboolean touchDown;
+	float    touchStartX, touchStartY;
+	float    touchLastX, touchLastY;
+	int      touchStartTime;
+	qboolean touchSwiped;      // a swipe already fired for this contact
 } stick_state;
 
+// The controller's own feature set, queried once when it is opened.
+static struct
+{
+	qboolean hasGyro;
+	qboolean hasRumble;
+	qboolean hasLED;
+	int      numTouchpads;
+} gamepadCaps;
+
+enum { ROUTE_KEY = 0, ROUTE_MENU, ROUTE_DPAD, ROUTE_SKIP };
+
+// What counts as "not moving" for the gyro, in rad/s. About 2 degrees a second:
+// below anything a hand does on purpose, above what a still controller reports.
+#define GYRO_REST_RATE  0.035f
+
+// How long the readings have to stay that small before they are believed, in
+// milliseconds. Long enough that a slow deliberate pan is never mistaken for
+// rest and learned as bias.
+#define GYRO_REST_SETTLE  250
+
+// Time constant of the bias estimate, in seconds. Expressed as a time rather
+// than as a per-frame fraction so it converges at the same speed at 60Hz and
+// at 120Hz.
+#define GYRO_BIAS_TAU  0.4f
+
+// Degrees of view per second for each rad/s of real rotation, at in_gyroSens
+// 1.0. This is exactly what the old chain -- 32767/4 into the axis and then
+// j_pitch's 0.022 in CL_JoystickMove -- worked out to, and it is kept to the
+// decimal so that a sensitivity someone has already settled on still means the
+// same thing after the rest of this was rewritten.
+#define GYRO_VIEW_DEGREES_PER_RAD  180.2185f
+
+// Units the gyro axes are carried in. Must match GYRO_AXIS_SCALE in
+// cl_input.c, which reads them, and in ios_gyro.m, which writes the same two
+// axes from the iPad's own sensor.
+#define GYRO_AXIS_SCALE  32.0f
+
+// Which turn of the controller the horizontal half of gyro aiming is read from.
+// See the block in IN_GamepadGyro for what each one feels like. in_gyroYawSource.
+#define GYRO_YAW_FROM_YAW   0   // swinging the pad flat, like a wheel on a table
+#define GYRO_YAW_FROM_ROLL  1   // tilting it, like a wheel held up in front of you
+#define GYRO_YAW_FROM_BOTH  2   // both added together, so either gesture steers
+
+// Resting bias of the controller's gyro, and the last values put on the axes.
+// At file scope rather than inside IN_GamepadGyro because both have to be
+// thrown away when the controller changes -- see IN_GyroReset.
+static float gyroBias[3];
+static int   gyroRestSince;
+static int   gyroSampleTime;
+static int   gyroAxis[2];      // [0] pitch, [1] yaw, as last written to the axes
+
+// Where each half of gyro aiming leaves its contribution.
+//
+// Two sensors can steer the view -- the controller's, read by IN_GamepadGyro,
+// and the iPad's own, read by Sys_IOS_GyroFrame in ios_gyro.m -- and they share
+// one pair of axes. Sharing them by writing them is not possible: CL_JoystickEvent
+// assigns rather than adds, so the second write in a frame erases the first
+// instead of joining it, and since each half only wrote when its own reading had
+// changed, which half that was varied from frame to frame. Neither writes the
+// axes now. Each drops its numbers in here after it has looked at its sensor,
+// including the zero that means it has nothing to add, and IN_GyroFlush adds the
+// rows up and writes the axes once, at the end of IN_Frame, when both have had
+// their turn.
+//
+// A row keeps its last value until its owner replaces it, which is exactly what
+// makes a zero from one half quieten that half and nothing else.
+#define GYRO_SRC_PAD     0   // the controller's own sensor
+#define GYRO_SRC_TABLET  1   // the iPad's, out of CoreMotion
+#define GYRO_SRC_COUNT   2
+
+static int gyroSource[GYRO_SRC_COUNT][2];   // [source][0] pitch, [1] yaw
+
+static qboolean IN_TouchOwnsMovement( void );
+static void IN_GamepadTriggers( void );
+static void IN_GamepadTouchpad( void );
+static void IN_GamepadGyro( void );
+static void IN_GyroReset( void );
+static void IN_GyroContribute( int source, int pitch, int yaw );
+static void IN_GyroFlush( void );
+static void IN_PadEmuFrame( void );
+static void IN_DigitalMoveRelease( void );
+static void IN_ClearJoystickAxes( void );
+static void IN_NotePadStickDirections( void );
+static qboolean IN_PadStickPushedRecently( void );
+static void IN_PadEmuEnsure( void );
+static void IN_PadEmuForget( void );
+static void IN_PadEmuDetach( void );
+
+
+/*
+===============
+IN_ClearJoystickAxes
+
+Puts every joystick axis back to zero.
+
+CL_JoystickEvent assigns and never decays -- an axis keeps whatever it was last
+told until something tells it otherwise -- and the only thing that ever tells
+the look axes otherwise is IN_GamepadSticks, which is reached only while a pad
+is open. A controller that disconnects, runs flat or is simply reopened while a
+stick is pushed therefore leaves a turn rate sitting on the axis with nothing
+left alive to take it off, and the view spins, at a fixed speed, for the rest of
+the session. That is not a thing the player can undo.
+===============
+*/
+static void IN_ClearJoystickAxes( void )
+{
+	int i;
+
+	for ( i = 0; i < MAX_JOYSTICK_AXIS; i++ ) {
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, i, 0, 0, NULL );
+	}
+}
 
 /*
 ===============
@@ -465,7 +731,17 @@ static void IN_InitJoystick( void )
 
 	stick = NULL;
 	gamepad = NULL;
+	openedInstance = -1;
+	gamepadUsed = qfalse;
 	memset(&stick_state, '\0', sizeof (stick_state));
+
+	// Before any of the early returns below: the controller list has changed,
+	// so whatever the gyro had learned or last sent belongs to a pad that may
+	// no longer be there, and a direction the old stick was holding belongs to
+	// nobody.
+	IN_GyroReset();
+	IN_DigitalMoveRelease();
+	IN_ClearJoystickAxes();
 
 	// SDL 2.0.4 requires SDL_INIT_JOYSTICK to be initialized separately from
 	// SDL_INIT_GAMECONTROLLER for SDL_JoystickOpen() to work correctly,
@@ -493,6 +769,12 @@ static void IN_InitJoystick( void )
 		Com_DPrintf("SDL_Init(SDL_INIT_GAMECONTROLLER) passed.\n");
 	}
 
+	// A virtual pad, when one has been asked for, is put back before the list
+	// is read. IN_ShutdownJoystick takes the joystick subsystem down and every
+	// virtual device with it, and a map load performs an input restart, so
+	// without this the emulation would quietly end halfway through a test.
+	IN_PadEmuEnsure();
+
 	total = SDL_NumJoysticks();
 	if ( total )
 		Com_Printf("%d possible joysticks\n", total);
@@ -500,6 +782,12 @@ static void IN_InitJoystick( void )
 	// Print list and build cvar to allow ui to select joystick.
 	for (i = 0; i < total; i++)
 	{
+		// Named, not just counted. On a controller-first port the difference
+		// between "the pad is here" and "SDL is reporting something else"
+		// decides where to look next, and there is no console to ask on.
+		Com_Printf( "  %d: %s%s\n", i, SDL_JoystickNameForIndex(i),
+			SDL_IsGameController(i) ? " (gamepad)" : "" );
+
 		Q_strcat(buf, sizeof(buf), SDL_JoystickNameForIndex(i));
 		Q_strcat(buf, sizeof(buf), "\n");
 	}
@@ -519,6 +807,26 @@ static void IN_InitJoystick( void )
 	if( in_joystickNo->integer < 0 || in_joystickNo->integer >= total )
 		Cvar_Set( "in_joystickNo", "0" );
 
+	// Prefer a device SDL recognises as a game controller.
+	//
+	// Index order is not ours to choose and the first device is not necessarily
+	// the interesting one -- on iOS index 0 is "iOS Accelerometer", so a pad
+	// plugged in afterwards lands at index 1 and the default of 0 opens the
+	// accelerometer instead. That looks exactly like a pad that does nothing.
+	if( !SDL_IsGameController( in_joystickNo->integer ) )
+	{
+		for( i = 0; i < total; i++ )
+		{
+			if( SDL_IsGameController( i ) )
+			{
+				Com_Printf( "Joystick %d is not a gamepad, using %d (%s) instead\n",
+					in_joystickNo->integer, i, SDL_JoystickNameForIndex( i ) );
+				Cvar_Set( "in_joystickNo", va( "%d", i ) );
+				break;
+			}
+		}
+	}
+
 	in_joystickUseAnalog = Cvar_Get( "in_joystickUseAnalog", "0", CVAR_ARCHIVE );
 
 	stick = SDL_JoystickOpen( in_joystickNo->integer );
@@ -531,6 +839,24 @@ static void IN_InitJoystick( void )
 	if (SDL_IsGameController(in_joystickNo->integer))
 		gamepad = SDL_GameControllerOpen(in_joystickNo->integer);
 
+	// Said out loud, because everything about how the sticks behave hangs on
+	// it and the failure is silent otherwise. Without a gamepad handle the
+	// engine falls back to the raw joystick path, where an axis becomes an
+	// arrow key -- and an arrow key turns the view at a fixed rate no stick can
+	// moderate. A player meeting that has no way to tell it from a bug in the
+	// stick code, and neither had we.
+	if ( !gamepad ) {
+		Com_Printf( "Joystick %d (%s) did not open as a gamepad%s%s\n",
+			in_joystickNo->integer, SDL_JoystickNameForIndex( in_joystickNo->integer ),
+			SDL_IsGameController( in_joystickNo->integer ) ? ": " : " (SDL has no mapping for it)",
+			SDL_IsGameController( in_joystickNo->integer ) ? SDL_GetError() : "" );
+	}
+
+	// Remember which physical device this is. SDL announces a controller that
+	// is already open often enough that reopening on every announcement costs
+	// the player real state -- see the device event handler below.
+	openedInstance = SDL_JoystickInstanceID( stick );
+
 	Com_DPrintf( "Joystick %d opened\n", in_joystickNo->integer );
 	Com_DPrintf( "Name:       %s\n", SDL_JoystickNameForIndex(in_joystickNo->integer) );
 	Com_DPrintf( "Axes:       %d\n", SDL_JoystickNumAxes(stick) );
@@ -540,8 +866,139 @@ static void IN_InitJoystick( void )
 	Com_DPrintf( "Use Analog: %s\n", in_joystickUseAnalog->integer ? "Yes" : "No" );
 	Com_DPrintf( "Is gamepad: %s\n", gamepad ? "Yes" : "No" );
 
+	Com_Memset( &gamepadCaps, 0, sizeof( gamepadCaps ) );
+
+	if ( gamepad )
+	{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+		gamepadCaps.numTouchpads = SDL_GameControllerGetNumTouchpads( gamepad );
+		gamepadCaps.hasRumble    = SDL_GameControllerRumble( gamepad, 0, 0, 0 ) == 0;
+		gamepadCaps.hasLED       = SDL_GameControllerHasLED( gamepad );
+		gamepadCaps.hasGyro      = SDL_GameControllerHasSensor( gamepad, SDL_SENSOR_GYRO );
+
+		if ( gamepadCaps.hasGyro ) {
+			// The sensor stays enabled for the life of the controller; in_gyro
+			// decides whether its samples are actually used, so toggling the
+			// cvar takes effect immediately rather than needing a reconnect.
+			SDL_GameControllerSetSensorEnabled( gamepad, SDL_SENSOR_GYRO, SDL_TRUE );
+		}
+
+		Com_Printf( "Gamepad: %s%s%s%s\n",
+			gamepadCaps.numTouchpads ? "touchpad " : "",
+			gamepadCaps.hasGyro      ? "gyro "     : "",
+			gamepadCaps.hasRumble    ? "rumble "   : "",
+			gamepadCaps.hasLED       ? "led"       : "" );
+#endif
+	}
+
 	SDL_JoystickEventState(SDL_QUERY);
 	SDL_GameControllerEventState(SDL_QUERY);
+}
+
+/*
+===============
+IN_Rumble
+
+Drives the controller's motors. lowFreq/highFreq are 0..1; duration is in
+milliseconds. Called from the client on behalf of cgame (trap CG_HAPTIC_RUMBLE)
+and always on the main thread, which matters because SDL's rumble path is not
+safe to call from a notification callback.
+===============
+*/
+void IN_Rumble( float lowFreq, float highFreq, int durationMs )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 9 )
+	float scale;
+
+	if ( !gamepad || !gamepadCaps.hasRumble || !in_rumble )
+		return;
+
+	scale = in_rumble->value * 0.01f;
+
+	if ( scale <= 0.0f )
+		return;
+
+	if ( scale > 1.0f )
+		scale = 1.0f;
+
+	lowFreq  = Com_Clamp( 0.0f, 1.0f, lowFreq  * scale );
+	highFreq = Com_Clamp( 0.0f, 1.0f, highFreq * scale );
+
+	SDL_GameControllerRumble( gamepad,
+		(Uint16)( lowFreq  * 65535.0f ),
+		(Uint16)( highFreq * 65535.0f ),
+		durationMs );
+#endif
+}
+
+/*
+===============
+IN_SetAdaptiveTrigger
+
+DualSense adaptive triggers. SDL has no API for these, so on iOS this hands off
+to ios_dualsense.m, which drives GameController.framework directly. Elsewhere it
+is a no-op -- on macOS SDL's HIDAPI backend claims the device exclusively, so
+GameController never sees it.
+===============
+*/
+void IN_SetAdaptiveTrigger( int side, int mode, float start, float end, float force )
+{
+#if TARGET_OS_IPHONE
+	if ( !gamepad ) {
+		return;
+	}
+
+	Sys_IOS_SetAdaptiveTrigger( side, mode, start, end, force );
+#endif
+}
+
+/*
+===============
+IN_GetHapticCaps
+
+What the currently open controller can actually do, so cgame can skip building
+effects for hardware that will ignore them.
+===============
+*/
+int IN_GetHapticCaps( void )
+{
+	int caps = 0;
+
+	if ( !gamepad )
+		return 0;
+
+	if ( gamepadCaps.hasRumble )
+		caps |= HAPTIC_CAP_RUMBLE;
+	if ( gamepadCaps.hasLED )
+		caps |= HAPTIC_CAP_LED;
+	if ( gamepadCaps.hasGyro )
+		caps |= HAPTIC_CAP_GYRO;
+	if ( gamepadCaps.numTouchpads > 0 )
+		caps |= HAPTIC_CAP_TOUCHPAD;
+#if TARGET_OS_IPHONE
+	if ( Sys_IOS_HasAdaptiveTriggers() )
+		caps |= HAPTIC_CAP_ADAPTIVE;
+#endif
+
+	return caps;
+}
+
+/*
+===============
+IN_SetControllerLED
+
+Tints the DualSense light bar. The client drives this from player health, which
+gives a peripheral damage cue that costs nothing on screen.
+===============
+*/
+void IN_SetControllerLED( int red, int green, int blue )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	if ( !gamepad || !gamepadCaps.hasLED || !in_ledFeedback || !in_ledFeedback->integer )
+		return;
+
+	SDL_GameControllerSetLED( gamepad, (Uint8)red, (Uint8)green, (Uint8)blue );
+#endif
 }
 
 /*
@@ -568,6 +1025,17 @@ static void IN_ShutdownJoystick( void )
 		SDL_JoystickClose(stick);
 		stick = NULL;
 	}
+
+	openedInstance = -1;
+
+	// Nothing else will ever let go of them: the stick's movement keys are held
+	// by IN_DigitalMove, which is only reached while a pad is open.
+	IN_DigitalMoveRelease();
+	IN_ClearJoystickAxes();
+
+	// Quitting the subsystem destroys every virtual device with it, so the
+	// emulation's handle is stale from here rather than merely closed.
+	IN_PadEmuForget();
 
 	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
 	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
@@ -644,6 +1112,560 @@ static qboolean KeyToAxisAndSign(int keynum, int *outAxis, int *outSign)
 
 /*
 ===============
+IN_NonZero
+
+Guards against a divide by zero if a j_* cvar has been set to 0, which would
+otherwise silently produce an infinite axis value.
+===============
+*/
+static float IN_NonZero( float value, float fallback )
+{
+	float v = fabs( value );
+
+	return ( v > 0.0001f ) ? v : fallback;
+}
+
+/*
+===============
+IN_AxisScale
+
+How much to multiply a stick reading by so that CL_JoystickMove ends up adding
+exactly `wanted` to the view or to the movement byte at full deflection.
+
+Everything the direct path puts on an axis is multiplied again at the other end
+by the matching j_* cvar, so what goes out has to be divided by that cvar to
+cancel it back out. The cancelling has to take the sign with it, and this is
+where it used not to: IN_NonZero returns a magnitude, so the size cancelled and
+the sign did not, and the direction the sticks moved the view was decided by
+whether j_yaw and j_pitch happened to be negative or positive.
+
+Those two are ordinary archived cvars. Another engine's config, a stale
+wolfconfig.cfg, or anything that writes them for its own reasons could turn the
+pad's vertical upside down without touching a single setting the player would
+think to look at, and the port's own in_invertLook would then read backwards.
+Dividing by the signed value pins the direction here instead, next to
+in_lookPitchSpeed and in_invertLook, which is where a player looks for it.
+
+For the defaults -- and for any config that only changes the size -- this comes
+out at exactly the number the old line produced, so nothing that works today
+moves.
+===============
+*/
+static float IN_AxisScale( float wanted, float cvarValue, float fallback )
+{
+	float magnitude = IN_NonZero( cvarValue, fallback );
+
+	return ( cvarValue < 0.0f ) ? -( wanted / magnitude ) : ( wanted / magnitude );
+}
+
+/*
+===============
+IN_ApplyStickCurve
+
+Turns a raw stick reading into something usable.
+
+Two things matter here and both were wrong before. First, the deadzone has to be
+*radial*: applied per-axis, a stick pushed straight up still leaks a little X,
+and if that X is driving yaw the player walks in a slow circle. That is exactly
+the "walks in circles when I push forward" symptom. Second, the response is
+curved rather than linear, because a linear stick makes small aiming
+corrections almost impossible on a thumbstick.
+
+x and y come in as -1..1 and are rewritten in place.
+===============
+*/
+static void IN_ApplyStickCurve( float *x, float *y, float deadzone, float expo )
+{
+	float mag = sqrt( (*x) * (*x) + (*y) * (*y) );
+	float travel, scaled, curved;
+
+	if ( mag < deadzone ) {
+		*x = 0.0f;
+		*y = 0.0f;
+		return;
+	}
+
+	// How far over the stick is, for the curve, capped at the edge. Kept apart
+	// from mag, which is what the direction is divided by: folding the two
+	// together -- clamping mag and then dividing by it -- is what made a stick
+	// held in a corner come out 1.41 long instead of 1, so a diagonal aimed
+	// half again as fast as a cardinal. The comment below claimed the opposite
+	// while the code did that.
+	travel = ( mag > 1.0f ) ? 1.0f : mag;
+
+	// Rescale so the stick starts moving from zero at the edge of the deadzone
+	// instead of jumping to whatever the deadzone cut off.
+	scaled = ( travel - deadzone ) / ( 1.0f - deadzone );
+
+	// expo 0 is linear, 1 is fully cubed. Blending keeps the top end at full
+	// speed while making the centre much finer.
+	curved = scaled * ( ( 1.0f - expo ) + expo * scaled * scaled );
+
+	// Renormalise the direction vector and reapply the curved magnitude, which
+	// keeps diagonals at the same speed as the cardinals.
+	*x = ( *x / mag ) * curved;
+	*y = ( *y / mag ) * curved;
+}
+
+/*
+===============
+IN_DigitalMove
+
+Quantise the movement stick into eight directions and drive the same movement
+commands the keyboard uses.
+
+Each of the four commands is held while the stick is anywhere in its 180-degree
+half, which is what makes the diagonals work: north-east lands in both the
+forward half and the right half, so both are held, exactly as pressing W and D
+together would. A small overlap either side of each boundary would cause
+flicker, so the halves are trimmed slightly and the deadzone does the rest.
+
+Keys are emitted only on change, so the engine sees clean presses and releases
+rather than a stream of repeats.
+===============
+*/
+// Which of the four directions the movement stick is currently holding. At file
+// scope rather than inside IN_DigitalMove because IN_DigitalMoveRelease has to
+// be able to let go of them from outside.
+static qboolean padDigitalHeld[4];   // forward, back, left, right
+
+static const char *padDigitalCommands[4] = { "+forward", "+back", "+moveleft", "+moveright" };
+
+// One key number per direction, and not the ones the D-pad uses.
+//
+// A +command carries the key that pressed it, and a -command with no key at
+// all clears every holder. Leaving these blank meant the stick and the D-pad
+// shared a slot: whichever let go first released the other one too, so
+// holding a direction on the D-pad did nothing as soon as the stick moved.
+static const int padDigitalKeys[4] = { K_PAD0_LEFTSTICK_UP, K_PAD0_LEFTSTICK_DOWN,
+									   K_PAD0_LEFTSTICK_LEFT, K_PAD0_LEFTSTICK_RIGHT };
+
+/*
+===============
+IN_DigitalMoveRelease
+
+Lets go of every direction the stick was holding.
+
+Needed because the holding is done by a key that only this code ever releases,
+and only while it is being called -- which stops the moment the controller goes
+away. A pad unplugged, or a battery gone flat, while the player was walking
+forward left +forward held with nothing left alive to clear it, and the player
+walked into the wall until he quit.
+===============
+*/
+static void IN_DigitalMoveRelease( void )
+{
+	int i;
+
+	for ( i = 0; i < 4; i++ ) {
+		if ( !padDigitalHeld[i] ) {
+			continue;
+		}
+
+		Cbuf_AddText( va( "-%s %d\n", padDigitalCommands[i] + 1, padDigitalKeys[i] ) );
+		padDigitalHeld[i] = qfalse;
+	}
+}
+
+static void IN_DigitalMove( float x, float y )
+{
+	qboolean *held = padDigitalHeld;
+	const char **commands = padDigitalCommands;
+	const int *keys = padDigitalKeys;
+
+	qboolean want[4] = { qfalse, qfalse, qfalse, qfalse };
+	float mag = sqrt( x * x + y * y );
+	int i;
+
+	if ( mag > 0.0f ) {
+		// 0.383 is sin(22.5 degrees): the point at which a direction stops
+		// counting towards a neighbouring axis, which is what gives eight even
+		// sectors rather than four wide ones with narrow diagonals.
+		const float edge = 0.383f;
+		float nx = x / mag;
+		float ny = y / mag;
+
+		want[0] = ( ny < -edge ) ? qtrue : qfalse;   // stick up    -> forward
+		want[1] = ( ny >  edge ) ? qtrue : qfalse;   // stick down  -> back
+		want[2] = ( nx < -edge ) ? qtrue : qfalse;   // stick left  -> strafe left
+		want[3] = ( nx >  edge ) ? qtrue : qfalse;   // stick right -> strafe right
+	}
+
+	for ( i = 0; i < 4; i++ ) {
+		if ( !want[i] && !held[i] ) {
+			continue;
+		}
+
+		// Sent as console commands rather than key events because these are not
+		// bindable keys -- the stick is the stick, and routing it through a
+		// binding is what put turn on the left stick in the first place.
+		//
+		// A held direction is re-sent every frame rather than only when it
+		// changes. IN_KeyDown treats a repeat of the same key as a no-op, so
+		// this costs nothing, and it heals the one thing that kept breaking:
+		// Key_ClearStates, which the UI calls whenever a menu closes, wipes the
+		// engine's idea of what is held while this function still believes it is
+		// pressed -- after which the direction stayed dead until the stick was
+		// centred and pushed again.
+		Cbuf_AddText( va( "%c%s %d\n", want[i] ? '+' : '-', commands[i] + 1, keys[i] ) );
+
+		if ( in_debugPad && in_debugPad->integer && want[i] != held[i] ) {
+			Com_Printf( "pad: stick %c%s\n", want[i] ? '+' : '-', commands[i] + 1 );
+		}
+
+		held[i] = want[i];
+	}
+}
+
+/*
+===============
+IN_GamepadSticks
+
+Feed the two sticks straight into the joystick axes the client already reads.
+
+The alternative -- what this replaces -- was to synthesise a key press per stick
+direction and let KeyToAxisAndSign map it back to an axis through whatever that
+key happened to be bound to. That indirection meant the stick layout was decided
+by default.cfg inside pak0.pk3, which binds the left stick's horizontal to turn
+rather than strafe, so both sticks appeared to do the same thing and pushing
+forward walked in a circle.
+
+Left stick is movement, right stick is look. That is not configurable here on
+purpose: it is what every player expects, and the bindable surface is the
+buttons.
+===============
+*/
+static void IN_GamepadSticks( void )
+{
+	float lx, ly, rx, ry;
+	float deadzone = in_joystickThreshold->value;
+	float expo = in_stickExpo->value;
+	float moveExpo = in_moveExpo->value;
+
+	if ( deadzone < 0.0f || deadzone > 0.9f ) {
+		deadzone = 0.15f;
+	}
+	if ( expo < 0.0f || expo > 1.0f ) {
+		expo = 0.6f;
+	}
+	if ( moveExpo < 0.0f || moveExpo > 1.0f ) {
+		moveExpo = 0.15f;
+	}
+
+	lx = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_LEFTX ) / 32767.0f;
+	ly = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_LEFTY ) / 32767.0f;
+	rx = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTX ) / 32767.0f;
+	ry = (float)SDL_GameControllerGetAxis( gamepad, SDL_CONTROLLER_AXIS_RIGHTY ) / 32767.0f;
+
+	// Raw, before anything is done to them. This is the only way to tell a stick
+	// that reports a small range from a curve that is eating it, and there is no
+	// console on a tablet to ask.
+	if ( in_debugPad && in_debugPad->integer ) {
+		static int nextLog;
+
+		if ( Sys_Milliseconds() >= nextLog &&
+			 ( fabs( lx ) > 0.02f || fabs( ly ) > 0.02f ||
+			   fabs( rx ) > 0.02f || fabs( ry ) > 0.02f ) ) {
+			nextLog = Sys_Milliseconds() + 250;
+			Com_Printf( "pad: raw L %.3f %.3f  R %.3f %.3f\n", lx, ly, rx, ry );
+		}
+	}
+
+	// Different curves for the two sticks, on purpose. Aiming wants a soft
+	// centre so small corrections are possible; walking does not -- a strong
+	// curve there just makes the character feel sluggish at half deflection,
+	// when what the player asked for was "walk forward".
+	IN_ApplyStickCurve( &lx, &ly, deadzone, moveExpo );
+	IN_ApplyStickCurve( &rx, &ry, deadzone, expo );
+
+	// While a menu or the console is up, the right stick drives the cursor
+	// instead. Without this there is no way to start a mission from the pad.
+	if ( CL_UIActive() ) {
+		float speed = in_menuCursorSpeed->value;
+		int dx, dy;
+
+		// Nobody is walking while a menu is up, and a direction the digital
+		// path is holding is held by a key that only that path ever releases.
+		// Leaving it would have the player set off in that direction the
+		// moment the menu closed.
+		IN_DigitalMoveRelease();
+
+		// Either stick, so it does not matter which one the player reaches for.
+		if ( rx == 0.0f && ry == 0.0f ) {
+			rx = lx;
+			ry = ly;
+		}
+
+		dx = (int)( rx * speed );
+		dy = (int)( ry * speed );
+
+		IN_QueueMouseDelta( dx, dy );
+
+		// Nothing should reach the movement axes while a menu is up.
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer, 0, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer, 0, 0, NULL );
+		return;
+	}
+
+	// SDL's Y axes point down, and the engine's j_forward and j_pitch scales are
+	// already negative to suit that, so the raw sign is passed through and the
+	// direction is left to the cvars. in_invertLook flips pitch only.
+	if ( in_invertLook->integer ) {
+		ry = -ry;
+	}
+
+	// Movement is digital by default: the stick is quantised into the same eight
+	// directions a keyboard gives you, and emitted as +forward / +moveleft and
+	// friends. Analogue movement sounds better than it plays here -- RTCW has no
+	// walk/run gradient worth steering with a thumb, and a stick that is always
+	// slightly off-centre makes the character drift. Quantising also means
+	// "north-east" is unambiguously forward+right rather than a blend that
+	// depends on exactly how the thumb sat.
+	if ( in_moveDigital->integer ) {
+		IN_DigitalMove( lx, ly );
+
+		// The movement axes must be silent, or the analogue path would fight
+		// the keys -- unless the on-screen stick is being held, in which case
+		// they are its, and zeroing them here is what stopped touch walking
+		// after a step or two.
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer, 0, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer, 0, 0, NULL );
+		}
+
+		{
+			// Negative for yaw because cl.viewangles[YAW] counts anti-clockwise
+			// while the stick is read the mouse's way round: pushing right has
+			// to take the view right. See IN_AxisScale for why the sign is
+			// settled here rather than left to the sign of a j_* cvar.
+			float yawScale   = IN_AxisScale( -in_lookYawSpeed->value,  j_yaw->value,   0.022f );
+			float pitchScale = IN_AxisScale(  in_lookPitchSpeed->value, j_pitch->value, 0.022f );
+
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
+				(int)( rx * yawScale ), 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
+				(int)( ry * pitchScale ), 0, NULL );
+
+			if ( in_debugPad && in_debugPad->integer ) {
+				static int nextAxisLog;
+
+				if ( Sys_Milliseconds() >= nextAxisLog ) {
+					nextAxisLog = Sys_Milliseconds() + 250;
+					Com_Printf( "pad: axes side[%d]=%d fwd[%d]=%d yaw[%d]=%d pitch[%d]=%d touchOwns=%d\n",
+						j_side_axis->integer, cl.joystickAxis[j_side_axis->integer],
+						j_forward_axis->integer, cl.joystickAxis[j_forward_axis->integer],
+						j_yaw_axis->integer, (int)( rx * yawScale ),
+						j_pitch_axis->integer, (int)( ry * pitchScale ),
+						IN_TouchOwnsMovement() );
+				}
+			}
+		}
+		return;
+	}
+
+	// Analogue movement from here down, which means the digital path is not
+	// going to run this frame and will not be releasing anything.
+	//
+	// in_moveDigital is a setting the player changes while the game is running
+	// -- the launcher writes it and it takes effect immediately -- and a
+	// direction that was held at that moment had nothing left alive to let go
+	// of it. That is a character who walks sideways into a wall for the rest of
+	// the session, from a switch in a menu, which is a long way from anything
+	// the player would connect it to.
+	IN_DigitalMoveRelease();
+
+	// Scaling, and this is the part that was making the sticks feel broken.
+	//
+	// CL_JoystickMove multiplies whatever arrives here by j_side / j_forward and
+	// then ClampChars the result into a movement byte. j_side defaults to 0.25,
+	// so feeding it the full +-32767 produces 8191 and clamps to 127 -- meaning
+	// about 2% of stick travel already commands full speed and the stick is
+	// effectively a digital switch. Scaling so that full deflection lands
+	// exactly on 127 gives back the whole analogue range.
+	//
+	// The look axes have the opposite problem: +-32767 through j_yaw works out
+	// at roughly 720 degrees per second, which is unusable. Because
+	// CL_JoystickMove scales by frametime, the per-second turn rate is simply
+	// j_yaw * axis, so the axis value for a wanted rate is just rate / j_yaw.
+	// That lets the speed be expressed in degrees per second, which is a number
+	// a player can reason about, instead of an arbitrary multiplier.
+	//
+	// The wanted values carry the direction with them -- forward is negative
+	// because pushing the stick up reads negative, yaw is negative because the
+	// view angle counts the other way from the mouse -- and IN_AxisScale takes
+	// the sign of the j_* cvar out of the answer, so none of the four depends
+	// on which way round somebody left those cvars.
+	{
+		float sideScale    = IN_AxisScale(  127.0f, j_side->value,    0.25f );
+		float forwardScale = IN_AxisScale( -127.0f, j_forward->value, 0.25f );
+		float yawScale     = IN_AxisScale( -in_lookYawSpeed->value,   j_yaw->value,   0.022f );
+		float pitchScale   = IN_AxisScale(  in_lookPitchSpeed->value, j_pitch->value, 0.022f );
+
+		if ( !IN_TouchOwnsMovement() ) {
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_side_axis->integer,
+				(int)( lx * sideScale ), 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_forward_axis->integer,
+				(int)( ly * forwardScale ), 0, NULL );
+		}
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_yaw_axis->integer,
+			(int)( rx * yawScale ), 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, j_pitch_axis->integer,
+			(int)( ry * pitchScale ), 0, NULL );
+
+		// The digital path has had this readout for a while; analogue never did,
+		// and the one report that needed it came from a player in this mode
+		// saying the left stick turned his view. Both sticks are printed beside
+		// what this function queues AND what is actually sitting on the axes,
+		// because those two answer different questions: if the look axes carry a
+		// value while the right stick is at rest, something other than this
+		// function is writing them, and no amount of reading the stick code
+		// would have found it.
+		if ( in_debugPad && in_debugPad->integer ) {
+			static int nextAnalogLog;
+
+			if ( Sys_Milliseconds() >= nextAnalogLog ) {
+				nextAnalogLog = Sys_Milliseconds() + 250;
+				Com_Printf( "pad: analogue L %.2f %.2f R %.2f %.2f | sent side=%d fwd=%d yaw=%d pitch=%d"
+					" | live side=%d fwd=%d yaw=%d pitch=%d gyro=%d,%d touchOwns=%d\n",
+					lx, ly, rx, ry,
+					(int)( lx * sideScale ), (int)( ly * forwardScale ),
+					(int)( rx * yawScale ), (int)( ry * pitchScale ),
+					cl.joystickAxis[j_side_axis->integer],
+					cl.joystickAxis[j_forward_axis->integer],
+					cl.joystickAxis[j_yaw_axis->integer],
+					cl.joystickAxis[j_pitch_axis->integer],
+					cl.joystickAxis[AXIS_GYRO_YAW],
+					cl.joystickAxis[AXIS_GYRO_PITCH],
+					IN_TouchOwnsMovement() );
+			}
+		}
+	}
+}
+
+/*
+===============
+IN_DpadMoveCommand
+
+Movement command for a D-pad direction, or NULL for anything else.
+
+Returned without the leading sign; the caller prepends + or -.
+===============
+*/
+static const char *IN_DpadMoveCommand( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:    return "forward";
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return "back";
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return "moveleft";
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return "moveright";
+		default:                               return NULL;
+	}
+}
+
+/*
+===============
+IN_MenuKeyForPadButton
+
+What a pad button should mean while a menu or the console is up, or 0 to leave
+it as a normal PAD0_* key.
+
+Cross acts as a click because RTCW's menus are cursor-driven -- the stick moves
+the pointer and Cross presses what is under it, which is how a console port of a
+mouse-driven menu normally behaves. The D-pad is also mapped to the arrow keys
+so list-style menus (difficulty, saved games) can be walked without aiming.
+===============
+*/
+/*
+===============
+IN_SkipsCutscene
+
+Which buttons mean "get on with it" while a cutscene is playing.
+
+Needed since the keyboard duplicates iPadOS sends for these buttons started
+being dropped: skipping used to happen by accident, because the duplicate of
+Cross arrived as Return and Options as Escape, and the game skips on those.
+===============
+*/
+/*
+===============
+IN_TouchOwnsMovement
+
+True while the on-screen stick is held. Only ever true on iOS; elsewhere this
+folds away to a constant.
+===============
+*/
+static qboolean IN_TouchOwnsMovement( void )
+{
+#if TARGET_OS_IPHONE
+	extern int IOSTouch_MovementActive( void );
+
+	return IOSTouch_MovementActive() ? qtrue : qfalse;
+#else
+	return qfalse;
+#endif
+}
+
+static qboolean IN_CutsceneActive( void )
+{
+	if ( clc.state == CA_CINEMATIC ) {
+		return qtrue;
+	}
+
+	// cl.cameraMode rather than the com_cameraMode cvar: it is the flag
+	// CL_KeyDownEvent itself tests when deciding that a key means "skip".
+#ifdef IORTCW_MP_BUILD
+	// Multiplayer has no cutscenes, so there is never one to skip.
+	return qfalse;
+#else
+	return cl.cameraMode ? qtrue : qfalse;
+#endif
+}
+
+static qboolean IN_SkipsCutscene( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_A:
+		case SDL_CONTROLLER_BUTTON_B:
+		case SDL_CONTROLLER_BUTTON_START:
+		case SDL_CONTROLLER_BUTTON_BACK:
+			return qtrue;
+		default:
+			return qfalse;
+	}
+}
+
+static int IN_MenuKeyForPadButton( int button )
+{
+	switch ( button )
+	{
+		case SDL_CONTROLLER_BUTTON_A:          return K_MOUSE1;
+		case SDL_CONTROLLER_BUTTON_B:          return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_X:          return K_ENTER;
+		case SDL_CONTROLLER_BUTTON_Y:          return K_SPACE;
+		case SDL_CONTROLLER_BUTTON_START:      return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_BACK:       return K_ESCAPE;
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:    return K_UPARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return K_DOWNARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return K_LEFTARROW;
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return K_RIGHTARROW;
+
+		// The notebook and the mission objectives are paged, not scrolled, and
+		// the shoulders are where a pad player reaches for pages.
+		case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return K_PGUP;
+		case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return K_PGDN;
+
+		default:                               return 0;
+	}
+}
+
+/*
+===============
 IN_GamepadMove
 ===============
 */
@@ -652,15 +1674,92 @@ static void IN_GamepadMove( void )
 	int i;
 	int translatedAxes[MAX_JOYSTICK_AXIS];
 	qboolean translatedAxesSet[MAX_JOYSTICK_AXIS];
+	qboolean menuMode;
 
 	SDL_GameControllerUpdate();
+
+	// Before anything reads the pad: IN_PadEchoKey, which runs later in the
+	// frame from IN_ProcessEvents, needs to know which way the sticks are being
+	// pushed in order to recognise iPadOS's keyboard copy of them.
+	IN_NotePadStickDirections();
+
+	// While a menu or the console is up, the pad drives the UI rather than the
+	// player. RTCW's menus only understand mouse and keyboard, so the buttons
+	// are translated instead of being sent as PAD0_* keys that no menu binds --
+	// otherwise there is no way to pick a difficulty and start a mission
+	// without putting the iPad down and using the touchscreen.
+	// The sticks are read directly, always, on this platform.
+	//
+	// The alternative is to synthesise a key per stick direction and let the
+	// bindings map it back to an axis -- and default.cfg inside pak0 binds the
+	// left stick's horizontal to turn, so the character walks in circles and
+	// both sticks appear to do the same thing. That is not a layout anyone
+	// would choose, so the cvar is not allowed to select it here; it stays for
+	// the desktop builds, where a player might have a reason.
+#if TARGET_OS_IPHONE
+	Cvar_Set( "in_gamepadDirect", "1" );
+#endif
+
+	menuMode = ( in_gamepadDirect->integer && CL_UIActive() ) ? qtrue : qfalse;
 
 	// check buttons
 	for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
 	{
 		qboolean pressed = SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_A + i);
-		if (pressed != stick_state.buttons[i])
+
+		if (pressed == stick_state.buttons[i])
 		{
+			continue;
+		}
+
+		stick_state.buttons[i] = pressed;
+
+		// A release must travel the same road as its press.
+		//
+		// Deciding this per frame instead was a real bug with a nasty shape: a
+		// button held while a menu opened had its press sent as PAD0_B and its
+		// release sent as Escape, so the engine never saw PAD0_B come up and
+		// +movedown stayed latched. The player then crouched for the rest of the
+		// session and every later press looked like it did two things at once.
+		if ( pressed )
+		{
+			stick_state.buttonRoute[i] = ROUTE_KEY;
+
+			if ( IN_CutsceneActive() && IN_SkipsCutscene( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_SKIP;
+			} else if ( menuMode && IN_MenuKeyForPadButton( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_MENU;
+			} else if ( in_dpadMove->integer && IN_DpadMoveCommand( i ) ) {
+				stick_state.buttonRoute[i] = ROUTE_DPAD;
+			}
+		}
+
+		switch ( stick_state.buttonRoute[i] )
+		{
+		case ROUTE_SKIP:
+			// Escape is what the game skips a cutscene on, and CL_KeyDownEvent
+			// turns it into "cameraInterrupt" so the level script knows.
+			Com_QueueEvent(in_eventTime, SE_KEY, K_ESCAPE, pressed, 0, NULL);
+			break;
+
+		case ROUTE_MENU:
+			Com_QueueEvent(in_eventTime, SE_KEY, IN_MenuKeyForPadButton( i ), pressed, 0, NULL);
+			break;
+
+		case ROUTE_DPAD:
+			// The D-pad walks, like the arrow keys on a keyboard. It stacks with
+			// the stick rather than replacing it, so holding up on the D-pad
+			// while aiming with the right stick works.
+			//
+			// The key number matters: a +command with no key argument occupies a
+			// shared slot, and a release with no key argument clears every holder
+			// of that button. Without it the stick's own digital movement and the
+			// D-pad cancel each other out.
+			Cbuf_AddText( va( "%c%s %d\n", pressed ? '+' : '-',
+				IN_DpadMoveCommand( i ), K_PAD0_A + i ) );
+			break;
+
+		default:
 #if SDL_VERSION_ATLEAST( 2, 0, 14 )
 			if ( i >= SDL_CONTROLLER_BUTTON_MISC1 ) {
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_MISC1 + i - SDL_CONTROLLER_BUTTON_MISC1, pressed, 0, NULL);
@@ -669,7 +1768,13 @@ static void IN_GamepadMove( void )
 			{
 				Com_QueueEvent(in_eventTime, SE_KEY, K_PAD0_A + i, pressed, 0, NULL);
 			}
-			stick_state.buttons[i] = pressed;
+			break;
+		}
+
+		if ( in_debugPad && in_debugPad->integer ) {
+			Com_Printf( "pad: button %d %s via %s\n", i, pressed ? "down" : "up",
+				stick_state.buttonRoute[i] == ROUTE_MENU ? "menu" :
+				stick_state.buttonRoute[i] == ROUTE_DPAD ? "dpad" : "key" );
 		}
 	}
 
@@ -689,6 +1794,15 @@ static void IN_GamepadMove( void )
 	{
 		int axis = SDL_GameControllerGetAxis(gamepad, SDL_CONTROLLER_AXIS_LEFTX + i);
 		int oldAxis = stick_state.oldaaxes[i];
+
+		// The sticks are handled by IN_GamepadSticks, which reads them directly
+		// instead of routing them through synthesised key presses. Letting this
+		// loop see them too would emit both, and the key path is the one that
+		// picks up default.cfg's turn-instead-of-strafe layout.
+		if ( in_gamepadDirect->integer &&
+			 ( SDL_CONTROLLER_AXIS_LEFTX + i ) <= SDL_CONTROLLER_AXIS_RIGHTY ) {
+			continue;
+		}
 
 		// Smoothly ramp from dead zone to maximum value
 		float f = ((float)abs(axis) / 32767.0f - in_joystickThreshold->value) / (1.0f - in_joystickThreshold->value);
@@ -775,6 +1889,504 @@ static void IN_GamepadMove( void )
 				Com_QueueEvent(in_eventTime, SE_JOYSTICK_AXIS, i, translatedAxes[i], 0, NULL);
 		}
 	}
+
+	IN_NoteGamepadActivity();
+
+	if ( in_gamepadDirect->integer ) {
+		IN_GamepadSticks();
+	}
+
+	IN_GamepadTriggers();
+	IN_GamepadTouchpad();
+	IN_GamepadGyro();
+}
+
+/*
+===============
+IN_GamepadTriggers
+
+Second stage for the analogue triggers. The axis loop above already emits
+K_PAD0_LEFTTRIGGER / K_PAD0_RIGHTTRIGGER once the trigger passes the shared
+deadzone; this adds a deeper threshold on its own keys, so a weapon can be
+aimed at a half pull and fired at a full one.
+===============
+*/
+static void IN_GamepadTriggers( void )
+{
+	const int axes[2] = { SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT };
+	const int keys[2] = { K_PAD0_LEFTTRIGGER_HARD, K_PAD0_RIGHTTRIGGER_HARD };
+	float hard;
+	int i;
+
+	if ( !in_triggerHard )
+		return;
+
+	hard = Com_Clamp( 0.05f, 1.0f, in_triggerHard->value );
+
+	for ( i = 0; i < 2; i++ )
+	{
+		float value = (float)SDL_GameControllerGetAxis( gamepad, axes[i] ) / 32767.0f;
+		qboolean down = ( value >= hard ) ? qtrue : qfalse;
+
+		if ( down != stick_state.triggerHard[i] )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, keys[i], down, 0, NULL );
+			stick_state.triggerHard[i] = down;
+		}
+	}
+}
+
+/*
+===============
+IN_GamepadTouchpad
+
+The DualSense touchpad, read by polling rather than through events so it fits
+the rest of this file (SDL_GameControllerEventState is SDL_QUERY here).
+
+A short contact that barely moves is a tap; a longer drag past a threshold is a
+swipe, reported once per contact so holding a finger still after swiping does
+not repeat. With in_touchpad 2 the raw motion additionally drives the view,
+which is handy for the objectives and notebook screens.
+===============
+*/
+static void IN_GamepadTouchpad( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	const float swipeThreshold = 0.18f;   // fraction of the pad's width
+	const int   tapMaxTime = 250;         // ms
+	const float tapMaxMove = 0.05f;
+
+	Uint8 state = 0;
+	float x = 0.0f, y = 0.0f, pressure = 0.0f;
+
+	if ( !in_touchpad || !in_touchpad->integer || gamepadCaps.numTouchpads <= 0 )
+		return;
+
+	if ( SDL_GameControllerGetTouchpadFinger( gamepad, 0, 0, &state, &x, &y, &pressure ) != 0 )
+		return;
+
+	if ( state && !stick_state.touchDown )
+	{
+		// finger down
+		stick_state.touchDown = qtrue;
+		stick_state.touchSwiped = qfalse;
+		stick_state.touchStartX = stick_state.touchLastX = x;
+		stick_state.touchStartY = stick_state.touchLastY = y;
+		stick_state.touchStartTime = in_eventTime;
+	}
+	else if ( state && stick_state.touchDown )
+	{
+		float dx = x - stick_state.touchStartX;
+		float dy = y - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 ( fabs( dx ) > swipeThreshold || fabs( dy ) > swipeThreshold ) )
+		{
+			int key;
+
+			if ( fabs( dx ) > fabs( dy ) )
+				key = ( dx > 0 ) ? K_PAD0_TOUCH_SWIPE_RIGHT : K_PAD0_TOUCH_SWIPE_LEFT;
+			else
+				key = ( dy > 0 ) ? K_PAD0_TOUCH_SWIPE_DOWN : K_PAD0_TOUCH_SWIPE_UP;
+
+			// A swipe is a discrete action, so send it as a press and release
+			// in the same frame rather than leaving a key stuck down.
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, key, qfalse, 0, NULL );
+			stick_state.touchSwiped = qtrue;
+		}
+
+		if ( in_touchpad->integer >= 2 )
+		{
+			float mx = ( x - stick_state.touchLastX ) * in_touchpadSens->value;
+			float my = ( y - stick_state.touchLastY ) * in_touchpadSens->value;
+
+			if ( (int)mx || (int)my )
+				Com_QueueEvent( in_eventTime, SE_MOUSE, (int)mx, (int)my, 0, NULL );
+		}
+
+		stick_state.touchLastX = x;
+		stick_state.touchLastY = y;
+	}
+	else if ( !state && stick_state.touchDown )
+	{
+		// finger up -- a quick, still contact counts as a tap
+		float dx = stick_state.touchLastX - stick_state.touchStartX;
+		float dy = stick_state.touchLastY - stick_state.touchStartY;
+
+		if ( !stick_state.touchSwiped &&
+			 in_eventTime - stick_state.touchStartTime < tapMaxTime &&
+			 fabs( dx ) < tapMaxMove && fabs( dy ) < tapMaxMove )
+		{
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qtrue, 0, NULL );
+			Com_QueueEvent( in_eventTime, SE_KEY, K_PAD0_TOUCH_TAP, qfalse, 0, NULL );
+		}
+
+		stick_state.touchDown = qfalse;
+	}
+#endif
+}
+
+/*
+===============
+IN_AxisSens
+
+Picks between a sensitivity set for one axis and the one set for both.
+
+Horizontal and vertical want different numbers more often than not -- a player
+who can swing the view across a room comfortably usually finds the same speed
+far too much for the small vertical corrections a shot needs -- but every one of
+these settings started life as a single figure covering both, and there are
+configs out in the world with a number in them that somebody spent an evening
+arriving at.
+
+So the per-axis keys default to zero and zero means "nothing set here". An
+untouched config finds both axes falling through to the figure it already
+carries and plays exactly as it did; a player who wants them apart puts a real
+number on one axis or both, and from that moment that axis stops listening to
+the shared key. Nothing has to be migrated and nothing is silently rescaled.
+===============
+*/
+static float IN_AxisSens( const cvar_t *axis, const cvar_t *both )
+{
+	if ( axis && axis->value > 0.0f ) {
+		return axis->value;
+	}
+
+	return both ? both->value : 1.0f;
+}
+
+/*
+===============
+IN_GyroContribute
+
+Records what one of the two gyros wants the view to do this frame. Nothing
+reaches the axes from here; IN_GyroFlush does that, once both have reported.
+
+Calling this with zeroes is how a source says it has nothing to add -- switched
+off, no sensor on this controller, everything inside the deadzone, or standing
+aside while the other one aims -- and it does have to be said rather than left
+unsaid, because a row keeps its last value until its owner replaces it. That is
+the same latch that used to leave the view turning by itself, moved one step
+back: an abandoned reading now sits in one row of an addition rather than on the
+axis, which is why every early exit in IN_GamepadGyro and in Sys_IOS_GyroFrame
+still comes through here on its way out.
+===============
+*/
+static void IN_GyroContribute( int source, int pitch, int yaw )
+{
+	gyroSource[source][0] = pitch;
+	gyroSource[source][1] = yaw;
+}
+
+/*
+===============
+IN_GyroFlush
+
+Adds the sources up and puts the total on the two joystick axes, but only when
+it has changed.
+
+CL_JoystickEvent latches -- cl.joystickAxis keeps whatever was last written to
+it until something writes again. That is right for a stick, which reports a
+position and reports it every frame, and wrong for anything that can decide it
+has nothing to say: the old code returned early once both axes fell inside the
+deadzone, which left the last non-zero reading latched and the view turning at
+that rate for good. Going quiet has to be sent, exactly once.
+
+The total is clamped again even though each half already clamped itself. Two
+halves that each fill the axis ask for twice it between them, and a player who
+has turned both gyros on and swings the iPad and the pad the same way at the
+same time is asking for precisely that.
+===============
+*/
+static void IN_GyroFlush( void )
+{
+	int pitch = 0, yaw = 0, i;
+
+	for ( i = 0; i < GYRO_SRC_COUNT; i++ ) {
+		pitch += gyroSource[i][0];
+		yaw   += gyroSource[i][1];
+	}
+
+	pitch = (int)Com_Clamp( -32767.0f, 32767.0f, (float)pitch );
+	yaw   = (int)Com_Clamp( -32767.0f, 32767.0f, (float)yaw );
+
+	if ( pitch != gyroAxis[0] ) {
+		gyroAxis[0] = pitch;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_PITCH, pitch, 0, NULL );
+	}
+
+	if ( yaw != gyroAxis[1] ) {
+		gyroAxis[1] = yaw;
+		Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, AXIS_GYRO_YAW, yaw, 0, NULL );
+	}
+}
+
+/*
+===============
+IN_GyroReset
+
+Throws away the resting-bias estimate and puts both axes back to zero.
+
+Called whenever the controller list changes. The estimate describes one physical
+sensor, so carrying it across to the pad that just arrived starts that one off
+with a deliberate error; and a pad unplugged mid-turn has to have its last
+reading cleared, or nothing will ever clear it -- IN_GamepadGyro is only reached
+while a gamepad is open.
+===============
+*/
+static void IN_GyroReset( void )
+{
+	Com_Memset( gyroBias, 0, sizeof( gyroBias ) );
+	gyroRestSince = 0;
+	gyroSampleTime = 0;
+
+	// The controller's row alone. Clearing both would take the aim off a player
+	// who is holding the iPad and steering with its gyro, for the sole reason
+	// that something happened to a controller he is not using.
+	IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+
+	// And out with it here rather than waiting for the end of the frame. This is
+	// reached from IN_ProcessEvents, which is past the point where IN_GamepadGyro
+	// would have spoken, and a pad unplugged mid-turn has to stop turning the view
+	// in the frame it left in. Going through the flush rather than writing zeroes
+	// is what leaves the iPad's own contribution standing.
+	IN_GyroFlush();
+}
+
+/*
+===============
+IN_GyroDeadzone
+
+Takes the deadzone off a rate rather than cutting at it.
+
+A threshold that passes the whole reading once it is exceeded still passes the
+whole of whatever bias is left in that reading, which is why the drift got
+quieter but never went away. Subtracting leaves nothing at the threshold and
+grows smoothly from there, so an offset just outside the deadzone contributes
+almost nothing instead of a full deadzone's worth.
+
+Per axis, unlike the sticks' radial deadzone in IN_ApplyStickCurve: a bias sits
+on one axis and has to come off there whatever the other axis is doing.
+===============
+*/
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+static float IN_GyroDeadzone( float rate, float deadzone )
+{
+	if ( rate > deadzone ) {
+		return rate - deadzone;
+	}
+
+	if ( rate < -deadzone ) {
+		return rate + deadzone;
+	}
+
+	return 0.0f;
+}
+#endif
+
+/*
+===============
+IN_GamepadGyro
+
+Gyro aiming. SDL reports angular velocity in rad/s as
+{ pitch, yaw, roll } in the controller's own frame.
+
+This is fed in as joystick axes rather than as mouse motion on purpose:
+CL_JoystickMove scales its contribution by frametime, which is wrong for a
+stick (a stick is a position) but exactly right for a gyro (a gyro is a rate,
+and angle = rate * dt).
+===============
+*/
+static void IN_GamepadGyro( void )
+{
+#if SDL_VERSION_ATLEAST( 2, 0, 14 )
+	float data[3];
+	float pitch, yaw, roll, pitchScale, yawScale, deadzone, magnitude;
+	int   now, elapsed, i, yawSource;
+
+	if ( !in_gyro || !in_gyro->integer || !gamepadCaps.hasGyro )
+	{
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+		return;
+	}
+
+	if ( SDL_GameControllerGetSensorData( gamepad, SDL_SENSOR_GYRO, data, 3 ) != 0 )
+	{
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+		return;
+	}
+
+	now = Sys_Milliseconds();
+	elapsed = gyroSampleTime ? now - gyroSampleTime : 0;
+	gyroSampleTime = now;
+
+	// Take the resting bias out before anything else.
+	//
+	// A gyro at rest does not read zero; it reads a small, slowly wandering
+	// offset. A deadzone can hide it but cannot remove it -- anything just
+	// outside the deadzone still leaks, and the aim creeps across the screen
+	// while the controller sits on a table. So the offset is measured instead:
+	// whenever the readings have been small for a moment the estimate is pulled
+	// gently towards them, and it is subtracted from every sample.
+	//
+	// All three axes, including roll: it is the third axis of the same test for
+	// "is this controller moving at all", a pad being rolled is a pad in
+	// someone's hands, and since in_gyroYawSource it can be the axis the whole
+	// horizontal is read from -- an untracked bias there would creep exactly
+	// the way the other two no longer do.
+	magnitude = 0.0f;
+
+	for ( i = 0; i < 3; i++ ) {
+		data[i] -= gyroBias[i];
+		magnitude += data[i] * data[i];
+	}
+
+	if ( magnitude < GYRO_REST_RATE * GYRO_REST_RATE ) {
+		if ( !gyroRestSince ) {
+			gyroRestSince = now;
+		}
+
+		if ( now - gyroRestSince > GYRO_REST_SETTLE ) {
+			float rate = elapsed * 0.001f / GYRO_BIAS_TAU;
+
+			// A long frame -- a level load, the app coming back from the
+			// background -- must not let one sample become the whole estimate.
+			if ( rate > 1.0f ) {
+				rate = 1.0f;
+			}
+
+			for ( i = 0; i < 3; i++ ) {
+				gyroBias[i] += data[i] * rate;
+			}
+		}
+	} else {
+		gyroRestSince = 0;
+	}
+
+	// The bias is learned above this test on purpose. "Only while aiming" is
+	// the mode where a stale estimate hurts most: the scope comes up, the gyro
+	// starts being read, and it has to be right at that instant rather than
+	// after a quarter of a second of settling that the player spends drifting
+	// off target.
+	if ( in_gyro->integer == 2 && cl.cgameSensitivity >= 0.95f )
+	{
+		// RTCW has no explicit ADS flag, but cgame scales cgameSensitivity down
+		// whenever the view is zoomed (scope, binoculars, snooper), which is
+		// exactly the state we want gyro for.
+		IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+		return;
+	}
+
+	deadzone = in_gyroDeadzone->value;
+
+	// data[0] is pitch (tipping the pad's nose up and down), data[1] is yaw
+	// (swinging it left and right while it stays flat) and data[2] is roll
+	// (tilting it one grip up and the other down, around the line that runs
+	// from the PS button out towards the screen).
+	//
+	// The deadzone is taken off all three the same way, and all three have had
+	// their resting bias subtracted above. Roll is no longer a spare reading:
+	// whichever of them ends up steering has to arrive equally clean, or the
+	// player would meet the old drift again just by changing one cvar.
+	pitch = IN_GyroDeadzone( data[0], deadzone );
+	yaw   = IN_GyroDeadzone( data[1], deadzone );
+	roll  = IN_GyroDeadzone( data[2], deadzone );
+
+	// Where the horizontal comes from.
+	//
+	// Yaw -- swinging the whole pad flat, the way you would turn a wheel lying
+	// on a table -- is the literal reading of the sensor and what this had
+	// wired in. It assumes the pad is held level, and that assumption is what
+	// makes it feel wrong on a sofa: with the pad tilted back in the lap, the
+	// axis the player is swinging about no longer points at the ceiling, so
+	// part of the movement lands in the vertical and the turn comes out weak.
+	//
+	// Roll -- tilting it like a wheel held up in front of you, right grip down
+	// to go right -- does not care how the pad is held, only how it is turned
+	// relative to itself, so it survives any grip. That is why it is the
+	// default.
+	//
+	// Both, added together, is the third setting: either gesture steers, which
+	// suits a player who has not settled on one, at the cost of the two adding
+	// up when he does both at once.
+	//
+	// This is a matter of taste rather than of correctness, which is why it is
+	// a cvar and not a decision made here.
+	yawSource = in_gyroYawSource ? in_gyroYawSource->integer : GYRO_YAW_FROM_ROLL;
+
+	if ( yawSource == GYRO_YAW_FROM_ROLL ) {
+		yaw = roll;
+	} else if ( yawSource == GYRO_YAW_FROM_BOTH ) {
+		yaw += roll;
+	}
+
+	// Direction, decided here rather than left to the signs of j_yaw and
+	// j_pitch. Negating both axes and then multiplying by two cvars of opposite
+	// sign did come out right with the defaults, but only by cancellation: the
+	// vertical was one edit to j_pitch away from running backwards, and nothing
+	// in either file said so.
+	//
+	// SDL's frame, with the pad held in front of you: +x points right, +y up,
+	// +z towards you, and rotation is counter-clockwise seen from the positive
+	// end of each axis. So a positive data[0] lifts the nose and a positive
+	// data[1] swings it to the left; following the pad one for one means the
+	// view goes up and to the left. The axes are in the mouse's convention --
+	// positive yaw right, positive pitch down -- so both are negated once.
+	//
+	// Roll comes out of the same rule and needs the same single negation, which
+	// is why it can be swapped in above without any sign of its own: the
+	// observer sits at +z, that is the player's own eyes, and counter-clockwise
+	// from there lifts the right grip and drops the left. Turning the pad the
+	// other way -- right grip down, the way a wheel is turned to go right --
+	// is negative, and negating it sends the view right, which is where the
+	// hands were pointing.
+	pitch = -pitch;
+	yaw   = -yaw;
+
+	// Inverted look has to reach the gyro as well. It only flipped the stick
+	// before, so switching it on left the two halves of the same aim pulling
+	// against each other: the thumb turned one way, the wrist the other. Pitch
+	// only, exactly as in IN_GamepadSticks.
+	if ( in_invertLook->integer ) {
+		pitch = -pitch;
+	}
+
+	// Last resort for a sensor that does not report in the frame SDL documents.
+	// There is no way to tell from here which way a given pad measures, and no
+	// way for the player to find out except by trying it.
+	if ( in_gyroInvertPitch->integer ) {
+		pitch = -pitch;
+	}
+	if ( in_gyroInvertYaw->integer ) {
+		yaw = -yaw;
+	}
+
+	// rad/s -> view degrees per second -> axis units. The sensitivities are the
+	// only thing in here that a player sets, and nothing else in the chain scales
+	// these two again.
+	//
+	// A scale each, because the two axes are not asking for the same thing: the
+	// horizontal has a whole room to cover and the vertical only the height of a
+	// man, so the number that makes turning feel right usually makes aiming up
+	// and down twitchy. in_gyroSens still sets both unless one of the per-axis
+	// keys is given a value of its own -- see IN_AxisSens.
+	pitchScale = IN_AxisSens( in_gyroPitchSens, in_gyroSens ) *
+		GYRO_VIEW_DEGREES_PER_RAD * GYRO_AXIS_SCALE;
+	yawScale = IN_AxisSens( in_gyroYawSens, in_gyroSens ) *
+		GYRO_VIEW_DEGREES_PER_RAD * GYRO_AXIS_SCALE;
+
+	// Scaled here rather than after the two gyros are added together, and that is
+	// the point of doing it per source: the iPad's own sensor has its own pair of
+	// sensitivities, and a player mixing the two is setting how much each of them
+	// contributes. A single scale applied to the total would make each one's
+	// setting depend on what the other was doing.
+	IN_GyroContribute( GYRO_SRC_PAD,
+		(int)Com_Clamp( -32767.0f, 32767.0f, pitch * pitchScale ),
+		(int)Com_Clamp( -32767.0f, 32767.0f, yaw * yawScale ) );
+#else
+	IN_GyroContribute( GYRO_SRC_PAD, 0, 0 );
+#endif
 }
 
 
@@ -798,6 +2410,28 @@ static void IN_JoyMove( void )
 
 	if (!stick)
 		return;
+
+#if TARGET_OS_IPHONE
+	// Everything below is ioquake3's raw joystick path, and on a tablet it is
+	// worse than nothing. It turns axes into keys through joy_keys, whose first
+	// four entries are the arrow keys, which the stock config binds to +left,
+	// +right, +forward and +back -- so the left stick would walk the player and
+	// turn his view at a fixed 140 degrees a second at the same time, which is
+	// the fault this port has already been chasing once.
+	//
+	// A pad on iPadOS always opens as a gamepad; if it has not, something is
+	// wrong enough to say so and leave the sticks quiet rather than guess.
+	{
+		static qboolean said;
+
+		if ( !said ) {
+			said = qtrue;
+			Com_Printf( "Joystick is open but not as a gamepad: the sticks are left alone.\n"
+						"See the \"did not open as a gamepad\" line above for why.\n" );
+		}
+	}
+	return;
+#endif
 
 	SDL_JoystickUpdate();
 
@@ -990,6 +2624,200 @@ static void IN_JoyMove( void )
 
 /*
 ===============
+IN_NotePadStickDirections
+
+Remembers when each stick direction was last pushed, for IN_PadEchoKey.
+
+Kept as a time rather than as a flag because the key and the stick do not arrive
+together: iPadOS decides a stick has been pushed, posts the press through UIKit,
+and the stick may well be somewhere else by the time the engine reads the event
+queue. A direction that was pushed a moment ago is still the pad's doing.
+===============
+*/
+#define PAD_ECHO_SLOTS  4    // left, right, up, down
+#define PAD_ECHO_GRACE  250  // ms a direction stays "recently pushed"
+
+static int padStickPushed[PAD_ECHO_SLOTS];
+
+static void IN_NotePadStickDirections( void )
+{
+	// Deliberately well below the deflection iPadOS needs before it decides the
+	// stick has been pushed. The job here is to have the direction marked
+	// before the key turns up, not to agree with the system about where the
+	// edge sits -- and a stick this far over is being pushed on purpose, so
+	// nothing is lost by counting it.
+	const float pushed = 0.25f;
+
+	const struct { int axis; float sign; int slot; } dirs[] = {
+		{ SDL_CONTROLLER_AXIS_LEFTX,  -1.0f, 0 },
+		{ SDL_CONTROLLER_AXIS_LEFTX,   1.0f, 1 },
+		{ SDL_CONTROLLER_AXIS_LEFTY,  -1.0f, 2 },
+		{ SDL_CONTROLLER_AXIS_LEFTY,   1.0f, 3 },
+		{ SDL_CONTROLLER_AXIS_RIGHTX, -1.0f, 0 },
+		{ SDL_CONTROLLER_AXIS_RIGHTX,  1.0f, 1 },
+		{ SDL_CONTROLLER_AXIS_RIGHTY, -1.0f, 2 },
+		{ SDL_CONTROLLER_AXIS_RIGHTY,  1.0f, 3 },
+	};
+
+	int now = Sys_Milliseconds();
+	int i;
+
+	if ( !gamepad ) {
+		return;
+	}
+
+	// Both sticks, not just the left one. Which of them the focus engine reads
+	// is Apple's business and has changed between releases; what is certain is
+	// that a direction the player is not pushing on either stick did not come
+	// from the pad.
+	for ( i = 0; i < (int)ARRAY_LEN( dirs ); i++ ) {
+		float value = (float)SDL_GameControllerGetAxis( gamepad, dirs[i].axis ) / 32767.0f;
+
+		if ( value * dirs[i].sign > pushed ) {
+			padStickPushed[dirs[i].slot] = now;
+		}
+	}
+}
+
+/*
+===============
+IN_PadStickPushedRecently
+
+Whether any stick direction is being pushed, or was a moment ago.
+===============
+*/
+static qboolean IN_PadStickPushedRecently( void )
+{
+	int now = Sys_Milliseconds();
+	int i;
+
+	for ( i = 0; i < PAD_ECHO_SLOTS; i++ ) {
+		if ( padStickPushed[i] && now - padStickPushed[i] < PAD_ECHO_GRACE ) {
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+===============
+IN_PadEchoKey
+
+iPadOS hands a game controller to the app twice: once as controller input, and
+again through UIKit, which is what it does for every app that has not said
+otherwise. SDL turns the second copy into keyboard keys -- the arrows, Return,
+Escape, Pause -- and RTCW's stock keyboard bindings then act on them as well as
+on ours.
+
+The first half of this was found on the buttons: one press did two things, D-pad
+left walked left and turned the view, Cross jumped and opened the door, Options
+opened the menu and printed "unknown cmd pause".
+
+The other half is the sticks, and it is far worse, because UIKit's idea of a
+direction is a key rather than a position. LEFTARROW and RIGHTARROW are bound to
++left and +right -- turn, not strafe -- and a key turns at cl_yawspeed, a fixed
+140 degrees a second, however gently the stick is leaning. That is the whole of
+"a small lean sends the camera spinning, always at the same speed", and with the
+movement stick also walking the player forward it is the whole of "it walks in
+circles".
+
+Dropping these keys outright would break a real Bluetooth keyboard, so a key is
+dropped only while the pad is actually producing it: the button held, or the
+stick pushed that way within the last quarter second. A release is matched to
+the press that was dropped, since the button may already be up by then.
+
+This is the safety net rather than the cure. The cure is one line further out,
+where the system is told not to send the second copy at all -- see
+SDLRootViewController in ios/cmake/patch-sdl.cmake -- and this stays because the
+setting is Apple's to honour and the bug it guards against costs a mission.
+
+Returns qtrue if the key is an echo of the pad and should be ignored.
+===============
+*/
+static qboolean IN_PadEchoKey( int key, qboolean down )
+{
+	static qboolean dropped[8];
+	int i;
+
+	const struct { int key; int button; int stick; } echoes[] = {
+		{ K_LEFTARROW,  SDL_CONTROLLER_BUTTON_DPAD_LEFT,   0 },
+		{ K_RIGHTARROW, SDL_CONTROLLER_BUTTON_DPAD_RIGHT,  1 },
+		{ K_UPARROW,    SDL_CONTROLLER_BUTTON_DPAD_UP,     2 },
+		{ K_DOWNARROW,  SDL_CONTROLLER_BUTTON_DPAD_DOWN,   3 },
+		{ K_ENTER,      SDL_CONTROLLER_BUTTON_A,          -1 },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_START,      -1 },
+		{ K_ESCAPE,     SDL_CONTROLLER_BUTTON_B,          -1 },
+		{ K_PAUSE,      SDL_CONTROLLER_BUTTON_GUIDE,      -1 },
+	};
+
+	if ( !gamepad ) {
+		return qfalse;
+	}
+
+	for ( i = 0; i < (int)ARRAY_LEN( echoes ); i++ ) {
+		if ( echoes[i].key != key ) {
+			continue;
+		}
+
+		if ( down ) {
+			const char *from = NULL;
+
+			if ( SDL_GameControllerGetButton( gamepad, echoes[i].button ) ) {
+				from = "button";
+			} else if ( echoes[i].stick >= 0 && padStickPushed[echoes[i].stick] &&
+						Sys_Milliseconds() - padStickPushed[echoes[i].stick] < PAD_ECHO_GRACE ) {
+				from = "stick";
+			}
+
+#if TARGET_OS_IPHONE
+			// And if the pad is not visibly behind it, it still is.
+			//
+			// iPadOS decides the stick has moved before SDL has caught up with
+			// where it is -- the arrow arrives a frame or two ahead of the axis
+			// -- so asking the pad what it is doing right now answers "nothing"
+			// for most of these. Measured on the device: three echoes caught by
+			// the stick, fifty-seven missed.
+			//
+			// What settles it is the keyboard, or the absence of one. SDL only
+			// synthesises keys from UIPress while GameController reports no
+			// keyboard attached; a real keyboard goes down an entirely different
+			// road. So with a pad open and no keyboard on the device, one of
+			// these keys cannot have come from a player pressing it.
+			if ( !from && !Sys_IOS_HasHardwareKeyboard() ) {
+				from = "the system";
+			}
+#endif
+
+			if ( from ) {
+				dropped[i] = qtrue;
+
+				if ( in_debugPad && in_debugPad->integer ) {
+					Com_Printf( "pad: dropped keyboard echo of %s (key %d)\n", from, key );
+				}
+
+				return qtrue;
+			}
+			// Got here with a pad open and no pad input behind the key. Either a
+			// real keyboard is in play, or the system is echoing something this
+			// does not recognise yet -- and the second one is invisible without
+			// being said, because what it looks like from the sofa is a stick
+			// fault.
+			if ( in_debugPad && in_debugPad->integer ) {
+				Com_Printf( "pad: keyboard key %d passed through with a pad open"
+					" (no button or stick behind it)\n", key );
+			}
+		} else if ( dropped[i] ) {
+			dropped[i] = qfalse;
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+===============
 IN_ProcessEvents
 ===============
 */
@@ -1011,7 +2839,12 @@ static void IN_ProcessEvents( void )
 					break;
 
 				if( ( key = IN_TranslateSDLToQ3Key( &e.key.keysym, qtrue ) ) )
+				{
+					if ( IN_PadEchoKey( key, qtrue ) )
+						break;
+
 					Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+				}
 
 				if( key == K_BACKSPACE )
 					Com_QueueEvent( in_eventTime, SE_CHAR, CTRL('h'), 0, 0, NULL );
@@ -1023,7 +2856,12 @@ static void IN_ProcessEvents( void )
 
 			case SDL_KEYUP:
 				if( ( key = IN_TranslateSDLToQ3Key( &e.key.keysym, qfalse ) ) )
+				{
+					if ( IN_PadEchoKey( key, qfalse ) )
+						break;
+
 					Com_QueueEvent( in_eventTime, SE_KEY, key, qfalse, 0, NULL );
+				}
 
 				lastKeyDown = 0;
 				break;
@@ -1078,12 +2916,60 @@ static void IN_ProcessEvents( void )
 				}
 				break;
 
+#if TARGET_OS_IPHONE
+			case SDL_FINGERDOWN:
+			case SDL_FINGERUP:
+				if ( in_debugTouch && in_debugTouch->integer ) {
+					Com_Printf( "touch: finger %s at %.3f,%.3f\n",
+						e.type == SDL_FINGERDOWN ? "down" : "up",
+						e.tfinger.x, e.tfinger.y );
+				}
+				break;
+#endif
+
 			case SDL_MOUSEMOTION:
+#if TARGET_OS_IPHONE
+				if ( in_debugTouch && in_debugTouch->integer &&
+					 e.motion.which == SDL_TOUCH_MOUSEID ) {
+					Com_Printf( "touch: move to %d,%d (rel %d,%d) of %dx%d\n",
+						e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel,
+						cls.glconfig.vidWidth, cls.glconfig.vidHeight );
+				}
+#endif
+#if TARGET_OS_IPHONE
+				// The other half of the same problem the arrows have. iPadOS
+				// also lets a controller drive the system pointer, and a
+				// pointer being pushed by a stick arrives here as an unbroken
+				// stream of relative motion -- which the mouse path turns into
+				// a view that spins on its own, at a rate the game never chose
+				// and the stick cannot moderate.
+				//
+				// Nothing at this level distinguishes that stream from a real
+				// trackpad; SDL reports both as the same indirect pointer. So
+				// it is judged by the pad instead: motion that is not a finger,
+				// arriving while a stick is being pushed, is the pad's.
+				//
+				// A finger is exempt because the on-screen controls are built
+				// on it, and the cvar exists because a player with a real mouse
+				// and a pad in his other hand should be able to say so.
+				if ( in_padPointerGuard && in_padPointerGuard->integer &&
+					 e.motion.which != SDL_TOUCH_MOUSEID &&
+					 IN_PadStickPushedRecently() ) {
+					if ( in_debugPad && in_debugPad->integer ) {
+						static int nextEchoLog;
+
+						if ( Sys_Milliseconds() >= nextEchoLog ) {
+							nextEchoLog = Sys_Milliseconds() + 250;
+							Com_Printf( "pad: dropped pointer echo (rel %d,%d)\n",
+								e.motion.xrel, e.motion.yrel );
+						}
+					}
+					break;
+				}
+#endif
 				if( mouseActive )
 				{
-					if( !e.motion.xrel && !e.motion.yrel )
-						break;
-					Com_QueueEvent( in_eventTime, SE_MOUSE, e.motion.xrel, e.motion.yrel, 0, NULL );
+					IN_QueueMouseDelta( e.motion.xrel, e.motion.yrel );
 				}
 				break;
 
@@ -1091,6 +2977,26 @@ static void IN_ProcessEvents( void )
 			case SDL_MOUSEBUTTONUP:
 				{
 					int b;
+
+#if TARGET_OS_IPHONE
+					// There is no console on a tablet, so the only way to see
+					// what the touch layer is doing is to write it down.
+					if ( in_debugTouch && in_debugTouch->integer ) {
+						Com_Printf( "touch: button %d %s which=%s catcher=%d state=%d ui=%d\n",
+							e.button.button,
+							e.type == SDL_MOUSEBUTTONDOWN ? "down" : "up",
+							e.button.which == SDL_TOUCH_MOUSEID ? "touch" : "mouse",
+							Key_GetCatcher(), clc.state, CL_UIActive() );
+					}
+
+					// A click SDL made up from a touch is exactly what the menus
+					// need and exactly what gameplay does not: there it lands on
+					// +attack, so simply touching the screen fires the weapon.
+					// Shooting by touch is the overlay's fire button instead.
+					if ( e.button.which == SDL_TOUCH_MOUSEID && !CL_UIActive() ) {
+						break;
+					}
+#endif
 					switch( e.button.button )
 					{
 						case SDL_BUTTON_LEFT:   b = K_MOUSE1;     break;
@@ -1120,8 +3026,30 @@ static void IN_ProcessEvents( void )
 
 			case SDL_CONTROLLERDEVICEADDED:
 			case SDL_CONTROLLERDEVICEREMOVED:
+				// iPadOS announces the pad that is already connected over and
+				// over -- fifteen times in one session on the device, three of
+				// them mid-firefight. Reopening is not free: it drops the gyro's
+				// resting bias, probes the motors with a real HID write, and
+				// clears the button state, which sends a held button down a
+				// second time. So only react when the device actually changed.
+				//
+				// The two events do not agree on what `which` means: for ADDED
+				// it is a device index, for REMOVED an instance id. Hence the
+				// asymmetry below.
+				if ( e.type == SDL_CONTROLLERDEVICEADDED ) {
+					if ( SDL_JoystickGetDeviceInstanceID( e.cdevice.which ) == openedInstance )
+						break;
+				} else if ( openedInstance != -1 && e.cdevice.which != openedInstance ) {
+					break;
+				}
+
 				if (in_joystick->integer)
 					IN_InitJoystick();
+#if TARGET_OS_IPHONE
+				// Show or hide the on-screen controls to match: a controller
+				// arriving is exactly when the overlay should get out of the way.
+				Sys_IOS_TouchOverlayUpdate();
+#endif
 				break;
 
 			case SDL_QUIT:
@@ -1180,9 +3108,252 @@ static void IN_ProcessEvents( void )
 IN_Frame
 ===============
 */
+#if TARGET_OS_IPHONE
+/*
+===============
+Touch overlay bridge
+
+The on-screen controls are a UIKit view (ios_touch.m) over SDL's GL view, so
+they need a way into the engine's event queue.
+
+No locking is needed here, which is worth stating: UIKit is pumped *by*
+Com_Frame -- SDL's UIKit_PumpEvents drains the CFRunLoop on every SDL_PollEvent
+-- so these run on the same thread as the frame loop, never concurrently.
+===============
+*/
+void IOSTouch_QueueKey( int key, int down )
+{
+	Com_QueueEvent( in_eventTime, SE_KEY, key, down ? qtrue : qfalse, 0, NULL );
+}
+
+void IOSTouch_QueueAxis( int axis, int value )
+{
+	// Reuses the joystick path, so the on-screen stick honours j_forward and
+	// j_side exactly like a real one.
+	Com_QueueEvent( in_eventTime, SE_JOYSTICK_AXIS, axis, value, 0, NULL );
+}
+
+/*
+===============
+IOSTouch_SetTabletGyro
+
+The iPad's own gyro handing in its half of the aim, in the same units and the
+same convention as IN_GamepadGyro produces: view degrees per second times
+GYRO_AXIS_SCALE, positive yaw to the right and positive pitch downwards.
+
+Not IOSTouch_QueueAxis, which is what this used to go through. That writes the
+axis, and writing AXIS_GYRO_PITCH / AXIS_GYRO_YAW erases whatever the
+controller's gyro put there earlier in the same frame instead of adding to it,
+so with both sensors running the last writer won rather than the two being felt
+together. See IN_GyroContribute.
+===============
+*/
+void IOSTouch_SetTabletGyro( int pitch, int yaw )
+{
+	IN_GyroContribute( GYRO_SRC_TABLET, pitch, yaw );
+}
+
+void IOSTouch_QueueMouse( int dx, int dy )
+{
+	// Deliberately mouse rather than joystick: CL_MouseMove is not
+	// frametime-scaled whereas CL_JoystickMove is, and the unscaled path is what
+	// makes touch look feel 1:1.
+	IN_QueueMouseDelta( dx, dy );
+}
+
+/*
+===============
+IOSTouch_QueueMouseTo
+
+Put the menu cursor on a point in the game's 640x480 menu space.
+
+Touch is absolute and the UI's cursor is not -- it only accepts deltas, and it
+lives inside the UI VM where nothing outside can read it -- so the difference is
+worked out against the shadow copy IN_QueueMouseDelta keeps.
+===============
+*/
+void IOSTouch_QueueMouseTo( int x, int y )
+{
+	IN_QueueMouseDelta( x - menuCursorX, y - menuCursorY );
+}
+
+
+int IOSTouch_ControllerConnected( void )
+{
+	// Being connected is not enough to take the on-screen controls away. iOS
+	// reports a gamepad that nobody plugged in -- the simulator always does, and
+	// a device may too -- and hiding the controls on that alone leaves a tablet
+	// with no way to play at all. Wait until the pad is actually used.
+	return gamepad != NULL && gamepadUsed;
+}
+
+int IOSTouch_DebugEnabled( void )
+{
+	return in_debugTouch && in_debugTouch->integer;
+}
+
+/*
+===============
+IOSTouch_CinematicActive
+
+Whether a cutscene is playing, of either kind: a RoQ movie (clc.state is
+CA_CINEMATIC) or an in-engine scripted camera (com_cameraMode). The overlay uses
+this to turn a tap into "skip".
+===============
+*/
+int IOSTouch_CinematicActive( void )
+{
+	return IN_CutsceneActive() ? 1 : 0;
+}
+
+/*
+===============
+IOSTouch_SkipCinematic
+
+Escape, for both kinds of cutscene. That is the key the game itself skips on, so
+this takes the same route: CL_KeyDownEvent turns it into "cameraInterrupt" for a
+scripted camera, which lets the level script know the cutscene was cut short,
+and SCR_StopCinematic for a RoQ movie.
+
+Stopping the camera directly instead would leave the script waiting for an end
+that never comes.
+===============
+*/
+void IOSTouch_SkipCinematic( void )
+{
+	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qtrue, 0, NULL );
+	Com_QueueEvent( in_eventTime, SE_KEY, K_ESCAPE, qfalse, 0, NULL );
+}
+
+/*
+===============
+IOSTouch_QueueCommand
+
+Run a +command / -command on the overlay's behalf, with its own key number.
+
+The key number is what keeps two sources of the same button apart: a -command
+without one releases every holder, so the on-screen controls and the pad would
+cancel each other.
+===============
+*/
+void IOSTouch_QueueCommand( const char *command, int key )
+{
+	if ( !command || !*command ) {
+		return;
+	}
+
+	Cbuf_AddText( va( "%s %d\n", command, key ) );
+}
+
+/*
+===============
+IOSTouch_LookSensitivity
+
+How fast a finger dragged across the look area turns the view, for one axis.
+
+Takes an axis rather than answering once for both because the overlay applies it
+to the horizontal and the vertical separately, and a thumb sweeping sideways
+across a tablet covers several times the distance it can reach up and down
+without letting go. in_touchLookYawSens and in_touchLookPitchSens override
+in_touchLookSens one axis at a time; see IN_AxisSens.
+
+Zero still means one. Nothing set anywhere has to come out as "unchanged", not
+as "the view does not move" -- that was true when there was one cvar and it is
+true now that a missing per-axis key falls through to a shared key that may be
+missing too.
+===============
+*/
+float IOSTouch_LookSensitivity( int pitch )
+{
+	float sens = IN_AxisSens( pitch ? in_touchLookPitchSens : in_touchLookYawSens,
+		in_touchLookSens );
+
+	if ( sens <= 0.0f ) {
+		return 1.0f;
+	}
+
+	return sens;
+}
+
+int IOSTouch_MovementAxis( int forward )
+{
+	return forward ? Cvar_VariableIntegerValue( "j_forward_axis" )
+	               : Cvar_VariableIntegerValue( "j_side_axis" );
+}
+
+static qboolean iosSuspended = qfalse;
+
+// The renderer owns SDL_glContext, so stash the current one on the way out
+// rather than reaching into sdl_glimp.c for it.
+static SDL_GLContext iosSavedContext = NULL;
+
+/*
+===============
+IN_IOSAppEventWatch
+
+iOS kills an app that issues any GL command while backgrounded, and the
+drawable's storage is discarded when it goes away. Both have to be handled
+*synchronously*: once applicationDidEnterBackground: returns the process is
+frozen, so noticing the state change on the next poll of the event queue is
+already too late. Hence an event watch, which SDL calls from inside
+SDL_PumpEvents on the main thread, rather than a case in IN_ProcessEvents.
+===============
+*/
+static int SDLCALL IN_IOSAppEventWatch( void *userdata, SDL_Event *event )
+{
+	switch ( event->type )
+	{
+		case SDL_APP_WILLENTERBACKGROUND:
+			iosSuspended = qtrue;
+			iosSavedContext = SDL_GL_GetCurrentContext();
+			S_StopAllSounds();
+			break;
+
+		case SDL_APP_DIDENTERBACKGROUND:
+			// Finish what is already submitted and give up the context before
+			// we are frozen.
+			SDL_GL_MakeCurrent( SDL_window, NULL );
+			break;
+
+		case SDL_APP_WILLENTERFOREGROUND:
+			if ( iosSavedContext ) {
+				SDL_GL_MakeCurrent( SDL_window, iosSavedContext );
+			}
+			break;
+
+		case SDL_APP_DIDENTERFOREGROUND:
+			iosSuspended = qfalse;
+			break;
+
+		case SDL_APP_LOWMEMORY:
+			Com_Printf( "iOS: low memory warning\n" );
+			break;
+	}
+
+	return 0;
+}
+
+/*
+===============
+IN_IsSuspended
+
+Asked by the frame loop so it can idle instead of rendering while backgrounded.
+===============
+*/
+qboolean IN_IsSuspended( void )
+{
+	return iosSuspended;
+}
+#endif
+
 void IN_Frame( void )
 {
 	qboolean loading;
+
+	// Before the pad is read, so a scripted stick position is on the device by
+	// the time IN_JoyMove looks at it. Does nothing at all unless in_padEmulate
+	// has been turned on. See PAD EMULATION above.
+	IN_PadEmuFrame( );
 
 	IN_JoyMove( );
 
@@ -1212,6 +3383,21 @@ void IN_Frame( void )
 
 	IN_ProcessEvents( );
 
+#if TARGET_OS_IPHONE
+	// Cheap when nothing changed, and it has to run every frame: the overlay
+	// hides itself whenever a menu, the console or a loading screen takes over.
+	Sys_IOS_TouchOverlayUpdate( );
+	Sys_IOS_PerfFrame( );
+	Sys_IOS_GyroFrame( );
+#endif
+
+	// Both gyros have now had their say -- the controller's inside IN_JoyMove at
+	// the top of this function, the iPad's just above -- so their contributions
+	// can be added and put on the axes as one value. It runs unconditionally: on
+	// every platform but this one the second row is permanently zero and the total
+	// is simply what the controller asked for. See IN_GyroContribute.
+	IN_GyroFlush( );
+
 	// Set event time for next frame to earliest possible time an event could happen
 	in_eventTime = Sys_Milliseconds( );
 
@@ -1222,6 +3408,602 @@ void IN_Frame( void )
 		Cbuf_AddText( "vid_restart\n" );
 	}
 }
+
+/*
+===============================================================================
+
+PAD EMULATION
+
+A virtual controller, attached through SDL's own virtual joystick device, and a
+script that walks it through the positions players complain about.
+
+It exists because every stick problem this port has had is cross-talk -- one
+stick driving an output that belongs to the other -- and cross-talk cannot be
+judged by feel. "The camera drifted" and "the camera drifted because the
+movement stick is sitting on the yaw axis" are the same sentence from the sofa,
+and the second one is the only one that can be fixed.
+
+The virtual pad arrives the way a real one does, so everything downstream is
+the real path and nothing is stubbed: SDL builds a game controller mapping for
+it, IN_InitJoystick opens it, IN_GamepadMove reads it with
+SDL_GameControllerGetAxis, IN_GamepadSticks curves it, and the result lands on
+the joystick axes and in the usercmd. No code below this point knows it is a
+test.
+
+What each step measures is the two things the player sees -- the movement bytes
+in the command that was built, and how far the view turned while the stick was
+held -- against what that stick position is supposed to produce, and, which is
+the whole point, against zero for the outputs it must not touch.
+
+  in_padEmulate 1    attach the virtual pad; 0 detaches it
+  padtest            run the script and print the table
+
+The gyros are reported beside every row rather than switched off for the
+duration. A controller or tablet gyro feeding the view is a real cause of "the
+stick turns the camera", and silencing it during the one test that would show
+it would be a way of passing rather than of being right.
+
+===============================================================================
+*/
+
+// Long enough for the digital movement path to have taken effect -- it goes out
+// as console commands and is therefore a frame behind -- and then long enough
+// again that a turn rate is measured rather than inferred from one frame's
+// rounding.
+#define PADEMU_SETTLE_FRAMES   8
+#define PADEMU_SAMPLE_FRAMES  16
+
+// What a step expects of one output. The sign says which way; PADEMU_NUDGE
+// means "the same way, but only a little", which is what a stick held 5 degrees
+// off the vertical is asking for and what the reported fault turns into a full
+// speed spin.
+#define PADEMU_ZERO    0
+#define PADEMU_FULL    1
+#define PADEMU_NUDGE   2
+#define PADEMU_DIAG    3   // about seven tenths, which is what a corner is worth
+#define PADEMU_ANY     9   // not this step's business
+
+typedef struct
+{
+	const char *what;
+
+	// Stick positions as SDL reports them: x right, y down, -1..1.
+	float lx, ly, rx, ry;
+
+	// Wanted outputs, in the player's terms rather than the engine's: forward
+	// and right are the movement bytes, turn is positive to the right and look
+	// is positive upwards. See IN_PadEmuMeasure for where the engine's signs
+	// are turned back into these.
+	int forward, right, turn, look;
+
+	// Switch in_moveDigital over while this step's direction is being held.
+	// Not a thing the step itself checks -- the row after it is what catches
+	// what goes wrong.
+	qboolean flip;
+} padEmuStep_t;
+
+static const padEmuStep_t padEmuScript[] =
+{
+	// The movement stick alone. Every one of these has to leave the view
+	// completely still -- a turn on any of these rows is the walking-in-circles
+	// fault, and the rows with a little sideways lean on them are the exact
+	// position that provokes it.
+	{ "left stick forward",              0.00f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward, 5% sideways", 0.05f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward, 15% sideways",0.15f, -1.00f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick back",                 0.00f,  1.00f,  0.00f,  0.00f, -PADEMU_FULL,  PADEMU_ANY,  PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick right",                1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick left",                -1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+	{ "left stick forward-right",        0.71f, -0.71f,  0.00f,  0.00f,  PADEMU_FULL,  PADEMU_FULL, PADEMU_ZERO, PADEMU_ZERO },
+
+	// The look stick alone. None of these may move the player an inch.
+	{ "right stick right",               0.00f,  0.00f,  1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_FULL, PADEMU_ZERO },
+	{ "right stick left",                0.00f,  0.00f, -1.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL, PADEMU_ZERO },
+	{ "right stick forward (look up)",   0.00f,  0.00f,  0.00f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_FULL },
+	{ "right stick back (look down)",    0.00f,  0.00f,  0.00f,  1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, -PADEMU_FULL },
+	{ "right stick forward, 5% sideways",0.00f,  0.00f,  0.05f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_NUDGE, PADEMU_FULL },
+
+	// Held right into a corner, which a square-gated stick can do. The curve
+	// has to bring the length back to one before splitting it, or the diagonal
+	// aims half again faster than either cardinal.
+	{ "right stick into the corner",     0.00f,  0.00f,  1.00f, -1.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_DIAG, PADEMU_DIAG },
+
+	// Both at once, which is how the game is actually played.
+	{ "left forward + right right",      0.00f, -1.00f,  1.00f,  0.00f,  PADEMU_FULL,  PADEMU_ANY,   PADEMU_FULL, PADEMU_ZERO },
+
+	// The movement setting changed while a direction was held, which is what a
+	// player does when he opens the launcher mid-mission and switches movement
+	// from digital to analogue. The digital path holds a direction with a key
+	// that only it ever releases, and from the moment the setting changes it is
+	// not running -- so the key stayed down and the character walked sideways
+	// for the rest of the session. This row is not the test; the row after it
+	// is.
+	{ "left stick right, mode switched under it",
+	                                     1.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ANY,   PADEMU_ANY,   PADEMU_ZERO, PADEMU_ZERO, qtrue },
+
+	// And nothing at all, which has to come out as nothing at all. A row that
+	// fails here is something else writing the axes -- a gyro, a stuck touch,
+	// a direction nobody let go of -- and every other row in the table is worth
+	// less until it passes.
+	{ "both sticks centred",             0.00f,  0.00f,  0.00f,  0.00f,  PADEMU_ZERO,  PADEMU_ZERO,  PADEMU_ZERO, PADEMU_ZERO },
+};
+
+static cvar_t *in_padEmulate = NULL;
+
+static SDL_Joystick *padEmuStick = NULL;      // our own handle on the virtual device
+static SDL_JoystickID padEmuInstance = -1;
+
+static int   padEmuStepIndex = -1;            // -1 when no run is in progress
+static int   padEmuFrame;
+static float padEmuYawStart, padEmuPitchStart;
+static int   padEmuStartTime;
+static int   padEmuPassed, padEmuFailed;
+static qboolean padEmuQuitWhenDone;   // padtest quit -- for scripted runs
+static int   padEmuAttachCount;       // how many times the device has been put in
+static int   padEmuAttachAtStart;     // what it was when the current run began
+static qboolean padEmuAutoAttached;   // padtest brought the virtual pad in itself
+static int      padEmuMoveDigital;    // in_moveDigital as the run found it
+
+/*
+===============
+IN_PadEmuEnsure
+
+Puts the virtual device in the list, if one has been asked for and is not there
+already. Deliberately does not reopen anything: it is called from inside
+IN_InitJoystick, which is about to enumerate and open whatever it finds.
+===============
+*/
+static void IN_PadEmuEnsure( void )
+{
+	int index;
+
+	if ( !in_padEmulate || !in_padEmulate->integer || padEmuStick ) {
+		return;
+	}
+
+	if ( !SDL_WasInit( SDL_INIT_JOYSTICK ) ) {
+		return;
+	}
+
+	// Six axes, fifteen buttons and a hat is the shape of a standard pad, and
+	// SDL only builds a game controller mapping for a virtual device that has
+	// it. Without that mapping SDL_IsGameController answers no, the engine
+	// falls back to the raw joystick path, and the test would be exercising a
+	// path no player is on.
+	index = SDL_JoystickAttachVirtual( SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 1 );
+
+	if ( index < 0 ) {
+		Com_Printf( "pademu: SDL_JoystickAttachVirtual failed: %s\n", SDL_GetError() );
+		return;
+	}
+
+	padEmuStick = SDL_JoystickOpen( index );
+
+	if ( !padEmuStick ) {
+		Com_Printf( "pademu: could not open the virtual pad: %s\n", SDL_GetError() );
+		SDL_JoystickDetachVirtual( index );
+		return;
+	}
+
+	padEmuInstance = SDL_JoystickInstanceID( padEmuStick );
+	padEmuAttachCount++;
+
+	// Named rather than left to the order SDL happens to report: a real pad may
+	// be in the list too, and which of the two the engine opens decides what
+	// the test measures.
+	Cvar_Set( "in_joystickNo", va( "%d", index ) );
+
+	Com_Printf( "pademu: virtual pad attached at index %d\n", index );
+}
+
+/*
+===============
+IN_PadEmuForget
+
+The device has gone -- the joystick subsystem was shut down and took it with it
+-- so the handle is stale rather than closed and must not be given back to SDL.
+===============
+*/
+static void IN_PadEmuForget( void )
+{
+	padEmuStick = NULL;
+	padEmuInstance = -1;
+}
+
+/*
+===============
+IN_PadEmuAttach
+===============
+*/
+static void IN_PadEmuAttach( void )
+{
+	if ( padEmuStick ) {
+		return;
+	}
+
+	if ( !SDL_WasInit( SDL_INIT_JOYSTICK ) && SDL_Init( SDL_INIT_JOYSTICK ) != 0 ) {
+		Com_Printf( "pademu: SDL_Init(JOYSTICK) failed: %s\n", SDL_GetError() );
+		return;
+	}
+
+	IN_PadEmuEnsure();
+
+	if ( padEmuStick ) {
+		IN_InitJoystick();
+	}
+}
+
+/*
+===============
+IN_PadEmuDetach
+===============
+*/
+static void IN_PadEmuDetach( void )
+{
+	int i;
+
+	if ( !padEmuStick ) {
+		return;
+	}
+
+	padEmuStepIndex = -1;
+	padEmuAutoAttached = qfalse;
+
+	// Said before anything else, because IN_InitJoystick at the bottom of this
+	// function asks IN_PadEmuEnsure for a virtual pad and would hand back the
+	// one we are in the middle of taking away.
+	if ( in_padEmulate && in_padEmulate->integer ) {
+		Cvar_Set( "in_padEmulate", "0" );
+		in_padEmulate->modified = qfalse;
+	}
+
+	// The engine's own handles on this device go first. Detaching it while they
+	// still point at it leaves IN_InitJoystick closing a joystick that no longer
+	// exists, which is a crash rather than a failed test.
+	if ( openedInstance == padEmuInstance ) {
+		if ( gamepad ) {
+			SDL_GameControllerClose( gamepad );
+			gamepad = NULL;
+		}
+		if ( stick ) {
+			SDL_JoystickClose( stick );
+			stick = NULL;
+		}
+		openedInstance = -1;
+	}
+
+	SDL_JoystickClose( padEmuStick );
+	padEmuStick = NULL;
+
+	// Found by instance rather than by the index it was attached at: devices
+	// come and go while the game runs and that index is not necessarily still
+	// the same device.
+	for ( i = 0; i < SDL_NumJoysticks(); i++ ) {
+		if ( SDL_JoystickGetDeviceInstanceID( i ) == padEmuInstance ) {
+			SDL_JoystickDetachVirtual( i );
+			break;
+		}
+	}
+
+	padEmuInstance = -1;
+
+	Cvar_Set( "in_joystickNo", "0" );
+	Com_Printf( "pademu: virtual pad detached\n" );
+
+	IN_InitJoystick();
+}
+
+/*
+===============
+IN_PadEmuWrite
+
+Puts one stick position on the virtual device. SDL applies it at the next
+SDL_JoystickUpdate, which IN_GamepadMove performs at the top of this same
+frame, so a value written here is read this frame and not the next.
+===============
+*/
+static void IN_PadEmuWrite( float lx, float ly, float rx, float ry )
+{
+	if ( !padEmuStick ) {
+		return;
+	}
+
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_LEFTX,  (Sint16)( Com_Clamp( -1.0f, 1.0f, lx ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_LEFTY,  (Sint16)( Com_Clamp( -1.0f, 1.0f, ly ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_RIGHTX, (Sint16)( Com_Clamp( -1.0f, 1.0f, rx ) * 32767.0f ) );
+	SDL_JoystickSetVirtualAxis( padEmuStick, SDL_CONTROLLER_AXIS_RIGHTY, (Sint16)( Com_Clamp( -1.0f, 1.0f, ry ) * 32767.0f ) );
+}
+
+/*
+===============
+IN_PadEmuCheck
+
+One output against one expectation. full is what that output reads at full
+deflection, and is what turns a raw number into "most of it" or "a little".
+===============
+*/
+static qboolean IN_PadEmuCheck( int want, float measured, float full )
+{
+	float magnitude = fabs( measured );
+
+	if ( want == PADEMU_ANY ) {
+		return qtrue;
+	}
+
+	if ( want == PADEMU_ZERO ) {
+		// A hair of tolerance, because a movement byte is rounded and a turn
+		// rate is measured over a handful of frames. Anything a player could
+		// notice is far outside it.
+		return ( magnitude <= full * 0.02f ) ? qtrue : qfalse;
+	}
+
+	if ( ( want > 0 ) != ( measured > 0.0f ) ) {
+		return qfalse;
+	}
+
+	if ( abs( want ) == PADEMU_NUDGE ) {
+		return ( magnitude > 0.0f && magnitude <= full * 0.30f ) ? qtrue : qfalse;
+	}
+
+	// A stick held in a corner is sqrt(2) from centre, and the curve is
+	// supposed to bring that back to one before splitting it between the axes,
+	// leaving about 0.707 on each. A corner that comes out at full deflection
+	// on both means the direction was renormalised against a clamped
+	// magnitude, and the diagonal is running half again too fast.
+	if ( abs( want ) == PADEMU_DIAG ) {
+		return ( magnitude >= full * 0.55f && magnitude <= full * 0.85f ) ? qtrue : qfalse;
+	}
+
+	return ( magnitude >= full * 0.50f ) ? qtrue : qfalse;
+}
+
+/*
+===============
+IN_PadEmuMeasure
+
+Collects what the step just held produced, prints the row, and says whether it
+was what the step asked for.
+===============
+*/
+static void IN_PadEmuMeasure( const padEmuStep_t *step )
+{
+	const usercmd_t *cmd = &cl.cmds[ cl.cmdNumber & CMD_MASK ];
+	int   elapsed = Sys_Milliseconds() - padEmuStartTime;
+	float seconds = ( elapsed > 0 ) ? elapsed * 0.001f : 0.001f;
+	float turn, look;
+	float fullTurn = in_lookYawSpeed ? in_lookYawSpeed->value : 220.0f;
+	float fullLook = in_lookPitchSpeed ? in_lookPitchSpeed->value : 190.0f;
+	int   ok;
+
+	// The engine counts yaw anti-clockwise and pitch downwards; the table is
+	// written the way the stick is held, so both are turned round once here and
+	// nowhere else.
+	turn = -AngleSubtract( cl.viewangles[YAW],   padEmuYawStart )   / seconds;
+	look = -AngleSubtract( cl.viewangles[PITCH], padEmuPitchStart ) / seconds;
+
+	ok = IN_PadEmuCheck( step->forward, (float)cmd->forwardmove, 127.0f ) &&
+	     IN_PadEmuCheck( step->right,   (float)cmd->rightmove,   127.0f ) &&
+	     IN_PadEmuCheck( step->turn,    turn,                    fullTurn ) &&
+	     IN_PadEmuCheck( step->look,    look,                    fullLook );
+
+	Com_Printf( "%-36s fwd=%+4d right=%+4d turn=%+7.1f look=%+7.1f  axes[%d %d %d %d] gyro[%d %d]  %s\n",
+		step->what,
+		cmd->forwardmove, cmd->rightmove, turn, look,
+		cl.joystickAxis[j_side_axis->integer],
+		cl.joystickAxis[j_forward_axis->integer],
+		cl.joystickAxis[j_yaw_axis->integer],
+		cl.joystickAxis[j_pitch_axis->integer],
+		cl.joystickAxis[AXIS_GYRO_PITCH],
+		cl.joystickAxis[AXIS_GYRO_YAW],
+		ok ? "ok" : "FAILED" );
+
+	if ( ok ) {
+		padEmuPassed++;
+		return;
+	}
+
+	padEmuFailed++;
+
+	// Named individually, because which output went wrong is the whole
+	// diagnosis: a turn on a movement-only row and a movement on a look-only
+	// row are two different bugs that feel the same.
+	if ( !IN_PadEmuCheck( step->forward, (float)cmd->forwardmove, 127.0f ) ) {
+		Com_Printf( "    forward: wanted %s, got %d\n",
+			step->forward == PADEMU_ZERO ? "nothing" : ( step->forward > 0 ? "forward" : "back" ), cmd->forwardmove );
+	}
+	if ( !IN_PadEmuCheck( step->right, (float)cmd->rightmove, 127.0f ) ) {
+		Com_Printf( "    sideways: wanted %s, got %d\n",
+			step->right == PADEMU_ZERO ? "nothing" : ( step->right > 0 ? "right" : "left" ), cmd->rightmove );
+	}
+	if ( !IN_PadEmuCheck( step->turn, turn, fullTurn ) ) {
+		Com_Printf( "    turn: wanted %s, got %.1f deg/s\n",
+			step->turn == PADEMU_ZERO ? "none at all" :
+			( abs( step->turn ) == PADEMU_NUDGE ? "a small one" :
+			( abs( step->turn ) == PADEMU_DIAG ? "about seven tenths" :
+			( step->turn > 0 ? "right" : "left" ) ) ), turn );
+	}
+	if ( !IN_PadEmuCheck( step->look, look, fullLook ) ) {
+		Com_Printf( "    look: wanted %s, got %.1f deg/s\n",
+			step->look == PADEMU_ZERO ? "none at all" :
+			( abs( step->look ) == PADEMU_NUDGE ? "a small one" :
+			( abs( step->look ) == PADEMU_DIAG ? "about seven tenths" :
+			( step->look > 0 ? "up" : "down" ) ) ), look );
+	}
+}
+
+/*
+===============
+IN_PadEmuFrame
+
+Called once a frame from IN_Frame, before the pad is read.
+
+The order inside matters: the step that has just been held is collected first --
+by now the command it fed has been built and the view has already turned -- and
+only then is the next position written. The other way round would measure each
+step against the position that replaced it.
+===============
+*/
+static void IN_PadEmuFrame( void )
+{
+	const padEmuStep_t *step;
+
+	if ( in_padEmulate && in_padEmulate->modified ) {
+		in_padEmulate->modified = qfalse;
+
+		if ( in_padEmulate->integer ) {
+			IN_PadEmuAttach();
+		} else {
+			IN_PadEmuDetach();
+		}
+	}
+
+	// A run with no device under it can only wait forever, so it says so and
+	// stops. This is reachable if something switches the emulation off while a
+	// test is in progress.
+	if ( padEmuStepIndex >= 0 && !padEmuStick ) {
+		Com_Printf( "padtest: the virtual pad went away mid-run (in_padEmulate is %s); stopping\n",
+			in_padEmulate ? in_padEmulate->string : "?" );
+		padEmuStepIndex = -1;
+		padEmuQuitWhenDone = qfalse;
+		return;
+	}
+
+	if ( padEmuStepIndex < 0 || !padEmuStick ) {
+		return;
+	}
+
+	if ( padEmuStepIndex >= (int)ARRAY_LEN( padEmuScript ) ) {
+		Com_Printf( "padtest: %d passed, %d failed\n", padEmuPassed, padEmuFailed );
+
+		// Worth saying out loud rather than leaving in the numbers. An input
+		// restart puts the virtual pad back but loses a frame or two of stick
+		// on the way, and a row measured across one reads as a fault that is
+		// not there.
+		if ( padEmuAttachCount != padEmuAttachAtStart ) {
+			Com_Printf( "padtest: the input system restarted %d time(s) during the run;"
+				" any single odd row is worth repeating\n", padEmuAttachCount - padEmuAttachAtStart );
+		}
+
+		if ( !padEmuFailed ) {
+			Com_Printf( "padtest: left stick moves, right stick looks, neither does the other's job\n" );
+		}
+
+		padEmuStepIndex = -1;
+		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+
+		// The run borrowed this; give it back.
+		if ( in_moveDigital->integer != padEmuMoveDigital ) {
+			Cvar_Set( "in_moveDigital", padEmuMoveDigital ? "1" : "0" );
+		}
+
+		// A scripted run leaves by the front door. Killing the process instead
+		// leaves the pid file behind, and the next start stops on a modal
+		// "did not exit properly" dialog that no script can answer.
+		if ( padEmuQuitWhenDone ) {
+			padEmuQuitWhenDone = qfalse;
+			Cbuf_AddText( "quit\n" );
+			return;
+		}
+
+		// Give the real pad back. While the virtual one is in the list it is
+		// the one the engine has open, so a test run started from a controller
+		// would otherwise end with that controller dead and no obvious way to
+		// wake it -- which is a worse bug than the one being tested for.
+		if ( padEmuAutoAttached ) {
+			IN_PadEmuDetach();
+		}
+		return;
+	}
+
+	step = &padEmuScript[padEmuStepIndex];
+
+	padEmuFrame++;
+
+	// Halfway through settling: the direction has been held for a few frames by
+	// now, which is the state this is meant to change out from under.
+	if ( step->flip && padEmuFrame == PADEMU_SETTLE_FRAMES / 2 ) {
+		Cvar_Set( "in_moveDigital", in_moveDigital->integer ? "0" : "1" );
+	}
+
+	if ( padEmuFrame == PADEMU_SETTLE_FRAMES ) {
+		// The step has taken hold; start the clock.
+		padEmuYawStart   = cl.viewangles[YAW];
+		padEmuPitchStart = cl.viewangles[PITCH];
+		padEmuStartTime  = Sys_Milliseconds();
+	} else if ( padEmuFrame >= PADEMU_SETTLE_FRAMES + PADEMU_SAMPLE_FRAMES ) {
+		IN_PadEmuMeasure( step );
+
+		padEmuStepIndex++;
+		padEmuFrame = 0;
+
+		// Back to centre between steps, so each one is entered from rest rather
+		// than from wherever the last one left the stick. A digital movement key
+		// that is still held would otherwise be credited to the step after it.
+		IN_PadEmuWrite( 0.0f, 0.0f, 0.0f, 0.0f );
+		return;
+	}
+
+	IN_PadEmuWrite( step->lx, step->ly, step->rx, step->ry );
+}
+
+/*
+===============
+IN_PadTest_f
+===============
+*/
+static void IN_PadTest_f( void )
+{
+	if ( padEmuStepIndex >= 0 ) {
+		Com_Printf( "padtest: already running\n" );
+		return;
+	}
+
+	if ( !padEmuStick ) {
+		Cvar_Set( "in_padEmulate", "1" );
+		in_padEmulate->modified = qfalse;
+		IN_PadEmuAttach();
+		padEmuAutoAttached = padEmuStick ? qtrue : qfalse;
+	}
+
+	if ( !padEmuStick ) {
+		Com_Printf( "padtest: no virtual pad, nothing to test with\n" );
+		return;
+	}
+
+	if ( !gamepad ) {
+		Com_Printf( "padtest: the virtual pad is attached but the engine has not opened it as a gamepad.\n" );
+		Com_Printf( "         in_joystick is %s, in_joystickNo is %s. That on its own is the fault.\n",
+			Cvar_VariableString( "in_joystick" ), Cvar_VariableString( "in_joystickNo" ) );
+		return;
+	}
+
+	// The view only turns while the game owns the screen. Run from a menu the
+	// table would come out all zeroes and read as a pass.
+	if ( CL_UIActive() ) {
+		Com_Printf( "padtest: start a map first -- nothing moves while a menu or a loading screen is up\n" );
+		return;
+	}
+
+	Com_Printf( "\npadtest: %d steps. Turn is positive to the right, look is positive upwards.\n",
+		(int)ARRAY_LEN( padEmuScript ) );
+	Com_Printf( "padtest: direct=%s digital=%s dpad=%s deadzone=%s yawSpeed=%s pitchSpeed=%s"
+		" stickExpo=%s moveExpo=%s invert=%s gyro=%s gyroSens=%s touchGyro=%s\n\n",
+		Cvar_VariableString( "in_gamepadDirect" ), Cvar_VariableString( "in_moveDigital" ),
+		Cvar_VariableString( "in_dpadMove" ), Cvar_VariableString( "joy_threshold" ),
+		Cvar_VariableString( "in_lookYawSpeed" ), Cvar_VariableString( "in_lookPitchSpeed" ),
+		Cvar_VariableString( "in_stickExpo" ), Cvar_VariableString( "in_moveExpo" ),
+		Cvar_VariableString( "in_invertLook" ), Cvar_VariableString( "in_gyro" ),
+		Cvar_VariableString( "in_gyroSens" ), Cvar_VariableString( "in_touchGyro" ) );
+
+	padEmuStepIndex = 0;
+	padEmuFrame = 0;
+	padEmuPassed = 0;
+	padEmuFailed = 0;
+	padEmuQuitWhenDone = ( Cmd_Argc() > 1 && !Q_stricmp( Cmd_Argv( 1 ), "quit" ) ) ? qtrue : qfalse;
+	padEmuAttachAtStart = padEmuAttachCount;
+	padEmuMoveDigital = in_moveDigital->integer;
+}
+
 
 /*
 ===============
@@ -1248,10 +4030,135 @@ void IN_Init( void *windowData )
 	in_mouse = Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
 	in_nograb = Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
 
+#if TARGET_OS_IPHONE
+	// A gamepad is the primary input device here, so it is on by default, and
+	// not latched: controllers get paired and unpaired while the game is
+	// running and requiring in_restart for that would be absurd.
+	in_joystick = Cvar_Get( "in_joystick", "1", CVAR_ARCHIVE );
+#else
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
-	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
+#endif
+	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.12", CVAR_ARCHIVE );
 
+	// DualSense extras. All default to off or neutral so a plain gamepad
+	// behaves exactly as before.
+	in_gyro         = Cvar_Get( "in_gyro",         "0",    CVAR_ARCHIVE );
+	in_gyroSens     = Cvar_Get( "in_gyroSens",     "1.0",  CVAR_ARCHIVE );
+	in_gyroDeadzone = Cvar_Get( "in_gyroDeadzone", "0.02", CVAR_ARCHIVE );
+
+	// Horizontal and vertical separately, zero meaning "leave this axis to
+	// in_gyroSens". Default zero on both so that a config which already carries a
+	// tuned in_gyroSens keeps aiming exactly as it did, without a migration and
+	// without the player being asked to set two numbers where he had settled on
+	// one. See IN_AxisSens.
+	in_gyroYawSens   = Cvar_Get( "in_gyroYawSens",   "0", CVAR_ARCHIVE );
+	in_gyroPitchSens = Cvar_Get( "in_gyroPitchSens", "0", CVAR_ARCHIVE );
+
+	// 0 yaw, 1 roll, 2 both. Roll by default because it steers the same however
+	// the pad is being held, and a pad played on a sofa is never held level;
+	// see the block in IN_GamepadGyro. Only for the controller's own sensor --
+	// the iPad's gyro builds its axes from gravity and has no such choice.
+	in_gyroYawSource = Cvar_Get( "in_gyroYawSource", "1", CVAR_ARCHIVE );
+
+	// Off by default because SDL documents which way a controller's gyro reports,
+	// so it should already be the right way round. They exist because a sensor
+	// that disagrees cannot be detected from here, only felt by the player, and
+	// the alternative to a toggle is a rebuild.
+	//
+	// The controller's alone. ios_gyro.m used to read this same pair, on the
+	// reasoning that one toggle for both gyros keeps them from disagreeing, and
+	// that was wrong: the two sensors do not share a frame of reference. This one
+	// reports in the frame SDL documents for the controller's own body; the iPad
+	// builds its axes out of the gravity vector instead. Which way round each of
+	// them comes out is an independent question, so a player who flipped the
+	// horizontal to suit the pad was flipping the tablet's the wrong way as the
+	// price. It has its own pair now -- in_touchGyroInvertYaw and
+	// in_touchGyroInvertPitch, registered in ios_gyro.m.
+	in_gyroInvertYaw   = Cvar_Get( "in_gyroInvertYaw",   "0", CVAR_ARCHIVE );
+	in_gyroInvertPitch = Cvar_Get( "in_gyroInvertPitch", "0", CVAR_ARCHIVE );
+	in_touchpad     = Cvar_Get( "in_touchpad",     "1",    CVAR_ARCHIVE );
+	in_touchpadSens = Cvar_Get( "in_touchpadSens", "600",  CVAR_ARCHIVE );
+	in_triggerSoft  = Cvar_Get( "in_triggerSoft",  "0.12", CVAR_ARCHIVE );
+	in_triggerHard  = Cvar_Get( "in_triggerHard",  "0.75", CVAR_ARCHIVE );
+	in_rumble       = Cvar_Get( "in_rumble",       "100",  CVAR_ARCHIVE );
+	in_ledFeedback  = Cvar_Get( "in_ledFeedback",  "1",    CVAR_ARCHIVE );
+
+	in_gamepadDirect   = Cvar_Get( "in_gamepadDirect",   "1",  CVAR_ARCHIVE );
+	in_debugTouch      = Cvar_Get( "in_debugTouch",      "0",  CVAR_ARCHIVE );
+	in_debugPad        = Cvar_Get( "in_debugPad",        "0",  CVAR_ARCHIVE );
+
+	// On by default: what it guards against is a view that turns by itself, and
+	// what it costs is a mouse that stops working for as long as a stick is
+	// held -- which on a tablet with a pad in both hands is nothing at all.
+	in_padPointerGuard = Cvar_Get( "in_padPointerGuard", "1",  CVAR_ARCHIVE );
+	in_touchLookSens   = Cvar_Get( "in_touchLookSens",   "1.0", CVAR_ARCHIVE );
+
+	// Same arrangement as the gyro's pair above: zero defers to in_touchLookSens,
+	// anything positive takes that axis over.
+	in_touchLookYawSens   = Cvar_Get( "in_touchLookYawSens",   "0", CVAR_ARCHIVE );
+	in_touchLookPitchSens = Cvar_Get( "in_touchLookPitchSens", "0", CVAR_ARCHIVE );
+	in_stickExpo       = Cvar_Get( "in_stickExpo",       "0.35",  CVAR_ARCHIVE );
+	in_moveExpo        = Cvar_Get( "in_moveExpo",        "0.15", CVAR_ARCHIVE );
+	in_moveDigital     = Cvar_Get( "in_moveDigital",     "1",    CVAR_ARCHIVE );
+	in_dpadMove        = Cvar_Get( "in_dpadMove",        "1",    CVAR_ARCHIVE );
+	in_invertLook      = Cvar_Get( "in_invertLook",      "0",  CVAR_ARCHIVE );
+	in_menuCursorSpeed = Cvar_Get( "in_menuCursorSpeed", "6", CVAR_ARCHIVE );
+
+	in_lookYawSpeed    = Cvar_Get( "in_lookYawSpeed",   "220", CVAR_ARCHIVE );
+	in_lookPitchSpeed  = Cvar_Get( "in_lookPitchSpeed", "190", CVAR_ARCHIVE );
+
+	// Deliberately not archived. A virtual pad left attached across a restart
+	// would sit in the device list looking like hardware, and the first thing
+	// anyone would do about the resulting confusion is file a bug against the
+	// sticks.
+	in_padEmulate      = Cvar_Get( "in_padEmulate",     "0",   0 );
+
+	// Forced off when the game starts, not merely defaulted off. A config that
+	// has picked the value up -- one seta in a script someone pasted is enough
+	// -- would otherwise open the game with a virtual pad in the device list
+	// and the real one shut out, every time, with nothing on screen to say why.
+	//
+	// Once, though, and not on every IN_Init: a vid_restart comes back through
+	// here, and switching the emulation off underneath a test that is halfway
+	// through leaves it waiting for a device that will never be put back.
+	{
+		static qboolean forcedOff;
+
+		if ( !forcedOff ) {
+			forcedOff = qtrue;
+			Cvar_Set( "in_padEmulate", "0" );
+		}
+	}
+
+	in_padEmulate->modified = qfalse;
+
+	Cmd_AddCommand( "padtest", IN_PadTest_f );
+
+	Cvar_CheckRange( in_stickExpo,       0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_moveExpo,        0.0f,  1.0f,  qfalse );
+	Cvar_CheckRange( in_menuCursorSpeed, 1.0f,  60.0f, qfalse );
+	Cvar_CheckRange( in_lookYawSpeed,    20.0f, 720.0f, qfalse );
+	Cvar_CheckRange( in_lookPitchSpeed,  20.0f, 720.0f, qfalse );
+
+	Cvar_CheckRange( in_gyroSens,     0.05f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroDeadzone, 0.0f,  1.0f,  qfalse );
+
+	// The per-axis keys start where in_gyroSens does but reach down to zero,
+	// which is not a sensitivity but the word for "this axis has none of its own".
+	Cvar_CheckRange( in_gyroYawSens,       0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroPitchSens,     0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_touchLookYawSens,   0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_touchLookPitchSens, 0.0f, 10.0f, qfalse );
+	Cvar_CheckRange( in_gyroYawSource, GYRO_YAW_FROM_YAW, GYRO_YAW_FROM_BOTH, qtrue );
+	Cvar_CheckRange( in_triggerHard,  0.05f, 1.0f,  qfalse );
+	Cvar_CheckRange( in_rumble,       0,     100,   qtrue  );
+
+#if !TARGET_OS_IPHONE
+	// On iOS this raises the on-screen keyboard and leaves it up over the game.
+	// Text entry there is driven from the launcher and the console instead, which
+	// call SDL_StartTextInput() when they actually need it.
 	SDL_StartTextInput( );
+#endif
 
 	mouseAvailable = ( in_mouse->value != 0 );
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );
@@ -1261,6 +4168,31 @@ void IN_Init( void *windowData )
 	Cvar_SetValue( "com_minimized", appState & SDL_WINDOW_MINIMIZED );
 
 	IN_InitJoystick( );
+
+#if TARGET_OS_IPHONE
+	SDL_AddEventWatch( IN_IOSAppEventWatch, NULL );
+
+	{
+		// The overlay attaches to SDL's own UIWindow, so it needs the handle
+		// SDL only exposes through the WM info struct.
+		SDL_SysWMinfo wmInfo;
+
+		SDL_VERSION( &wmInfo.version );
+
+		if ( SDL_GetWindowWMInfo( SDL_window, &wmInfo ) ) {
+			// Before the overlay, and before a single frame is drawn: until the
+			// system has been told the controller is ours, it sends a copy of
+			// it through UIKit as arrow keys, and the game is played by those
+			// rather than by the sticks.
+			Sys_IOS_ClaimControllerEvents( (void *)wmInfo.info.uikit.window );
+
+			Sys_IOS_TouchOverlayInit( (void *)wmInfo.info.uikit.window );
+		} else {
+			Com_Printf( "Touch overlay: SDL_GetWindowWMInfo failed: %s\n", SDL_GetError() );
+		}
+	}
+#endif
+
 	Com_DPrintf( "------------------------------------\n" );
 }
 
@@ -1271,11 +4203,18 @@ IN_Shutdown
 */
 void IN_Shutdown( void )
 {
+#if TARGET_OS_IPHONE
+	SDL_DelEventWatch( IN_IOSAppEventWatch, NULL );
+#endif
+
 	SDL_StopTextInput( );
 
 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );
 	mouseAvailable = qfalse;
 
+	Cmd_RemoveCommand( "padtest" );
+
+	IN_PadEmuDetach( );
 	IN_ShutdownJoystick( );
 
 	SDL_window = NULL;

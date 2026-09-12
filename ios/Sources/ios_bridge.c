@@ -1312,6 +1312,40 @@ bool IOSBridge_ServerRunning( void )
 
 /*
 ==============
+IOSBridge_InitPaths
+
+Startup steps the application has to take before choosing a game. They live in
+the platform layer, which is hidden inside each engine object, so they are
+reached through the bridge like everything else.
+==============
+*/
+void IOSBridge_InitPaths( void )
+{
+	Sys_IOS_InitPaths();
+}
+
+/*
+==============
+IOSBridge_InitAudioSession
+==============
+*/
+void IOSBridge_InitAudioSession( void )
+{
+	Sys_IOS_InitAudioSession();
+}
+
+/*
+==============
+IOSBridge_InitSDLHints
+==============
+*/
+void IOSBridge_InitSDLHints( void )
+{
+	Sys_IOS_InitSDLHints();
+}
+
+/*
+==============
 IOSBridge_SetExtraArgs
 ==============
 */

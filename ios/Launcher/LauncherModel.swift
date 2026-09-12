@@ -453,8 +453,9 @@ final class LauncherModel: ObservableObject {
     /// it, and only its commit() writes any of it out.
     let mp = MultiplayerModel()
 
-    /// True in the MP application. Decides which tabs the launcher offers.
-    var isMultiplayer: Bool { IOSBridge_IsMultiplayer() }
+    /// One application, both games, so every tab is offered. The name is kept
+    /// because the tabs and a few notes read it.
+    var isMultiplayer: Bool { true }
 
     // What is actually in the pk3s, read from their directories rather than
     // taken on faith from the filenames being present. Both sets, in the order
@@ -508,17 +509,24 @@ final class LauncherModel: ObservableObject {
     /// alone offers a crash on startup. The Data tab already refuses to call
     /// that set complete; the footer and the Play block now agree with it.
     /// The fallback keeps the old answer for the moment before the first scan.
-    var canPlay: Bool {
-        dataSet(primarySet)?.isPlayable ?? IOSBridge_HasGameData()
+    var canPlay: Bool { canPlayCampaign }
+
+    /// The campaign needs pak0 and sp_pak1..4; multiplayer needs pak0 and
+    /// mp_pak0..5. A player may well have one set and not the other, and the
+    /// two buttons in the footer light up independently because of it.
+    var canPlayCampaign: Bool {
+        dataSet(.campaign)?.isPlayable ?? IOSBridge_HasGameData()
+    }
+
+    var canPlayMultiplayer: Bool {
+        dataSet(.multiplayer)?.isPlayable ?? false
     }
 
     /// The set this application is actually about. The campaign build needs
     /// sp_pak1..4 and does not care about the multiplayer paks; the multiplayer
     /// build is the other way round, and judging it by the campaign's files
     /// would grey out Play on a copy that can join every server on the network.
-    var primarySet: DataSetKind {
-        isMultiplayer ? .multiplayer : .campaign
-    }
+    var primarySet: DataSetKind { .campaign }
 
     init() {
         dataPath = String(cString: IOSBridge_DataPath())
@@ -1013,6 +1021,7 @@ final class LauncherModel: ObservableObject {
     }
 
     func play() {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_CAMPAIGN))
         commit()
         IOSBridge_SetStartupCommand("")
         IOSBridge_LauncherFinished()

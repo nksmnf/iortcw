@@ -331,6 +331,7 @@ final class MultiplayerModel: ObservableObject {
     /// runs once it is up -- the same path the launcher already uses to start a
     /// campaign mission.
     func connect(to address: String) {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
         commitClient()
         save()
         IOSBridge_SetExtraArgs("")
@@ -345,6 +346,7 @@ final class MultiplayerModel: ObservableObject {
     /// one is CVAR_INIT, the other CVAR_LATCH -- so they go on the command line
     /// rather than into ios_launcher.cfg, where they would simply be ignored.
     func startHosting() {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
         commitClient()
         commitServer()
 
@@ -371,6 +373,18 @@ final class MultiplayerModel: ObservableObject {
         // vstr d1 rather than "map X": it starts the rotation at its first
         // entry, so nextmap is already primed when the first round ends.
         IOSBridge_SetStartupCommand("vstr d1")
+        IOSBridge_LauncherFinished()
+    }
+
+    /// Start multiplayer without joining anything, which lands in the game's
+    /// own server browser. The footer button uses this.
+    func play() {
+        IOSDispatch_SetGame(Int32(IORTCW_GAME_MULTIPLAYER))
+        commitClient()
+        save()
+        IOSBridge_SetExtraArgs("")
+        IOSBridge_WriteConfig()
+        IOSBridge_SetStartupCommand("")
         IOSBridge_LauncherFinished()
     }
 
